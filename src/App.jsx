@@ -849,14 +849,54 @@ const _compKey = (userId) => `siso_companies_${userId}`;
 const _compKeyCloud = (userId) => `siso_companies_${userId}`;
 // PORTAL: Re-publicar todas las HCs cerradas al portal de Supabase
 // Útil cuando la tabla siso_store fue creada después de cerrar HCs
+// PORTAL GLOBAL MULTI-MÉDICO / MULTI-INSTITUCIÓN
+// Re-publica TODAS las HCs cerradas de TODOS los médicos/instituciones al portal Supabase.
+// Las claves siso_portal_doc_{cedula} son globales → cualquier paciente de cualquier
+// médico o institución puede consultar su certificado desde el portal público.
 const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignature) => {
-  const cerradas = (patients || []).filter(p =>
+  // ── 1. Recolectar pacientes de TODOS los médicos/instituciones en localStorage ──
+  let allPatients = [...(patients || [])];
+  try {
+    const lsKeys = Object.keys(localStorage).filter(k =>
+      k.startsWith("siso_db_patients_") || k.startsWith("siso_patients_")
+    );
+    for (const k of lsKeys) {
+      try {
+        const stored = JSON.parse(localStorage.getItem(k) || "[]");
+        if (Array.isArray(stored)) {
+          for (const p of stored) {
+            // Evitar duplicados por id o por cédula
+            const exists = allPatients.some(ep =>
+              ep.id === p.id || (ep.docNumero && ep.docNumero === p.docNumero && ep.fechaExamen === p.fechaExamen)
+            );
+            if (!exists) allPatients.push(p);
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+
+  const cerradas = allPatients.filter(p =>
     p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion
   );
   let ok = 0, fail = 0;
+
+  // ── 2. Índice empresa: acumular por NIT antes de guardar (evita race conditions) ──
+  const empresaIdx = {}; // nit → { nit, nombre, documentos: Set }
+
   for (const p of cerradas) {
     const code = p.codigoVerificacion || p.firmaDigital?.codigoQR || "";
+    // Usar datos del médico del paciente si existen, o el médico activo como fallback
+    const docData = p._doctorData || {
+      nombre: activeDoctorData?.nombre || p.medicoNombre || "MÉDICO OCUPACIONAL",
+      titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
+      licencia: activeDoctorData?.licencia || "--",
+      ciudad: activeDoctorData?.ciudad || "Popayán",
+      email: activeDoctorData?.email || "",
+      cel: activeDoctorData?.cel || "",
+    };
     const portalData = {
+      // ── Identificación ──────────────────────────────────────────
       nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
       eps: p.eps || "", edad: p.edad || "",
       empresaNombre: p.empresaNombre || p.empresa || "",
@@ -868,6 +908,7 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       codigoVerificacion: code,
       estadoHistoria: "Cerrada",
       fechaCierre: p.fechaCierre || new Date().toISOString().split("T")[0],
+      // ── Restricciones y recomendaciones ────────────────────────
       restricciones: p.analisisRestricciones || p.restricciones || "",
       restriccionesChecklist: p.restriccionesChecklist || {},
       recomendaciones: p.recomendaciones || "",
@@ -875,54 +916,65 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       recomendacionesOcupacionales: p.recomendacionesOcupacionales || "",
       recomendacionesChecklist: p.recomendacionesChecklist || {},
       diagnosticoPrincipal: p.diagnosticoPrincipal || "",
+      // ── Documentos emitidos ─────────────────────────────────────
       formulaMedicamentos: p.formulaMedicamentos || [],
       derivaciones: p.derivaciones || [],
       solicitudExamenes: p.solicitudExamenes || [],
+      solicitudExamenesDiag: p.solicitudExamenesDiag || "",
+      solicitudExamenesJust: p.solicitudExamenesJust || "",
       incapacidad: p.incapacidad || {},
-      medicoNombre: activeDoctorData?.nombre || "",
-      _doctorData: {
-        nombre: activeDoctorData?.nombre || "MÉDICO OCUPACIONAL",
-        titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
-        licencia: activeDoctorData?.licencia || "--",
-        ciudad: activeDoctorData?.ciudad || "Popayán",
-        email: activeDoctorData?.email || "",
-        cel: activeDoctorData?.cel || "",
-      },
-      _firma: activeSignature || p._firma || "",
+      // ── Médico tratante (del paciente o activo) ─────────────────
+      medicoNombre: docData.nombre,
+      _doctorData: docData,
+      _firma: p._firma || activeSignature || "",
     };
     const saves = [];
-    // Guardar por cédula (búsqueda principal)
+    // Guardar por cédula → búsqueda principal del portal
     if (p.docNumero) {
       saves.push(_sbSet("siso_portal_doc_" + p.docNumero.replace(/\s/g, ""), portalData));
     }
-    // Guardar por código de verificación
+    // Guardar por código de verificación (formatos nuevo y legacy)
     if (code) {
       saves.push(_sbSet("siso_portal_" + code.toUpperCase(), portalData));
-      saves.push(_sbSet("siso_portal_CV-" + code.toUpperCase(), portalData));
+      if (!code.toUpperCase().startsWith("CV-")) {
+        saves.push(_sbSet("siso_portal_CV-" + code.toUpperCase(), portalData));
+      }
     }
     const results = await Promise.allSettled(saves);
     const anyOk = results.some(r => r.status === "fulfilled" && r.value === true);
     if (anyOk) ok++; else fail++;
-    // Actualizar índice empresa
-    if (p.empresaNit && p.empresaId && p.empresaId !== "particular") {
+
+    // Acumular índice empresa en memoria
+    if (p.empresaNit && p.empresaId && p.empresaId !== "particular" && p.docNumero) {
       const nitIdx = (p.empresaNit || "").replace(/[^0-9]/g, "");
-      if (nitIdx.length >= 3 && p.docNumero) {
-        try {
-          const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, {
-            headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
-          });
-          const d = await r.json();
-          const existing = d[0]?.value || { nit: nitIdx, nombre: p.empresaNombre || "", documentos: [] };
-          const docNum = p.docNumero.replace(/\s/g, "");
-          if (!existing.documentos.includes(docNum)) existing.documentos.push(docNum);
-          existing.updatedAt = new Date().toISOString();
-          existing.nombre = p.empresaNombre || existing.nombre;
-          await _sbSet(`siso_portal_empresa_${nitIdx}`, existing);
-        } catch {}
+      if (nitIdx.length >= 3) {
+        if (!empresaIdx[nitIdx]) {
+          empresaIdx[nitIdx] = { nit: nitIdx, nombre: p.empresaNombre || "", documentos: new Set() };
+        }
+        empresaIdx[nitIdx].documentos.add(p.docNumero.replace(/\s/g, ""));
+        if (p.empresaNombre) empresaIdx[nitIdx].nombre = p.empresaNombre;
       }
     }
   }
-  return { ok, fail, total: cerradas.length };
+
+  // ── 3. Guardar índices empresa (un upsert por empresa, no por paciente) ──
+  for (const [nitIdx, data] of Object.entries(empresaIdx)) {
+    try {
+      const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, {
+        headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
+      });
+      const d = await r.json();
+      const existing = d[0]?.value || { nit: nitIdx, nombre: data.nombre, documentos: [] };
+      // Fusionar documentos existentes con los nuevos
+      const docsSet = new Set([...(existing.documentos || []), ...data.documentos]);
+      existing.documentos = [...docsSet];
+      existing.updatedAt = new Date().toISOString();
+      existing.nombre = data.nombre || existing.nombre;
+      await _sbSet(`siso_portal_empresa_${nitIdx}`, existing);
+    } catch {}
+  }
+
+  return { ok, fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length };
 };
 // ══════════════════════════════════════════════════
 // SEGURIDAD: Hash SHA-256 (sin dependencias externas)
@@ -18682,7 +18734,7 @@ const handleLogin = (u, p) => {
           const _nitIdx = (closed.empresaNit || "").replace(/[^0-9]/g, "");
           if (_nitIdx.length >= 3) {
             fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${_nitIdx}&select=value`, {
-              headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` }
+              headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
             }).then(r => r.json()).then(d => {
               const existing = d[0]?.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
               const docNum = (closed.docNumero || "").replace(/\s/g, "");
@@ -53755,13 +53807,32 @@ body{padding-top:52px;}
                 )}
                 <button
                   onClick={async () => {
-                    if (!window.confirm(`¿Re-publicar ${patientsList.filter(p => p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion).length} HCs cerradas al portal de Supabase?`)) return;
+                    // Contar HCs cerradas de TODOS los médicos en localStorage
+                    let totalCerradas = patientsList.filter(p => p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion).length;
+                    try {
+                      const lsKeys = Object.keys(localStorage).filter(k => k.startsWith("siso_db_patients_") || k.startsWith("siso_patients_"));
+                      const seenIds = new Set(patientsList.map(p => p.id));
+                      for (const k of lsKeys) {
+                        try {
+                          const stored = JSON.parse(localStorage.getItem(k) || "[]");
+                          if (Array.isArray(stored)) {
+                            for (const p of stored) {
+                              if (!seenIds.has(p.id) && (p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion)) {
+                                totalCerradas++;
+                                seenIds.add(p.id);
+                              }
+                            }
+                          }
+                        } catch {}
+                      }
+                    } catch {}
+                    if (!window.confirm(`¿Publicar ${totalCerradas} HCs cerradas al portal?\n\nEsto incluye pacientes de TODOS los médicos e instituciones almacenados en este dispositivo.\n\nDespués de esto, cualquier paciente podrá buscar su certificado por cédula o código.`)) return;
                     const r = await _rePublicarPortalTodos(patientsList, activeDoctorData, activeSignature);
-                    alert(`✅ Portal republicado: ${r.ok} exitosos, ${r.fail} fallidos de ${r.total} total.`);
+                    alert(`✅ Portal actualizado:\n• ${r.ok} pacientes publicados\n• ${r.empresas} empresas indexadas\n• ${r.fail} fallidos de ${r.total} total\n\nAhora los pacientes pueden buscar por cédula o código de verificación.`);
                   }}
                   className="w-full mt-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700"
                 >
-                  🔄 Republicar Portal (HCs Cerradas → Supabase)
+                  🌐 Publicar Portal Global (Todos los médicos / instituciones)
                 </button>
                 <button onClick={() => setShowDiagnostico(false)} className="w-full bg-gray-800 text-white py-2.5 rounded-xl font-black text-sm hover:bg-gray-900">
                   Cerrar
