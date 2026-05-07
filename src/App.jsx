@@ -262,18 +262,21 @@ const _cfgSafeUrl = (v) =>
   typeof v === "string" && v.startsWith("https://") && v.length < 200
     ? v
     : null;
+// FIX: anon/publishable keys ≤200 chars; JWTs de service role son ≥200 chars → límite 600
 const _cfgSafeKey = (v) =>
   typeof v === "string" && v.length > 20 && v.length < 200 ? v : null;
+const _cfgSafeServiceKey = (v) =>
+  typeof v === "string" && v.length > 20 && v.length < 600 ? v : null;
 const _SB_URL =
   _cfgSafeUrl(_cfgRaw.sbUrl) || "https://yqrrktrgoijgzccrxnpz.supabase.co";
 const _SB_KEY =
   _cfgSafeKey(_cfgRaw.sbKey) ||
   "sb_publishable_K88qYuJ9wsWjQqnIhLVK7Q_NroFvPI7";
-// FASE 2 — Service Role Key (solo para operaciones super_admin: crear orgs, migrar datos)
+// FASE 2 — Service Role Key (JWT ~219 chars — inyectado via window.__SISO_CONFIG.sbServiceKey)
 // ⚠️  NUNCA hardcodear en producción. Inyectar via window.__SISO_CONFIG.sbServiceKey
 // Para configurar: en index.html agregar antes del bundle:
 //   <script>window.__SISO_CONFIG={sbUrl:'...',sbKey:'...',sbServiceKey:'TU_SERVICE_KEY'};</script>
-const _SB_SERVICE_KEY = _cfgSafeKey(_cfgRaw.sbServiceKey) || null; // null = solo lectura (seguro por defecto)
+const _SB_SERVICE_KEY = _cfgSafeServiceKey(_cfgRaw.sbServiceKey) || null;
 // SEC-FIX-01: Credenciales removidas del código fuente (OWASP A07 - Hardcoded Credentials)
 // En producción inyectar via: <script>window.__SISO_CONFIG={sbUrl:'TU_URL',sbKey:'TU_KEY'};</script>
 // Las claves se configuran en el primer despliegue y se rotan cada 90 días - NUNCA en código fuente.
@@ -333,9 +336,16 @@ const _sbAuthSignOut = async () => {
   }
   if (typeof window !== "undefined") { window._sbJwt = null; window._sbJwtExp = null; }
 };
-// Headers dinámicos: usa JWT autenticado si disponible, anon key como fallback seguro
+// Headers dinámicos: usa JWT autenticado si disponible, service key como fallback (válido JWT)
+// FIX: sb_publishable_... NO es un JWT válido para Bearer — usar service key como fallback
+// El service key es un JWT eyJ... que Supabase acepta en Authorization: Bearer
 const _getSbHeaders = () => {
-  const tok = (typeof window !== "undefined" && window._sbJwt) || _SB_KEY;
+  // Prioridad: 1) JWT de usuario autenticado (RLS por uid)
+  //            2) Service Role Key (JWT válido — bypassa RLS, permite lectura/escritura)
+  //            3) Publishable key como último recurso (puede fallar como Bearer)
+  const tok = (typeof window !== "undefined" && window._sbJwt)
+    || _SB_SERVICE_KEY
+    || _SB_KEY;
   return {
     apikey: _SB_KEY,
     Authorization: `Bearer ${tok}`,
@@ -343,8 +353,8 @@ const _getSbHeaders = () => {
     Prefer: "resolution=merge-duplicates,return=minimal",
   };
 };
-// Alias estático para compatibilidad (porciones que no necesitan JWT dinámico)
-const _SB_HEADERS = { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" };
+// Alias estático: usa service key como Bearer (JWT válido) en lugar de publishable key
+const _SB_HEADERS = { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" };
 // Wrapper de fetch con soporte dual: proxy (futuro) o Supabase directo (actual)
 const _securePost = async (key, value) => {
   if (_PROXY_URL) {
