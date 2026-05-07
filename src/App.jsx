@@ -268,10 +268,9 @@ const _cfgSafeKey = (v) =>
 const _cfgSafeServiceKey = (v) =>
   typeof v === "string" && v.length > 20 && v.length < 600 ? v : null;
 const _SB_URL =
-  _cfgSafeUrl(_cfgRaw.sbUrl) || "https://yqrrktrgoijgzccrxnpz.supabase.co";
+  _cfgSafeUrl(_cfgRaw.sbUrl) || "https://morlvrofvzrlekkqxglc.supabase.co";
 const _SB_KEY =
-  _cfgSafeKey(_cfgRaw.sbKey) ||
-  "sb_publishable_K88qYuJ9wsWjQqnIhLVK7Q_NroFvPI7";
+  _cfgSafeKey(_cfgRaw.sbKey) || "sb_publishable_ZFMNDq1HMsBqrvhtREydiA_AT4lKyg_";
 // FASE 2 — Service Role Key (JWT ~219 chars — inyectado via window.__SISO_CONFIG.sbServiceKey)
 // ⚠️  NUNCA hardcodear en producción. Inyectar via window.__SISO_CONFIG.sbServiceKey
 // Para configurar: en index.html agregar antes del bundle:
