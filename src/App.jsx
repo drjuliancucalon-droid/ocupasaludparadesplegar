@@ -11286,6 +11286,82 @@ function LoginForm({ onLogin, blockedUntil, attempts }) {
       >
         {isBlocked ? `Bloqueado (${remaining}s)` : "Iniciar Sesión"}
       </button>
+      {/* ── Recuperación de acceso ── */}
+      <RecuperarAcceso onRecuperado={() => { setU("drcucalon"); setP("cucalon2026"); }} />
+    </div>
+  );
+}
+
+// ── Componente de recuperación de acceso (bloqueo / contraseña olvidada) ──
+function RecuperarAcceso({ onRecuperado }) {
+  const [abierto, setAbierto] = React.useState(false);
+  const [codigo, setCodigo] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const CODIGO_ADMIN = "9207"; // código de administrador del sistema
+
+  const intentar = async () => {
+    if (codigo !== CODIGO_ADMIN) {
+      setMsg("⛔ Código incorrecto.");
+      return;
+    }
+    // 1. Limpiar todos los bloqueos de rate limiting
+    localStorage.removeItem("siso_rl_login");
+    localStorage.removeItem("siso_login_attempts");
+    localStorage.removeItem("siso_login_blocked_until");
+    // 2. Restaurar hash SHA-256 de "cucalon2026" para drcucalon en localStorage
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("cucalon2026"))
+      .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join(""));
+    try {
+      const usuarios = JSON.parse(localStorage.getItem("siso_users") || "[]");
+      const actualizados = usuarios.map(u =>
+        u.user === "drcucalon"
+          ? { ...u, passHash: hash, passSalt: undefined, pass: undefined, mustChangePassword: false }
+          : u
+      );
+      if (actualizados.length > 0) {
+        localStorage.setItem("siso_users", JSON.stringify(actualizados));
+      }
+    } catch (_) {}
+    setMsg("✅ Acceso restaurado. Ingrese con usuario 'drcucalon' y contraseña 'cucalon2026'.");
+    if (onRecuperado) onRecuperado();
+    setTimeout(() => setAbierto(false), 3000);
+  };
+
+  return (
+    <div className="mt-2">
+      {!abierto ? (
+        <button
+          type="button"
+          onClick={() => { setAbierto(true); setMsg(""); setCodigo(""); }}
+          className="w-full text-xs text-gray-400 hover:text-emerald-600 underline underline-offset-2 transition py-1"
+        >
+          ¿Problemas para acceder?
+        </button>
+      ) : (
+        <div className="border border-amber-200 bg-amber-50 rounded-xl p-3 space-y-2">
+          <p className="text-xs font-bold text-amber-800">🔑 Recuperar Acceso</p>
+          <p className="text-[10px] text-amber-700">Ingrese el código de administrador del sistema:</p>
+          <input
+            type="password"
+            value={codigo}
+            onChange={e => setCodigo(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && intentar()}
+            placeholder="Código admin"
+            className="w-full p-2 border border-amber-300 rounded-lg text-xs focus:ring-2 focus:ring-amber-400 outline-none"
+          />
+          {msg && <p className={`text-[10px] font-bold ${msg.startsWith("✅") ? "text-emerald-700" : "text-red-600"}`}>{msg}</p>}
+          <div className="flex gap-2">
+            <button type="button" onClick={intentar}
+              className="flex-1 py-1.5 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition">
+              Restaurar
+            </button>
+            <button type="button" onClick={() => setAbierto(false)}
+              className="px-3 py-1.5 bg-gray-200 text-gray-700 text-xs rounded-lg hover:bg-gray-300 transition">
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
