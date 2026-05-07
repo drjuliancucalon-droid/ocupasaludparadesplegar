@@ -689,6 +689,28 @@ const _sbSet = async (key, value) => {
   if (!_rlCheck()) return false;
   return await _securePost(key, value);
 };
+// _sbBulkSet: upsert masivo sin rate limiter — envía todos los rows en chunks de 200
+// Supabase soporta array body: POST /rest/v1/siso_store con [{key,value,updated_at}, ...]
+const _sbBulkSet = async (rows) => {
+  if (!rows || rows.length === 0) return { ok: 0, fail: 0 };
+  const now = new Date().toISOString();
+  const body = rows.map(r => ({ key: r.key, value: r.value, updated_at: now }));
+  const CHUNK = 200;
+  let ok = 0, fail = 0;
+  for (let i = 0; i < body.length; i += CHUNK) {
+    const chunk = body.slice(i, i + CHUNK);
+    try {
+      const r = await fetch(`${_SB_URL}/rest/v1/siso_store`, {
+        method: "POST",
+        headers: _getSbHeaders(),
+        body: JSON.stringify(chunk),
+      });
+      if (r.ok) ok += chunk.length;
+      else { console.warn("[SISO] bulk fail chunk", i, await r.text()); fail += chunk.length; }
+    } catch (e) { console.warn("[SISO] bulk error", e); fail += chunk.length; }
+  }
+  return { ok, fail };
+};
 const _sbGetAll = async () => {
   try {
     const r = await fetch(
@@ -1100,7 +1122,6 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
         const stored = JSON.parse(localStorage.getItem(k) || "[]");
         if (Array.isArray(stored)) {
           for (const p of stored) {
-            // Evitar duplicados por id o por cédula
             const exists = allPatients.some(ep =>
               ep.id === p.id || (ep.docNumero && ep.docNumero === p.docNumero && ep.fechaExamen === p.fechaExamen)
             );
@@ -1114,14 +1135,17 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
   const cerradas = allPatients.filter(p =>
     p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion
   );
-  let ok = 0, fail = 0;
 
-  // ── 2. Índice empresa: acumular por NIT antes de guardar (evita race conditions) ──
-  const empresaIdx = {}; // nit → { nit, nombre, documentos: Set }
+  // ── 2. Construir todos los rows en memoria (sin requests individuales) ──
+  const portalRows = [];   // siso_portal_doc_*, siso_portal_*, siso_portal_CV-*
+  const hcRows = [];       // siso_hc_completa_*, siso_hc_completa_codigo_*
+  const empresaIdx = {};   // nit → { nit, nombre, documentos: Set }
+  let sinDatos = 0;
 
   for (const p of cerradas) {
-    const code = p.codigoVerificacion || p.firmaDigital?.codigoQR || "";
-    // Usar datos del médico del paciente si existen, o el médico activo como fallback
+    const code = (p.codigoVerificacion || p.firmaDigital?.codigoQR || "").trim();
+    if (!p.docNumero && !code) { sinDatos++; continue; }
+
     const docData = p._doctorData || {
       nombre: activeDoctorData?.nombre || p.medicoNombre || "MÉDICO OCUPACIONAL",
       titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
@@ -1131,7 +1155,6 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       cel: activeDoctorData?.cel || "",
     };
     const portalData = {
-      // ── Identificación ──────────────────────────────────────────
       nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
       eps: p.eps || "", edad: p.edad || "",
       empresaNombre: p.empresaNombre || p.empresa || "",
@@ -1143,7 +1166,6 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       codigoVerificacion: code,
       estadoHistoria: "Cerrada",
       fechaCierre: p.fechaCierre || new Date().toISOString().split("T")[0],
-      // ── Restricciones y recomendaciones ────────────────────────
       restricciones: p.analisisRestricciones || p.restricciones || "",
       restriccionesChecklist: p.restriccionesChecklist || {},
       recomendaciones: p.recomendaciones || "",
@@ -1151,74 +1173,67 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       recomendacionesOcupacionales: p.recomendacionesOcupacionales || "",
       recomendacionesChecklist: p.recomendacionesChecklist || {},
       diagnosticoPrincipal: p.diagnosticoPrincipal || "",
-      // ── Documentos emitidos ─────────────────────────────────────
       formulaMedicamentos: p.formulaMedicamentos || [],
       derivaciones: p.derivaciones || [],
       solicitudExamenes: p.solicitudExamenes || [],
       solicitudExamenesDiag: p.solicitudExamenesDiag || "",
       solicitudExamenesJust: p.solicitudExamenesJust || "",
       incapacidad: p.incapacidad || {},
-      // ── Médico tratante (del paciente o activo) ─────────────────
       medicoNombre: docData.nombre,
       _doctorData: docData,
       _firma: p._firma || activeSignature || "",
     };
-    const saves = [];
-    // Guardar por cédula → búsqueda principal del portal
-    if (p.docNumero) {
-      saves.push(_sbSet("siso_portal_doc_" + p.docNumero.replace(/\s/g, ""), portalData));
-    }
-    // Guardar por código de verificación (formatos nuevo y legacy)
-    if (code) {
-      saves.push(_sbSet("siso_portal_" + code.toUpperCase(), portalData));
-      if (!code.toUpperCase().startsWith("CV-")) {
-        saves.push(_sbSet("siso_portal_CV-" + code.toUpperCase(), portalData));
-      }
-    }
-    const results = await Promise.allSettled(saves);
-    const anyOk = results.some(r => r.status === "fulfilled" && r.value === true);
-    if (anyOk) ok++; else fail++;
+    const hcCompleta = { ...p, _doctorData: docData, _firma: p._firma || activeSignature || "" };
+    const cedula = (p.docNumero || "").replace(/\s/g, "");
+    const codeUp = code ? code.toUpperCase() : "";
 
-    // Guardar HC completa para acceso del paciente (sin RLS, solo por cédula)
-    if (p.docNumero) {
-      const hcCompleta = { ...p, _doctorData: docData, _firma: p._firma || activeSignature || "" };
-      _sbSet("siso_hc_completa_" + p.docNumero.replace(/\s/g, ""), hcCompleta).catch(() => {});
-      if (code) {
-        _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), hcCompleta).catch(() => {});
-      }
+    // Portal rows
+    if (cedula) portalRows.push({ key: "siso_portal_doc_" + cedula, value: portalData });
+    if (codeUp) {
+      portalRows.push({ key: "siso_portal_" + codeUp, value: portalData });
+      if (!codeUp.startsWith("CV-")) portalRows.push({ key: "siso_portal_CV-" + codeUp, value: portalData });
     }
+    // HC completa rows
+    if (cedula) hcRows.push({ key: "siso_hc_completa_" + cedula, value: hcCompleta });
+    if (codeUp) hcRows.push({ key: "siso_hc_completa_codigo_" + codeUp, value: hcCompleta });
 
-    // Acumular índice empresa en memoria
-    if (p.empresaNit && p.empresaId && p.empresaId !== "particular" && p.docNumero) {
+    // Índice empresa
+    if (p.empresaNit && p.empresaId !== "particular" && cedula) {
       const nitIdx = (p.empresaNit || "").replace(/[^0-9]/g, "");
       if (nitIdx.length >= 3) {
-        if (!empresaIdx[nitIdx]) {
-          empresaIdx[nitIdx] = { nit: nitIdx, nombre: p.empresaNombre || "", documentos: new Set() };
-        }
-        empresaIdx[nitIdx].documentos.add(p.docNumero.replace(/\s/g, ""));
+        if (!empresaIdx[nitIdx]) empresaIdx[nitIdx] = { nit: nitIdx, nombre: p.empresaNombre || "", documentos: new Set() };
+        empresaIdx[nitIdx].documentos.add(cedula);
         if (p.empresaNombre) empresaIdx[nitIdx].nombre = p.empresaNombre;
       }
     }
   }
 
-  // ── 3. Guardar índices empresa (un upsert por empresa, no por paciente) ──
+  // ── 3. Upsert masivo: portal rows + HC rows en 1-2 requests ──
+  const [portalResult, hcResult] = await Promise.all([
+    _sbBulkSet(portalRows),
+    _sbBulkSet(hcRows),
+  ]);
+  const ok = portalRows.length > 0 ? portalResult.ok : 0;
+  const fail = portalResult.fail + hcResult.fail + sinDatos;
+
+  // ── 4. Guardar índices empresa (un fetch+upsert por empresa) ──
   for (const [nitIdx, data] of Object.entries(empresaIdx)) {
     try {
       const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, {
-        headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
+        headers: _getSbHeaders(),
       });
       const d = await r.json();
       const existing = d[0]?.value || { nit: nitIdx, nombre: data.nombre, documentos: [] };
-      // Fusionar documentos existentes con los nuevos
       const docsSet = new Set([...(existing.documentos || []), ...data.documentos]);
       existing.documentos = [...docsSet];
       existing.updatedAt = new Date().toISOString();
       existing.nombre = data.nombre || existing.nombre;
-      await _sbSet(`siso_portal_empresa_${nitIdx}`, existing);
+      await _sbBulkSet([{ key: `siso_portal_empresa_${nitIdx}`, value: existing }]);
     } catch {}
   }
 
-  return { ok, fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length };
+  const publishedCount = cerradas.length - sinDatos;
+  return { ok: publishedCount, fail: portalResult.fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length };
 };
 // ══════════════════════════════════════════════════
 // SEGURIDAD: Hash SHA-256 (sin dependencias externas)
