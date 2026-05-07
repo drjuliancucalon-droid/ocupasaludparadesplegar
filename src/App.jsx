@@ -276,6 +276,12 @@ const _SB_KEY =
 // Para configurar: en index.html agregar antes del bundle:
 //   <script>window.__SISO_CONFIG={sbUrl:'...',sbKey:'...',sbServiceKey:'TU_SERVICE_KEY'};</script>
 const _SB_SERVICE_KEY = _cfgSafeServiceKey(_cfgRaw.sbServiceKey) || _cfgSafeServiceKey(import.meta.env?.VITE_SB_SERVICE_KEY) || null;
+// ── Cloudinary FREE (25 GB) — almacenamiento de archivos/PDFs ─────────────
+// Configurar en index.html: window.__SISO_CONFIG.cloudinaryCloud y cloudinaryPreset
+// O en .env.local: VITE_CLOUDINARY_CLOUD y VITE_CLOUDINARY_PRESET
+const _CLOUDINARY_CLOUD = (_cfgRaw.cloudinaryCloud || import.meta.env?.VITE_CLOUDINARY_CLOUD || "").trim();
+const _CLOUDINARY_PRESET = (_cfgRaw.cloudinaryPreset || import.meta.env?.VITE_CLOUDINARY_PRESET || "").trim();
+const _CLOUDINARY_ENABLED = !!(_CLOUDINARY_CLOUD && _CLOUDINARY_PRESET);
 // SEC-FIX-01: Credenciales removidas del código fuente (OWASP A07 - Hardcoded Credentials)
 // En producción inyectar via: <script>window.__SISO_CONFIG={sbUrl:'TU_URL',sbKey:'TU_KEY'};</script>
 // Las claves se configuran en el primer despliegue y se rotan cada 90 días - NUNCA en código fuente.
@@ -777,10 +783,16 @@ const _validateMimeType = async (file) => {
   };
 };
 const _sbStorageUpload = async (path, file) => {
+  // Prioridad 1: Cloudinary (25 GB gratis, URL permanente, sin expiración)
+  if (_CLOUDINARY_ENABLED) {
+    const folder = path.split("/").slice(0, 2).join("/"); // userId/hcId
+    return await _cloudinaryUpload(file, folder);
+    // Retorna: { ok, url, publicId, resourceType } — url es permanente
+  }
+  // Prioridad 2: Supabase Storage (1 GB gratis, URL expira 24h)
   // SEC-11: Validar MIME por magic bytes
   const mimeCheck = await _validateMimeType(file);
   if (!mimeCheck.ok) return { ok: false, error: mimeCheck.error };
-
   // path: '{userId}/{hcId}/{timestamp}-{nombre}'
   try {
     const r = await fetch(
@@ -800,7 +812,7 @@ const _sbStorageUpload = async (path, file) => {
       const err = await r.json().catch(() => ({ message: r.statusText }));
       return { ok: false, error: err.message || r.statusText };
     }
-    return { ok: true };
+    return { ok: true, url: null, storagePath: path };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -824,6 +836,32 @@ const _sbStorageGetSignedUrl = async (path) => {
     return `${_SB_URL}/storage/v1${data.signedURL}`;
   } catch {
     return null;
+  }
+};
+// ── Cloudinary upload directo desde navegador (sin servidor) ─────────────
+// Usa unsigned preset → no expone API secret. URL permanente (no expira).
+const _cloudinaryUpload = async (file, folder) => {
+  if (!_CLOUDINARY_ENABLED) return { ok: false, error: "Cloudinary no configurado" };
+  const mimeCheck = await _validateMimeType(file);
+  if (!mimeCheck.ok) return { ok: false, error: mimeCheck.error };
+  const form = new FormData();
+  form.append("file", file);
+  form.append("upload_preset", _CLOUDINARY_PRESET);
+  form.append("folder", "siso/" + (folder || "general"));
+  // resource_type auto: detecta PDF como raw, imágenes como image
+  try {
+    const r = await fetch(
+      `https://api.cloudinary.com/v1_1/${_CLOUDINARY_CLOUD}/auto/upload`,
+      { method: "POST", body: form }
+    );
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      return { ok: false, error: err.error?.message || r.statusText };
+    }
+    const d = await r.json();
+    return { ok: true, url: d.secure_url, publicId: d.public_id, resourceType: d.resource_type };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 };
 const _sbStorageDelete = async (path) => {
@@ -13806,7 +13844,9 @@ function CargaMasivaExamenes({ patients, currentUser, onClose }) {
       nombre:`${TIPOS_EXAMEN_MASIVO.find(t=>t.valor===arch.tipo)?.label||"Doc"} - ${arch.file.name}`,
       tipo:arch.tipo,mimeType:arch.file.type,tamano:arch.file.size,
       fecha:new Date().toISOString(),subidoPor:userId,
-      storagePath:upRes.ok?sp:null,
+      cloudinaryUrl:upRes.ok&&upRes.url?upRes.url:null,
+      publicId:upRes.ok&&upRes.publicId?upRes.publicId:null,
+      storagePath:upRes.ok&&!upRes.url?sp:null,
       sbKey:upRes.ok?null:`siso_adj_${pac.id}_${arch.id}`,
       cargaMasiva:true,
     };
@@ -35954,21 +35994,48 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
       const userId = currentUser?.user || "unknown";
       const hcId = data.id || "hc_" + ts;
       const adjId = `adj_${ts}`;
-      const sbKey = `siso_adj_${hcId}_${adjId}`;
       const nombreVisible = `${tipoLabel.replace(/[^\w\s]/g, "").trim()} - ${file.name}`;
 
-      showAlert("⏳ Procesando archivo...");
+      showAlert("⏳ Subiendo archivo...");
 
+      // ── Ruta 1: Cloudinary (25 GB gratis, URL permanente) ──
+      if (_CLOUDINARY_ENABLED) {
+        const sp = `${userId}/${hcId}/${ts}-${file.name.replace(/[^a-zA-Z0-9._-]/g,"_").slice(0,80)}`;
+        const upRes = await _sbStorageUpload(sp, file);
+        if (upRes.ok) {
+          const nuevoAdj = {
+            id: adjId,
+            nombre: nombreVisible,
+            tipo: tipoVal,
+            tipoLabel,
+            mimeType: file.type,
+            tamano: file.size,
+            fecha: new Date().toISOString(),
+            subidoPor: userId,
+            cloudinaryUrl: upRes.url,
+            publicId: upRes.publicId,
+          };
+          const nuevosAdjuntos = [...adjuntos, nuevoAdj];
+          setData((prev) => ({ ...prev, adjuntos: nuevosAdjuntos }));
+          showAlert(`✅ "${file.name}" subido a Cloudinary (${(file.size/1024).toFixed(0)} KB) como ${tipoLabel}.`);
+          if (tipoSelect) tipoSelect.value = "otro";
+          e.target.value = "";
+          return;
+        }
+        // Cloudinary falló → caer al método base64
+        console.warn("[SISO] Cloudinary falló, usando base64:", upRes.error);
+      }
+
+      // ── Ruta 2: base64 en siso_store (fallback / Cloudinary no configurado) ──
+      const sbKey = `siso_adj_${hcId}_${adjId}`;
       let dataUrl;
       try {
         if (file.type.startsWith("image/")) {
-          // Comprimir imagen con Canvas
           dataUrl = await _compressImage(file);
         } else {
-          // PDF u otro: leer como base64 directo (máx 1.5MB)
           const PDF_MAX = 1.5 * 1024 * 1024;
           if (file.size > PDF_MAX) {
-            showAlert(`⚠️ El PDF supera el límite de 1.5 MB. Por favor comprime el archivo antes de subirlo.`);
+            showAlert(`⚠️ El PDF supera 1.5 MB. Configura Cloudinary para subir archivos grandes.`);
             e.target.value = "";
             return;
           }
@@ -35984,10 +36051,7 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
         return;
       }
 
-      // Guardar en localStorage como caché
       try { localStorage.setItem(sbKey, dataUrl); } catch {}
-
-      // Guardar en Supabase siso_store
       const ok = await _sbSet(sbKey, dataUrl);
 
       const nuevoAdj = {
@@ -35996,10 +36060,10 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
         tipo: tipoVal,
         tipoLabel,
         mimeType: file.type.startsWith("image/") ? "image/jpeg" : file.type,
-        tamano: Math.round(dataUrl.length * 0.75), // aprox bytes de base64
+        tamano: Math.round(dataUrl.length * 0.75),
         fecha: new Date().toISOString(),
         subidoPor: userId,
-        sbKey, // clave en siso_store (reemplaza path)
+        sbKey,
       };
 
       const nuevosAdjuntos = [...adjuntos, nuevoAdj];
@@ -36011,16 +36075,46 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
     };
 
     const handleVerAdjunto = async (adj) => {
-      // Compatibilidad con adjuntos antiguos que usan path (Supabase Storage)
+      // ── Ruta 1: Cloudinary URL permanente (nuevo sistema) ──
+      if (adj.cloudinaryUrl) {
+        window.open(adj.cloudinaryUrl, "_blank");
+        return;
+      }
+
+      // ── Ruta 2: Supabase Storage (storagePath) ──
+      if (adj.storagePath) {
+        try {
+          const r = await fetch(
+            `${_SB_URL}/storage/v1/object/sign/${_SB_BUCKET}/${adj.storagePath}`,
+            {
+              method: "POST",
+              headers: {
+                apikey: _SB_KEY,
+                Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ expiresIn: 3600 }),
+            }
+          );
+          if (r.ok) {
+            const d = await r.json();
+            const url = `${_SB_URL}/storage/v1${d.signedURL}`;
+            window.open(url, "_blank");
+            return;
+          }
+        } catch {}
+        showAlert("⚠️ No se pudo generar el enlace del archivo. Verifica la conexión.");
+        return;
+      }
+
+      // ── Ruta 3: base64 en siso_store (sistema anterior) ──
       if (!adj.sbKey && adj.path) {
         showAlert("⚠️ Este adjunto fue guardado con el sistema anterior y no está disponible. Sube el archivo nuevamente.");
         return;
       }
-      // Leer desde localStorage (caché) primero
       let dataUrl = null;
       try { dataUrl = localStorage.getItem(adj.sbKey); } catch {}
       if (!dataUrl) {
-        // Leer desde Supabase siso_store
         try {
           const r = await fetch(
             `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(adj.sbKey)}&select=value`,
@@ -36081,7 +36175,7 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
             📎 Adjuntos de Paraclínicos
           </span>
           <span className="text-[10px] text-teal-600 bg-teal-100 px-2 py-0.5 rounded-full">
-            Res. 1843/2025 · Supabase Storage
+            Res. 1843/2025 · {_CLOUDINARY_ENABLED ? "Cloudinary 25GB" : "Supabase Storage"}
           </span>
           <span className="ml-auto text-[10px] text-gray-400">
             {adjuntos.length} archivo{adjuntos.length !== 1 ? "s" : ""}
