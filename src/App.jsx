@@ -21117,11 +21117,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
               </button>
             </>
           )}
-          <span
-            title={_syncTitle}
+          <button
+            title={syncStatus === "error" ? "Error de sync — clic para diagnóstico y restauración" : _syncTitle}
+            onClick={() => { if (syncStatus === "error" || syncStatus === "idle") handleDiagnosticoNube(); }}
             className={
-              "flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print " +
-              _syncBg
+              "flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print transition " +
+              _syncBg +
+              (syncStatus === "error" ? " cursor-pointer hover:opacity-80" : " cursor-default")
             }
           >
             {syncStatus === "syncing" || syncStatus === "loading" ? (
@@ -21134,7 +21136,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
               <Cloud className="w-3 h-3 opacity-40" />
             )}{" "}
             {_syncTxt}
-          </span>
+          </button>
           {["administrador", "medico", "super_admin"].includes(
             currentUser?.role
           ) && (
@@ -53814,11 +53816,122 @@ body{padding-top:52px;}
                 ? "☁️ Todo guardado correctamente en Supabase. Puede acceder desde cualquier dispositivo."
                 : "⚠️ Algunos elementos fallaron. Están guardados localmente y se sincronizarán automáticamente."}
             </div>
+            {/* Botón de recuperación de emergencia */}
+            {!Object.values(syncReport.results).every(Boolean) && (
+              <button
+                onClick={() => { setShowSyncReport(false); handleDiagnosticoNube(); }}
+                className="w-full mb-2 bg-amber-500 text-white py-2 rounded-xl font-black text-xs hover:bg-amber-600 transition"
+              >
+                🔍 Diagnóstico y Restauración de Emergencia
+              </button>
+            )}
             <button
               onClick={() => setShowSyncReport(false)}
               className="w-full bg-violet-600 text-white py-2.5 rounded-xl font-black text-sm hover:bg-violet-700"
             >
               Entendido
+            </button>
+          </div>
+        </div>
+      )}
+      {/* ── MODAL DIAGNÓSTICO Y RESTAURACIÓN DE EMERGENCIA ── */}
+      {showDiagnostico && (
+        <div className="fixed inset-0 bg-black/60 z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-black text-gray-900 text-base">🔍 Diagnóstico Supabase</h2>
+              <button onClick={() => setShowDiagnostico(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            {diagnosticoCargando && (
+              <div className="text-center py-8">
+                <Loader2 className="w-8 h-8 animate-spin text-violet-500 mx-auto mb-2" />
+                <p className="text-sm text-gray-500">Escaneando Supabase...</p>
+              </div>
+            )}
+            {!diagnosticoCargando && diagnosticoData && (
+              <>
+                {diagnosticoData.error ? (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 font-semibold">
+                    ❌ {diagnosticoData.error}
+                    <p className="text-xs mt-2 text-red-500">Posible causa: proyecto Supabase pausado o tabla siso_store no existe.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 mb-3 text-xs text-emerald-800 font-semibold">
+                      ✅ Conexión OK · {diagnosticoData.totalKeys} claves en Supabase
+                    </div>
+                    <p className="text-xs font-black text-gray-600 uppercase tracking-wider mb-2">Claves del usuario ({diagnosticoData.uid})</p>
+                    <div className="space-y-1.5 mb-4">
+                      {Object.entries(diagnosticoData.details).map(([k, d]) => (
+                        <div key={k} className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold ${d.found && d.count > 0 ? "bg-emerald-50 text-emerald-800" : "bg-gray-50 text-gray-400"}`}>
+                          <span className="truncate mr-2">{k}</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span>{d.found ? `${d.count} items` : "vacío"}</span>
+                            {d.found && d.count > 0 && (
+                              <button onClick={() => handleRestaurarDesdeKey(k)}
+                                className="px-2 py-0.5 bg-violet-600 text-white rounded text-[10px] font-black hover:bg-violet-700">
+                                Restaurar
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {diagnosticoData.extraPatKeys?.length > 0 && (
+                      <>
+                        <p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">🔑 Otras claves con pacientes</p>
+                        <div className="space-y-1.5 mb-4">
+                          {diagnosticoData.extraPatKeys.map(({ key, count }) => (
+                            <div key={key} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold bg-amber-50 text-amber-800">
+                              <span className="truncate mr-2">{key}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span>{count} pacientes</span>
+                                {count > 0 && (
+                                  <button onClick={() => handleRestaurarDesdeKey(key)}
+                                    className="px-2 py-0.5 bg-amber-600 text-white rounded text-[10px] font-black hover:bg-amber-700">
+                                    Restaurar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {diagnosticoData.extraCompKeys?.length > 0 && (
+                      <>
+                        <p className="text-xs font-black text-blue-700 uppercase tracking-wider mb-2">🏢 Otras claves con empresas</p>
+                        <div className="space-y-1.5 mb-4">
+                          {diagnosticoData.extraCompKeys.map(({ key, count }) => (
+                            <div key={key} className="flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold bg-blue-50 text-blue-800">
+                              <span className="truncate mr-2">{key}</span>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span>{count} empresas</span>
+                                {count > 0 && (
+                                  <button onClick={() => handleRestaurarDesdeKey(key)}
+                                    className="px-2 py-0.5 bg-blue-600 text-white rounded text-[10px] font-black hover:bg-blue-700">
+                                    Restaurar
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {!diagnosticoData.extraPatKeys?.length && !Object.values(diagnosticoData.details).some(d => d.count > 0) && (
+                      <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700 font-semibold text-center">
+                        ⚠️ No se encontraron datos de pacientes en Supabase.<br/>
+                        <span className="text-red-500 font-normal">Los datos nunca llegaron a la nube. Use la función Importar para restaurar desde un archivo de respaldo.</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+            <button onClick={() => setShowDiagnostico(false)}
+              className="w-full mt-4 bg-gray-200 text-gray-700 py-2 rounded-xl font-bold text-sm hover:bg-gray-300">
+              Cerrar
             </button>
           </div>
         </div>
