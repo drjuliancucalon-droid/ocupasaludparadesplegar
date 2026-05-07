@@ -746,16 +746,19 @@ const _sbGetAll = async () => {
 // Recuperar pacientes desde filas siso_hc_completa_* (backup del portal)
 const _sbRecuperarPacientesDesdeHC = async () => {
   try {
-    // Traer todas las filas siso_hc_completa_* que son por cédula (no por código)
-    const r = await fetch(
-      `${_SB_URL}/rest/v1/siso_store?key=like.siso_hc_completa_%&select=key,value&limit=5000`,
-      { headers: _getSbHeaders() }
-    );
-    if (!r.ok) return { ok: false, error: r.statusText };
+    // Traer todas las filas: gte "siso_hc_completa_" y lt "siso_hc_completa`" (carácter justo después de "_")
+    // Evitamos usar % en URL (causa "Failed to fetch" por URL inválida)
+    const PREFIX = "siso_hc_completa_";
+    // Supabase soporta filtros combinados: key >= PREFIX y key < PREFIX_NEXT
+    // Generamos PREFIX_NEXT: reemplazamos último char "_" (95) por "`" (96)
+    const PREFIX_NEXT = PREFIX.slice(0, -1) + "`";
+    const url = `${_SB_URL}/rest/v1/siso_store?key=gte.${encodeURIComponent(PREFIX)}&key=lt.${encodeURIComponent(PREFIX_NEXT)}&select=key,value&limit=5000`;
+    const r = await fetch(url, { headers: _getSbHeaders() });
+    if (!r.ok) return { ok: false, error: `${r.status} ${r.statusText}` };
     const rows = await r.json();
     // Filtrar: excluir las que son por código (siso_hc_completa_codigo_*)
-    const cedRows = rows.filter(r => !r.key.startsWith("siso_hc_completa_codigo_"));
-    const pacientes = cedRows.map(r => r.value).filter(v => v && typeof v === "object" && (v.docNumero || v.nombres));
+    const cedRows = rows.filter(row => !row.key.startsWith("siso_hc_completa_codigo_"));
+    const pacientes = cedRows.map(row => row.value).filter(v => v && typeof v === "object" && (v.docNumero || v.nombres));
     return { ok: true, pacientes, total: pacientes.length };
   } catch (e) {
     return { ok: false, error: e.message };
