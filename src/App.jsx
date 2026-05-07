@@ -719,26 +719,14 @@ const _sbBulkSet = async (rows) => {
 };
 const _sbGetAll = async () => {
   try {
-    // Supabase limita por max_rows del servidor (típicamente 1000).
-    // Usamos Prefer: count=none + Range para obtener hasta 2000 filas en dos requests.
-    const hdrs = { ..._getSbHeaders(), "Prefer": "count=none" };
-    const fetchPage = async (from, to) => {
-      const r = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
-        { headers: { ...hdrs, "Range": `${from}-${to}` } }
-      );
-      if (!r.ok) return [];
-      const rows = await r.json();
-      return Array.isArray(rows) ? rows : [];
-    };
-    const [page1, page2] = await Promise.all([
-      fetchPage(0, 999),
-      fetchPage(1000, 1999),
-    ]);
-    const all = [...page1, ...page2];
-    if (all.length === 0) return null;
+    const r = await fetch(
+      `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
+      { headers: _getSbHeaders() }
+    );
+    if (!r.ok) return null;
+    const rows = await r.json();
     const result = {};
-    all.forEach((row) => {
+    rows.forEach((row) => {
       result[row.key] = { value: row.value, updatedAt: row.updated_at };
     });
     return result;
@@ -17427,7 +17415,34 @@ function AppInner() {
       // Informes guardados
       {
         const _infSuf = currentUser?.user || "shared";
-        applyCloud(`siso_informes_${_infSuf}`, setSavedInformes, [], "siso_informes");
+        const _infData = cloud?.[`siso_informes_${_infSuf}`]?.value
+          || cloud?.["siso_informes"]?.value;
+        if (Array.isArray(_infData) && _infData.length > 0) {
+          setSavedInformes(_infData);
+          localStorage.setItem("siso_informes", JSON.stringify(_infData));
+          localStorage.setItem(`siso_informes_${_infSuf}`, JSON.stringify(_infData));
+        }
+      }
+      // Cartas de custodia
+      {
+        const _custSuf = currentUser?.user || "shared";
+        const _custData = cloud?.[`siso_cartas_custodia_${_custSuf}`]?.value
+          || cloud?.["siso_cartas_custodia"]?.value;
+        if (Array.isArray(_custData) && _custData.length > 0) {
+          try { localStorage.setItem("siso_cartas_custodia", JSON.stringify(_custData)); } catch {}
+        }
+      }
+      // Cuentas de cobro (facturas)
+      {
+        const _billSuf = currentUser?.empresaId
+          ? "empresa_" + currentUser.empresaId
+          : currentUser?.user || "shared";
+        const _billData = cloud?.[`siso_saved_bills_${_billSuf}`]?.value
+          || cloud?.["siso_saved_bills"]?.value;
+        if (Array.isArray(_billData) && _billData.length > 0) {
+          setSavedBillsList(_billData);
+          try { localStorage.setItem(`siso_saved_bills_${_billSuf}`, JSON.stringify(_billData)); } catch {}
+        }
       }
       // Email config
       {
@@ -17634,6 +17649,24 @@ function AppInner() {
         const _informesMedico = sp(`siso_informes_${_u}`, null);
         if (_informesMedico?.length)
           tasks.push(_sbSet(`siso_informes_${_u}`, _informesMedico));
+        // ── Informes (doble escritura por usuario y clave compartida) ─────────────
+        const _informesSuf = currentUser?.user || "shared";
+        const _informesData = sp(`siso_informes_${_informesSuf}`, null) || sp("siso_informes", null);
+        if (_informesData?.length) {
+          tasks.push(_sbSet(`siso_informes_${_informesSuf}`, _informesData));
+          tasks.push(_sbSet("siso_informes", _informesData));
+        }
+        // ── Cuentas de cobro (facturas) con número verificador ───────────────────
+        if (savedBillsList?.length) {
+          tasks.push(_sbSet(`siso_saved_bills_${_asSuf}`, savedBillsList));
+          tasks.push(_sbSet("siso_saved_bills", savedBillsList));
+        }
+        // ── Cartas de custodia (doble clave) ────────────────────────────────────
+        const _custodiasData = sp("siso_cartas_custodia", null);
+        if (_custodiasData?.length) {
+          tasks.push(_sbSet("siso_cartas_custodia", _custodiasData));
+          tasks.push(_sbSet(`siso_cartas_custodia_${_informesSuf}`, _custodiasData));
+        }
         const _customMeds = sp("siso_custom_meds", null);
         if (_customMeds?.length)
           tasks.push(_sbSet("siso_custom_meds", _customMeds));
