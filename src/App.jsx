@@ -789,7 +789,7 @@ const _sbStorageUpload = async (path, file) => {
         method: "POST",
         headers: {
           apikey: _SB_KEY,
-          Authorization: `Bearer ${_SB_KEY}`,
+          Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}`,
           "Content-Type": file.type || "application/octet-stream",
           "x-upsert": "true",
         },
@@ -813,10 +813,10 @@ const _sbStorageGetSignedUrl = async (path) => {
         method: "POST",
         headers: {
           apikey: _SB_KEY,
-          Authorization: `Bearer ${_SB_KEY}`,
+          Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ expiresIn: 3600 }),
+        body: JSON.stringify({ expiresIn: 86400 }),
       }
     );
     if (!r.ok) return null;
@@ -1110,6 +1110,37 @@ const _generarHCPortalHTML = (p) => {
   </body></html>`;
 };
 
+const _extraerTextoPDF = async (file) => {
+  try {
+    if (!window.pdfjsLib) return "";
+    const ab = await file.arrayBuffer();
+    const pdf = await window.pdfjsLib.getDocument({ data: ab }).promise;
+    let txt = "";
+    for (let i = 1; i <= Math.min(pdf.numPages, 6); i++) {
+      try { const pg = await pdf.getPage(i); const c = await pg.getTextContent(); txt += c.items.map(x=>x.str).join(" ") + "\n"; } catch {}
+    }
+    return txt;
+  } catch { return ""; }
+};
+const _detectarCedulas = (texto) => {
+  const found = new Set();
+  for (const m of texto.matchAll(/(?:C\.?\s*C\.?|C[eé]dula|CEDULA|Identificaci[oó]n|No\.?\s*doc|Doc\.?\s*No)\s*:?\s*\.?\s*([0-9]{7,11})/gi)) if(m[1]) found.add(m[1].replace(/\s/g,""));
+  for (const m of texto.matchAll(/\b([0-9]{8,11})\b/g)) if(m[1]) found.add(m[1]);
+  return [...found];
+};
+const _cedulasDeNombre = (fn) => (fn.replace(/\.[^.]+$/,"").match(/[0-9]{7,11}/g)||[]);
+const _detectarTipoExamen = (fn, txt) => {
+  const s = (fn+" "+txt.slice(0,500)).toLowerCase();
+  if(/audio|audiom/.test(s)) return "audiometria";
+  if(/espiro/.test(s)) return "espirometria";
+  if(/visi[oó]n|optom|agudeza|visual/.test(s)) return "optometria";
+  if(/sangre|hemato|hemograma|laborator|\blab\b/.test(s)) return "laboratorio";
+  if(/\brx\b|radio|rayos\s*x|torax|tórax/.test(s)) return "rayosx";
+  if(/electro|EKG|ECG/.test(s)) return "electrocardiograma";
+  if(/psico|psiqui/.test(s)) return "psicologico";
+  if(/vacu|inmun/.test(s)) return "vacuna";
+  return "otro";
+};
 const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignature) => {
   // ── 1. Recolectar pacientes de TODOS los médicos/instituciones en localStorage ──
   let allPatients = [...(patients || [])];
@@ -13698,6 +13729,354 @@ function PortalCuentaCobroCard({ cuenta, empresaNombre, periodo, sbUrl, sbKey, n
 }
 
 // ── Informe Epidemiológico Viewer (portal empresa) ───────────────────────────
+const TIPOS_EXAMEN_MASIVO = [
+  {valor:"audiometria",label:"🎧 Audiometría"},{valor:"espirometria",label:"💨 Espirometría"},
+  {valor:"optometria",label:"👁 Optometría"},{valor:"laboratorio",label:"🩸 Laboratorio"},
+  {valor:"rayosx",label:"☢️ Rayos X"},{valor:"electrocardiograma",label:"❤️ Electrocardiograma"},
+  {valor:"psicologico",label:"🧠 Psicológico"},{valor:"vacuna",label:"💉 Vacuna"},
+  {valor:"otro",label:"📄 Otro"},
+];
+function CargaMasivaExamenes({ patients, currentUser, onClose }) {
+  const E = {sel:"sel",analisis:"analisis",conf:"conf",sub:"sub",rep:"rep"};
+  const [etapa,setEtapa] = React.useState(E.sel);
+  const [items,setItems] = React.useState([]);
+  const [drag,setDrag] = React.useState(false);
+  const [prog,setProg] = React.useState({n:0,t:0});
+  const [rep,setRep] = React.useState(null);
+  const fRef = React.useRef();
+
+  const patMap = React.useMemo(()=>{
+    const m={};
+    (patients||[]).forEach(p=>{const c=(p.docNumero||"").replace(/\s/g,"");if(c)m[c]=p;});
+    return m;
+  },[patients]);
+
+  const findPac = React.useCallback((ceds)=>{
+    for(const c of ceds){const p=patMap[c.replace(/\s/g,"")];if(p)return{p,c};}
+    return null;
+  },[patMap]);
+
+  const procesar = React.useCallback(async(files)=>{
+    setEtapa(E.analisis);
+    const res=[];
+    for(const file of files){
+      const id="cm_"+Date.now()+"_"+Math.random().toString(36).slice(2,6);
+      let txt="";
+      if(file.type==="application/pdf") txt=await _extraerTextoPDF(file);
+      const cT=_detectarCedulas(txt), cN=_cedulasDeNombre(file.name);
+      const allC=[...new Set([...cT,...cN])];
+      const match=findPac(allC);
+      const tipo=_detectarTipoExamen(file.name,txt);
+      const conf=match?(cT.includes(match.c)?"alta":"media"):"ninguna";
+      res.push({id,file,nombre:file.name,txt,cedulas:allC,
+        pacId:match?.p?.id||null,pacNombre:match?(match.p.nombres||""):"",
+        estadoHC:match?(match.p.estadoHistoria==="Cerrada"||match.p.historiaFirmada?"cerrada":"abierta"):"no_encontrado",
+        tipo,conf,accion:"subir",estado:null,err:null});
+    }
+    setItems(res);
+    setEtapa(E.conf);
+  },[findPac]);
+
+  const upd = React.useCallback((id,k,v)=>{
+    setItems(prev=>prev.map(a=>{
+      if(a.id!==id)return a;
+      const u={...a,[k]:v};
+      if(k==="pacId"){
+        const p=(patients||[]).find(x=>x.id===v);
+        u.pacNombre=p?(p.nombres||""):"";
+        u.estadoHC=p?(p.estadoHistoria==="Cerrada"||p.historiaFirmada?"cerrada":"abierta"):"no_encontrado";
+      }
+      return u;
+    }));
+  },[patients]);
+
+  const subirUno = async(arch,userId)=>{
+    if(!arch.pacId) return {...arch,estado:"sin_asignar",err:"Sin paciente"};
+    const pac=(patients||[]).find(p=>p.id===arch.pacId);
+    if(!pac) return {...arch,estado:"error",err:"Paciente no encontrado"};
+    const adjExist=pac.adjuntos||[];
+    const dup=adjExist.some(a=>(a.nombre||"").toLowerCase().includes(arch.file.name.replace(/\.[^.]+$/,"").toLowerCase().slice(0,15)));
+    if(dup) return {...arch,estado:"duplicado"};
+    const ts=Date.now();
+    const nLimpio=arch.file.name.replace(/[^a-zA-Z0-9._-]/g,"_").slice(0,80);
+    const sp=`${userId}/${pac.id}/${ts}-${nLimpio}`;
+    const upRes=await _sbStorageUpload(sp,arch.file);
+    const adjNuevo={
+      id:arch.id,
+      nombre:`${TIPOS_EXAMEN_MASIVO.find(t=>t.valor===arch.tipo)?.label||"Doc"} - ${arch.file.name}`,
+      tipo:arch.tipo,mimeType:arch.file.type,tamano:arch.file.size,
+      fecha:new Date().toISOString(),subidoPor:userId,
+      storagePath:upRes.ok?sp:null,
+      sbKey:upRes.ok?null:`siso_adj_${pac.id}_${arch.id}`,
+      cargaMasiva:true,
+    };
+    if(!upRes.ok){
+      try{
+        if(arch.file.size>1.5*1024*1024) return {...arch,estado:"error",err:"PDF >1.5MB, usa Cloudinary"};
+        const dUrl=await new Promise(r=>{const fr=new FileReader();fr.onload=e=>r(e.target.result);fr.readAsDataURL(arch.file);});
+        await _sbSet(adjNuevo.sbKey,dUrl);
+      }catch(e){return {...arch,estado:"error",err:e.message};}
+    }
+    const adjsAct=[...adjExist,adjNuevo];
+    const lsKey=`siso_db_patients_${userId}`;
+    try{const ps=JSON.parse(localStorage.getItem(lsKey)||"[]");const pi=ps.findIndex(x=>x.id===pac.id);if(pi>=0){ps[pi].adjuntos=adjsAct;localStorage.setItem(lsKey,JSON.stringify(ps));}}catch{}
+    _sbSet(`siso_adj_meta_${pac.id}`,adjsAct).catch(()=>{});
+    return {...arch,estado:arch.estadoHC==="cerrada"?"ok_cerrada":"ok"};
+  };
+
+  const subirTodos=React.useCallback(async()=>{
+    const aSubir=items.filter(a=>a.accion==="subir");
+    setProg({n:0,t:aSubir.length});
+    setEtapa(E.sub);
+    const userId=currentUser?.user||"unknown";
+    const final=[...items];
+    for(let i=0;i<aSubir.length;i++){
+      setProg({n:i+1,t:aSubir.length});
+      const res=await subirUno(aSubir[i],userId);
+      const idx=final.findIndex(x=>x.id===aSubir[i].id);
+      if(idx>=0) final[idx]=res;
+    }
+    final.forEach((a,i)=>{if(a.accion==="omitir"&&!a.estado)final[i]={...a,estado:"omitido"};});
+    setItems(final);
+    const ok=final.filter(a=>a.estado==="ok"||a.estado==="ok_cerrada");
+    setRep({
+      ok,
+      cerradas:final.filter(a=>a.estado==="ok_cerrada"),
+      sinAsignar:final.filter(a=>a.estado==="sin_asignar"),
+      duplicados:final.filter(a=>a.estado==="duplicado"),
+      errores:final.filter(a=>a.estado==="error"),
+      total:final.length,
+    });
+    setEtapa(E.rep);
+  },[items,currentUser,patients]);
+
+  const cConf=c=>c==="alta"?"text-emerald-700 bg-emerald-50":c==="media"?"text-amber-700 bg-amber-50":"text-red-700 bg-red-50";
+  const lConf=c=>c==="alta"?"✅ Alta":c==="media"?"🟡 Media":"❓ Sin detectar";
+
+  return(
+    <div className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-2" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[96vh] flex flex-col overflow-hidden">
+        <div className="bg-gradient-to-r from-blue-700 to-indigo-700 px-5 py-4 flex items-center justify-between flex-shrink-0">
+          <div>
+            <p className="text-white font-black text-base">📁 Carga Masiva de Exámenes</p>
+            <p className="text-blue-200 text-[10px]">Sube múltiples PDFs — el sistema los asigna por cédula detectada automáticamente</p>
+          </div>
+          <button onClick={onClose} className="text-white/70 hover:text-white text-xl font-black px-2">✕</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+
+          {etapa===E.sel&&(
+            <div>
+              <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);const fs=Array.from(e.dataTransfer.files).filter(f=>["application/pdf","image/jpeg","image/png","image/tiff","image/webp"].includes(f.type));if(fs.length)procesar(fs);}} onClick={()=>fRef.current?.click()}
+                className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all ${drag?"border-blue-500 bg-blue-50":"border-gray-300 hover:border-blue-400 hover:bg-blue-50/40"}`}>
+                <p className="text-5xl mb-3">📂</p>
+                <p className="font-black text-gray-700 text-lg">Arrastra los archivos aquí o haz clic</p>
+                <p className="text-gray-400 text-sm mt-1">PDF, JPG, PNG, TIFF, WebP · Múltiples archivos a la vez</p>
+                <div className="mt-4 flex gap-2 justify-center flex-wrap text-[10px]">
+                  {["🎧 Audiometrías","🩸 Laboratorios","💨 Espirometrías","👁 Optometría","☢️ Rayos X"].map(t=>(
+                    <span key={t} className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-bold">{t}</span>
+                  ))}
+                </div>
+              </div>
+              <input ref={fRef} type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.tiff,.webp" onChange={e=>{const fs=Array.from(e.target.files||[]);if(fs.length)procesar(fs);e.target.value="";}} className="hidden"/>
+              <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-800">
+                <p className="font-black mb-1">💡 Detección automática de paciente:</p>
+                <p>1. Lee el texto del PDF y busca el número de cédula · 2. Si no hay texto, busca en el nombre del archivo · 3. Recomendado: nombrar archivos como <code className="bg-amber-100 px-1 rounded">12345678_audiometria.pdf</code></p>
+              </div>
+            </div>
+          )}
+
+          {etapa===E.analisis&&(
+            <div className="text-center py-16">
+              <p className="text-5xl animate-bounce mb-4">🔍</p>
+              <p className="font-black text-gray-700 text-lg">Analizando archivos...</p>
+              <p className="text-gray-400 text-sm mt-1">Extrayendo texto de PDFs y buscando cédulas</p>
+            </div>
+          )}
+
+          {etapa===E.conf&&(
+            <div>
+              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                <div>
+                  <p className="font-black text-gray-800">{items.length} archivo{items.length!==1?"s":""} para revisar</p>
+                  <div className="flex gap-3 text-[10px] mt-0.5">
+                    <span className="text-emerald-700">✅ {items.filter(a=>a.conf!=="ninguna").length} detectados</span>
+                    <span className="text-red-600">❓ {items.filter(a=>a.conf==="ninguna").length} sin asignar</span>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={()=>{setItems([]);setEtapa(E.sel);}} className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-50">← Cambiar</button>
+                  <button onClick={subirTodos} className="px-4 py-1.5 bg-blue-700 text-white text-xs font-black rounded-lg hover:bg-blue-800">
+                    📤 Subir {items.filter(a=>a.accion==="subir").length} archivos
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {items.map(arch=>(
+                  <div key={arch.id} className={`border rounded-xl p-3 ${arch.accion==="omitir"?"opacity-50 bg-gray-50":arch.conf==="ninguna"?"border-red-200 bg-red-50/20":arch.estadoHC==="cerrada"?"border-amber-200 bg-amber-50/20":"border-gray-200 bg-white"}`}>
+                    <div className="flex items-start gap-2 flex-wrap">
+                      <span className="text-xl flex-shrink-0">{arch.file.type==="application/pdf"?"📄":"🖼️"}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-black text-gray-800 truncate">{arch.nombre}</p>
+                        <p className="text-[10px] text-gray-400">{(arch.file.size/1024).toFixed(0)} KB</p>
+                        {arch.cedulas.length>0&&<p className="text-[10px] text-blue-600">🔍 {arch.cedulas.slice(0,3).join(", ")}</p>}
+                      </div>
+                      <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${cConf(arch.conf)}`}>{lConf(arch.conf)}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase">Paciente</label>
+                        <select value={arch.pacId||""} onChange={e=>upd(arch.id,"pacId",e.target.value)}
+                          className={`w-full text-xs border rounded-lg px-2 py-1.5 mt-0.5 focus:outline-none ${!arch.pacId?"border-red-300 bg-red-50":arch.estadoHC==="cerrada"?"border-amber-300":"border-gray-300"}`}>
+                          <option value="">❓ Sin asignar</option>
+                          {(patients||[]).filter(p=>p.nombres).sort((a,b)=>(a.nombres||"").localeCompare(b.nombres||"")).map(p=>(
+                            <option key={p.id} value={p.id}>{p.nombres} · {p.docNumero}{p.estadoHistoria==="Cerrada"||p.historiaFirmada?" 🔒":""}</option>
+                          ))}
+                        </select>
+                        {arch.estadoHC==="cerrada"&&arch.pacId&&<p className="text-[9px] text-amber-700 mt-0.5">⚠️ HC cerrada — se adjunta sin reabrir</p>}
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase">Tipo</label>
+                        <select value={arch.tipo} onChange={e=>upd(arch.id,"tipo",e.target.value)}
+                          className="w-full text-xs border border-gray-300 rounded-lg px-2 py-1.5 mt-0.5 focus:outline-none">
+                          {TIPOS_EXAMEN_MASIVO.map(t=><option key={t.valor} value={t.valor}>{t.label}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[9px] font-black text-gray-400 uppercase">Acción</label>
+                        <div className="flex gap-1 mt-0.5">
+                          <button onClick={()=>upd(arch.id,"accion","subir")} className={`flex-1 py-1.5 text-xs font-black rounded-lg ${arch.accion==="subir"?"bg-blue-700 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>📤 Subir</button>
+                          <button onClick={()=>upd(arch.id,"accion","omitir")} className={`flex-1 py-1.5 text-xs font-black rounded-lg ${arch.accion==="omitir"?"bg-gray-500 text-white":"bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>⏭ Omitir</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {etapa===E.sub&&(
+            <div className="text-center py-16">
+              <p className="text-5xl mb-4">📤</p>
+              <p className="font-black text-gray-700 text-lg">Subiendo archivos...</p>
+              <p className="text-gray-500 text-sm mt-1">{prog.n} de {prog.t}</p>
+              <div className="mt-4 mx-auto max-w-xs bg-gray-200 rounded-full h-3">
+                <div className="bg-blue-600 h-3 rounded-full transition-all" style={{width:`${prog.t>0?(prog.n/prog.t)*100:0}%`}}/>
+              </div>
+            </div>
+          )}
+
+          {etapa===E.rep&&rep&&(
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  {l:"✅ Subidos",n:rep.ok.length,c:"bg-emerald-50 border-emerald-200 text-emerald-800"},
+                  {l:"⚠️ HC Cerrada",n:rep.cerradas.length,c:"bg-amber-50 border-amber-200 text-amber-800"},
+                  {l:"❓ Sin asignar",n:rep.sinAsignar.length,c:"bg-red-50 border-red-200 text-red-800"},
+                  {l:"🔄 Duplicados",n:rep.duplicados.length,c:"bg-blue-50 border-blue-200 text-blue-800"},
+                ].map(x=>(
+                  <div key={x.l} className={`border rounded-xl p-3 text-center ${x.c}`}>
+                    <p className="text-2xl font-black">{x.n}</p>
+                    <p className="text-[10px] font-black mt-0.5">{x.l}</p>
+                  </div>
+                ))}
+              </div>
+
+              {rep.ok.length>0&&(
+                <div className="border border-emerald-200 rounded-xl overflow-hidden">
+                  <div className="bg-emerald-600 px-4 py-2"><p className="text-white font-black text-xs">✅ Subidos correctamente ({rep.ok.length})</p></div>
+                  {rep.ok.map(a=>(
+                    <div key={a.id} className="px-4 py-2 flex items-center gap-2 text-xs border-t border-emerald-100">
+                      <span>📄</span>
+                      <div className="flex-1 min-w-0"><p className="font-black text-gray-800 truncate">{a.nombre}</p>
+                      <p className="text-emerald-700">→ {a.pacNombre}{a.estado==="ok_cerrada"?" ⚠️ HC cerrada":""}</p></div>
+                      <span className="text-emerald-600 text-[10px] flex-shrink-0">{TIPOS_EXAMEN_MASIVO.find(t=>t.valor===a.tipo)?.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {rep.sinAsignar.length>0&&(
+                <div className="border border-red-200 rounded-xl overflow-hidden">
+                  <div className="bg-red-600 px-4 py-2"><p className="text-white font-black text-xs">❓ Sin asignar — asígnalos ahora ({rep.sinAsignar.length})</p></div>
+                  <div className="p-3 space-y-2">
+                    {rep.sinAsignar.map(a=>{
+                      const arch=items.find(x=>x.id===a.id)||a;
+                      return(
+                        <div key={a.id} className="bg-red-50 rounded-xl p-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-lg">📄</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-black text-gray-800 truncate">{a.nombre}</p>
+                              <p className="text-[10px] text-gray-400">{(a.file.size/1024).toFixed(0)} KB</p>
+                            </div>
+                            {a.txt&&<button onClick={()=>{const w=window.open("","_blank","width=600,height=500");if(w){w.document.write(`<pre style="font:11px monospace;padding:16px;white-space:pre-wrap;">${a.txt.slice(0,2000)}</pre>`);w.document.close();}}} className="text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded-lg font-bold">👁 Texto</button>}
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <select value={arch.pacId||""} onChange={e=>upd(a.id,"pacId",e.target.value)}
+                              className="text-xs border border-red-300 rounded-lg px-2 py-1.5">
+                              <option value="">Seleccionar paciente...</option>
+                              {(patients||[]).filter(p=>p.nombres).sort((x,y)=>(x.nombres||"").localeCompare(y.nombres||"")).map(p=>(
+                                <option key={p.id} value={p.id}>{p.nombres} · {p.docNumero}</option>
+                              ))}
+                            </select>
+                            <button onClick={async()=>{
+                              const arch2=items.find(x=>x.id===a.id);
+                              if(!arch2?.pacId){alert("Selecciona un paciente");return;}
+                              const userId=currentUser?.user||"unknown";
+                              const res=await subirUno(arch2,userId);
+                              if(res.estado==="ok"||res.estado==="ok_cerrada"){
+                                setRep(prev=>({...prev,ok:[...prev.ok,res],sinAsignar:prev.sinAsignar.filter(x=>x.id!==a.id)}));
+                                alert("✅ Subido correctamente");
+                              } else {
+                                alert("❌ Error: "+(res.err||"desconocido"));
+                              }
+                            }} className="py-1.5 bg-red-600 text-white text-xs font-black rounded-lg hover:bg-red-700">📤 Asignar y subir</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {rep.duplicados.length>0&&(
+                <div className="border border-blue-200 rounded-xl overflow-hidden">
+                  <div className="bg-blue-600 px-4 py-2"><p className="text-white font-black text-xs">🔄 Posibles duplicados ({rep.duplicados.length})</p></div>
+                  {rep.duplicados.map(a=>(
+                    <div key={a.id} className="px-4 py-2 flex gap-2 text-xs border-t border-blue-100">
+                      <span>📄</span>
+                      <div><p className="font-bold text-gray-700 truncate">{a.nombre}</p>
+                      <p className="text-blue-600">→ {a.pacNombre} (archivo similar ya existe en HC)</p></div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {rep.errores&&rep.errores.length>0&&(
+                <div className="border border-orange-200 rounded-xl overflow-hidden">
+                  <div className="bg-orange-600 px-4 py-2"><p className="text-white font-black text-xs">❌ Errores ({rep.errores.length})</p></div>
+                  {rep.errores.map(a=>(
+                    <div key={a.id} className="px-4 py-2 text-xs border-t border-orange-100">
+                      <p className="font-bold text-gray-700">{a.nombre}</p>
+                      <p className="text-orange-700">{a.err}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-2 justify-end pt-2">
+                <button onClick={()=>{setItems([]);setRep(null);setEtapa(E.sel);}} className="px-4 py-2 bg-blue-700 text-white text-sm font-black rounded-xl hover:bg-blue-800">📁 Nueva carga</button>
+                <button onClick={onClose} className="px-4 py-2 bg-gray-800 text-white text-sm font-black rounded-xl hover:bg-gray-900">Cerrar</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function PortalInformeViewer({ informe, empresaNombre, sbUrl, sbKey }) {
   const [expanded, setExpanded] = React.useState(false);
   const [fullData, setFullData] = React.useState(null);
@@ -18157,6 +18536,7 @@ JSON REQUERIDO (estructura exacta):
 
   // ── RECUPERACIÓN DE EMERGENCIA: escanear todas las claves de Supabase ─────────────────
   const [showDiagnostico, setShowDiagnostico] = useState(false);
+  const [showCargaMasiva, setShowCargaMasiva] = useState(false);
   const [diagnosticoData, setDiagnosticoData] = useState(null);
   const [diagnosticoCargando, setDiagnosticoCargando] = useState(false);
 
@@ -21670,6 +22050,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 className="text-xs flex items-center bg-amber-50 text-amber-700 px-3 py-1.5 rounded-lg border border-amber-200 font-bold hover:bg-amber-100 gap-1"
               >
                 {diagnosticoCargando ? <Loader2 className="w-3 h-3 animate-spin" /> : "🔍"} Nube
+              </button>
+              <button
+                onClick={() => setShowCargaMasiva(true)}
+                title="Carga masiva de exámenes PDF"
+                className="text-xs flex items-center bg-blue-50 text-blue-700 px-3 py-1.5 rounded-lg border border-blue-200 font-bold hover:bg-blue-100 gap-1"
+              >
+                📁 Exámenes
               </button>
               <input
                 type="file"
@@ -54171,6 +54558,13 @@ body{padding-top:52px;}
           aiConfig={aiConfig}
           onSave={handleSaveAIConfig}
           onClose={() => setShowAIConfig(false)}
+        />
+      )}
+      {showCargaMasiva && (
+        <CargaMasivaExamenes
+          patients={patientsList}
+          currentUser={currentUser}
+          onClose={() => setShowCargaMasiva(false)}
         />
       )}
       {/* ── MODAL REPORTE DE GUARDADO EN NUBE ── */}
