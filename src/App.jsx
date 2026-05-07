@@ -719,19 +719,46 @@ const _sbBulkSet = async (rows) => {
 };
 const _sbGetAll = async () => {
   try {
-    const r = await fetch(
-      `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
-      { headers: _getSbHeaders() }
-    );
-    if (!r.ok) return null;
-    const rows = await r.json();
+    // Paginación: Supabase retorna máx 1000 filas por defecto → iterar hasta agotar
     const result = {};
-    rows.forEach((row) => {
-      result[row.key] = { value: row.value, updatedAt: row.updated_at };
-    });
-    return result;
+    const PAGE = 1000;
+    let offset = 0;
+    while (true) {
+      const r = await fetch(
+        `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at&limit=${PAGE}&offset=${offset}`,
+        { headers: _getSbHeaders() }
+      );
+      if (!r.ok) break;
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      rows.forEach((row) => {
+        result[row.key] = { value: row.value, updatedAt: row.updated_at };
+      });
+      if (rows.length < PAGE) break; // última página
+      offset += PAGE;
+    }
+    return Object.keys(result).length > 0 ? result : null;
   } catch {
     return null;
+  }
+};
+
+// Recuperar pacientes desde filas siso_hc_completa_* (backup del portal)
+const _sbRecuperarPacientesDesdeHC = async () => {
+  try {
+    // Traer todas las filas siso_hc_completa_* que son por cédula (no por código)
+    const r = await fetch(
+      `${_SB_URL}/rest/v1/siso_store?key=like.siso_hc_completa_%&select=key,value&limit=5000`,
+      { headers: _getSbHeaders() }
+    );
+    if (!r.ok) return { ok: false, error: r.statusText };
+    const rows = await r.json();
+    // Filtrar: excluir las que son por código (siso_hc_completa_codigo_*)
+    const cedRows = rows.filter(r => !r.key.startsWith("siso_hc_completa_codigo_"));
+    const pacientes = cedRows.map(r => r.value).filter(v => v && typeof v === "object" && (v.docNumero || v.nombres));
+    return { ok: true, pacientes, total: pacientes.length };
+  } catch (e) {
+    return { ok: false, error: e.message };
   }
 };
 const _sbDelete = async (key) => {
@@ -18666,6 +18693,53 @@ JSON REQUERIDO (estructura exacta):
       showAlert("No se puede determinar el tipo de datos de esta clave.");
     }
     setShowDiagnostico(false);
+  };
+
+  // ── RECUPERACIÓN DESDE siso_hc_completa_* (filas individuales del portal) ─────
+  const [recuperandoHC, setRecuperandoHC] = useState(false);
+  const handleRecuperarDesdeHC = async () => {
+    setRecuperandoHC(true);
+    try {
+      showAlert("⏳ Buscando pacientes en filas de portal… puede tardar unos segundos.");
+      const res = await _sbRecuperarPacientesDesdeHC();
+      if (!res.ok) {
+        showAlert(`❌ Error al consultar Supabase: ${res.error}`);
+        return;
+      }
+      if (res.total === 0) {
+        showAlert("⚠️ No se encontraron datos de HC en Supabase.\n\nSi el portal fue publicado alguna vez, contacta soporte.");
+        return;
+      }
+      // Merge: unir recuperados con lista actual (sin duplicar por id/docNumero)
+      const actuales = [...patientsList];
+      const idSet = new Set(actuales.map(p => p.id));
+      const docSet = new Set(actuales.map(p => p.docNumero).filter(Boolean));
+      let nuevos = 0;
+      for (const p of res.pacientes) {
+        const yaExiste = (p.id && idSet.has(p.id)) || (p.docNumero && docSet.has(p.docNumero));
+        if (!yaExiste) {
+          actuales.push(p);
+          if (p.id) idSet.add(p.id);
+          if (p.docNumero) docSet.add(p.docNumero);
+          nuevos++;
+        }
+      }
+      const uid = currentUser?.user || "shared";
+      setPatientsList(actuales);
+      dataReadyRef.current = true;
+      _ls.setItem(_patKey(uid), JSON.stringify(actuales));
+      // Guardar la lista completa en Supabase (ambas claves)
+      await Promise.all([
+        _sbSet(_patKeyCloud(uid), actuales),
+        _sbSet(_patKey(uid), actuales),
+      ]);
+      showAlert(`✅ Recuperación completa:\n• ${res.total} HC encontradas en portal\n• ${nuevos} pacientes nuevos añadidos\n• Total ahora: ${actuales.length} pacientes`);
+      setShowDiagnostico(false);
+    } catch (err) {
+      showAlert(`❌ Error: ${err.message}`);
+    } finally {
+      setRecuperandoHC(false);
+    }
   };
 
   const handleSaveAIConfig = (cfg) => {
@@ -54672,6 +54746,21 @@ body{padding-top:52px;}
                 <p className="text-[11px] text-gray-400">Escaneo de datos en Supabase</p>
               </div>
               <button onClick={() => setShowDiagnostico(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            {/* ── RECUPERACIÓN DESDE HC PORTAL ── */}
+            <div className="bg-red-50 border border-red-300 rounded-xl p-4 mb-4">
+              <p className="text-sm font-black text-red-800 mb-1">🚑 Recuperar pacientes desde Portal</p>
+              <p className="text-xs text-red-700 mb-3">
+                Si faltan pacientes, usa este botón para recuperarlos desde las filas <span className="font-mono bg-red-100 px-1 rounded">siso_hc_completa_*</span> que guarda el portal.
+                Cada vez que publicaste el portal, se guardó la HC completa de cada paciente.
+              </p>
+              <button
+                onClick={handleRecuperarDesdeHC}
+                disabled={recuperandoHC}
+                className="w-full bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white text-sm font-black py-2 rounded-lg flex items-center justify-center gap-2"
+              >
+                {recuperandoHC ? <><Loader2 className="w-4 h-4 animate-spin" /> Recuperando...</> : "🔄 Recuperar todos los pacientes desde HC"}
+              </button>
             </div>
             {diagnosticoCargando && (
               <div className="flex items-center gap-2 text-amber-700 bg-amber-50 rounded-xl p-4">
