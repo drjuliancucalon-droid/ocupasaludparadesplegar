@@ -275,7 +275,7 @@ const _SB_KEY =
 // ⚠️  NUNCA hardcodear en producción. Inyectar via window.__SISO_CONFIG.sbServiceKey
 // Para configurar: en index.html agregar antes del bundle:
 //   <script>window.__SISO_CONFIG={sbUrl:'...',sbKey:'...',sbServiceKey:'TU_SERVICE_KEY'};</script>
-const _SB_SERVICE_KEY = _cfgSafeServiceKey(_cfgRaw.sbServiceKey) || null;
+const _SB_SERVICE_KEY = _cfgSafeServiceKey(_cfgRaw.sbServiceKey) || _cfgSafeServiceKey(import.meta.env?.VITE_SB_SERVICE_KEY) || null;
 // SEC-FIX-01: Credenciales removidas del código fuente (OWASP A07 - Hardcoded Credentials)
 // En producción inyectar via: <script>window.__SISO_CONFIG={sbUrl:'TU_URL',sbKey:'TU_KEY'};</script>
 // Las claves se configuran en el primer despliegue y se rotan cada 90 días - NUNCA en código fuente.
@@ -847,6 +847,83 @@ const _patKey = (userId) => `siso_db_patients_${userId}`;
 const _patKeyCloud = (userId) => `siso_patients_${userId}`;
 const _compKey = (userId) => `siso_companies_${userId}`;
 const _compKeyCloud = (userId) => `siso_companies_${userId}`;
+// PORTAL: Re-publicar todas las HCs cerradas al portal de Supabase
+// Útil cuando la tabla siso_store fue creada después de cerrar HCs
+const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignature) => {
+  const cerradas = (patients || []).filter(p =>
+    p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion
+  );
+  let ok = 0, fail = 0;
+  for (const p of cerradas) {
+    const code = p.codigoVerificacion || p.firmaDigital?.codigoQR || "";
+    const portalData = {
+      nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
+      eps: p.eps || "", edad: p.edad || "",
+      empresaNombre: p.empresaNombre || p.empresa || "",
+      empresaNit: p.empresaNit || "", arl: p.arl || "",
+      cargo: p.cargo, tipoExamen: p.tipoExamen,
+      enfasisExamen: p.enfasisExamen || "GENERAL",
+      fechaExamen: p.fechaExamen, vigencia: p.vigencia || "1 año",
+      conceptoAptitud: p.conceptoAptitud,
+      codigoVerificacion: code,
+      estadoHistoria: "Cerrada",
+      fechaCierre: p.fechaCierre || new Date().toISOString().split("T")[0],
+      restricciones: p.analisisRestricciones || p.restricciones || "",
+      restriccionesChecklist: p.restriccionesChecklist || {},
+      recomendaciones: p.recomendaciones || "",
+      recomendacionesMedicas: p.recomendacionesMedicas || "",
+      recomendacionesOcupacionales: p.recomendacionesOcupacionales || "",
+      recomendacionesChecklist: p.recomendacionesChecklist || {},
+      diagnosticoPrincipal: p.diagnosticoPrincipal || "",
+      formulaMedicamentos: p.formulaMedicamentos || [],
+      derivaciones: p.derivaciones || [],
+      solicitudExamenes: p.solicitudExamenes || [],
+      incapacidad: p.incapacidad || {},
+      medicoNombre: activeDoctorData?.nombre || "",
+      _doctorData: {
+        nombre: activeDoctorData?.nombre || "MÉDICO OCUPACIONAL",
+        titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
+        licencia: activeDoctorData?.licencia || "--",
+        ciudad: activeDoctorData?.ciudad || "Popayán",
+        email: activeDoctorData?.email || "",
+        cel: activeDoctorData?.cel || "",
+      },
+      _firma: activeSignature || p._firma || "",
+    };
+    const saves = [];
+    // Guardar por cédula (búsqueda principal)
+    if (p.docNumero) {
+      saves.push(_sbSet("siso_portal_doc_" + p.docNumero.replace(/\s/g, ""), portalData));
+    }
+    // Guardar por código de verificación
+    if (code) {
+      saves.push(_sbSet("siso_portal_" + code.toUpperCase(), portalData));
+      saves.push(_sbSet("siso_portal_CV-" + code.toUpperCase(), portalData));
+    }
+    const results = await Promise.allSettled(saves);
+    const anyOk = results.some(r => r.status === "fulfilled" && r.value === true);
+    if (anyOk) ok++; else fail++;
+    // Actualizar índice empresa
+    if (p.empresaNit && p.empresaId && p.empresaId !== "particular") {
+      const nitIdx = (p.empresaNit || "").replace(/[^0-9]/g, "");
+      if (nitIdx.length >= 3 && p.docNumero) {
+        try {
+          const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, {
+            headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
+          });
+          const d = await r.json();
+          const existing = d[0]?.value || { nit: nitIdx, nombre: p.empresaNombre || "", documentos: [] };
+          const docNum = p.docNumero.replace(/\s/g, "");
+          if (!existing.documentos.includes(docNum)) existing.documentos.push(docNum);
+          existing.updatedAt = new Date().toISOString();
+          existing.nombre = p.empresaNombre || existing.nombre;
+          await _sbSet(`siso_portal_empresa_${nitIdx}`, existing);
+        } catch {}
+      }
+    }
+  }
+  return { ok, fail, total: cerradas.length };
+};
 // ══════════════════════════════════════════════════
 // SEGURIDAD: Hash SHA-256 (sin dependencias externas)
 // Usado para credenciales - nunca se almacena texto plano
@@ -53676,6 +53753,16 @@ body{padding-top:52px;}
                     <p className="text-xs">Los datos pueden haberse perdido si se guardó una lista vacía anteriormente. Si tiene un archivo de respaldo (BACKUP_*.json), puede importarlo usando el botón "Importar Backup" en Configuración.</p>
                   </div>
                 )}
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`¿Re-publicar ${patientsList.filter(p => p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion).length} HCs cerradas al portal de Supabase?`)) return;
+                    const r = await _rePublicarPortalTodos(patientsList, activeDoctorData, activeSignature);
+                    alert(`✅ Portal republicado: ${r.ok} exitosos, ${r.fail} fallidos de ${r.total} total.`);
+                  }}
+                  className="w-full mt-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700"
+                >
+                  🔄 Republicar Portal (HCs Cerradas → Supabase)
+                </button>
                 <button onClick={() => setShowDiagnostico(false)} className="w-full bg-gray-800 text-white py-2.5 rounded-xl font-black text-sm hover:bg-gray-900">
                   Cerrar
                 </button>
