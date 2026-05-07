@@ -1216,21 +1216,148 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
   const ok = portalRows.length > 0 ? portalResult.ok : 0;
   const fail = portalResult.fail + hcResult.fail + sinDatos;
 
-  // ── 4. Guardar índices empresa (un fetch+upsert por empresa) ──
+  // ── 4. Cargar informes, custodias y facturas desde localStorage ──
+  const _allInformes = (() => {
+    const sets = ["siso_informes"];
+    try { Object.keys(localStorage).filter(k => k.startsWith("siso_informes_")).forEach(k => sets.push(k)); } catch {}
+    const merged = []; const ids = new Set();
+    for (const k of sets) {
+      try {
+        const arr = JSON.parse(localStorage.getItem(k) || "[]");
+        if (Array.isArray(arr)) arr.forEach(i => { const uid = (i.id || "") + (i.empresaId || "") + (i.periodo || ""); if (!ids.has(uid)) { ids.add(uid); merged.push(i); } });
+      } catch {}
+    }
+    return merged;
+  })();
+  const _allBills = (() => {
+    const sets = ["siso_saved_bills"];
+    try { Object.keys(localStorage).filter(k => k.startsWith("siso_saved_bills_")).forEach(k => sets.push(k)); } catch {}
+    const merged = []; const ids = new Set();
+    for (const k of sets) {
+      try {
+        const arr = JSON.parse(localStorage.getItem(k) || "[]");
+        if (Array.isArray(arr)) arr.forEach(b => { const uid = b.id || b.number || ""; if (!ids.has(uid)) { ids.add(uid); merged.push(b); } });
+      } catch {}
+    }
+    return merged;
+  })();
+  const _allCustodias = (() => {
+    try { return JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]"); } catch { return []; }
+  })();
+
+  // ── 5. Guardar índice empresa + reconstruir empresa_docs con periodos ──
+  const empresaDocsRows = [];
   for (const [nitIdx, data] of Object.entries(empresaIdx)) {
     try {
-      const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, {
-        headers: _getSbHeaders(),
-      });
+      // Fetch existing para preservar codigo de acceso y periodos previos
+      const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, { headers: _getSbHeaders() });
       const d = await r.json();
       const existing = d[0]?.value || { nit: nitIdx, nombre: data.nombre, documentos: [] };
       const docsSet = new Set([...(existing.documentos || []), ...data.documentos]);
       existing.documentos = [...docsSet];
       existing.updatedAt = new Date().toISOString();
       existing.nombre = data.nombre || existing.nombre;
-      await _sbBulkSet([{ key: `siso_portal_empresa_${nitIdx}`, value: existing }]);
+      empresaDocsRows.push({ key: `siso_portal_empresa_${nitIdx}`, value: existing });
+    } catch {}
+
+    // Reconstruir siso_portal_empresa_docs_{nit} desde localStorage
+    try {
+      // Buscar informes, custodias y facturas de esta empresa por NIT
+      const empInformes = _allInformes.filter(i => {
+        const iNit = (i.empresaNit || "").replace(/[^0-9]/g, "");
+        return iNit === nitIdx || iNit.startsWith(nitIdx) || nitIdx.startsWith(iNit);
+      });
+      const empBills = _allBills.filter(b => {
+        const bNit = (b.clientNit || b.empresaNit || "").replace(/[^0-9]/g, "");
+        return bNit === nitIdx || bNit.startsWith(nitIdx) || nitIdx.startsWith(bNit);
+      });
+      const empCustodias = _allCustodias.filter(c => {
+        const cNit = (c.empresaNit || "").replace(/[^0-9]/g, "");
+        return cNit === nitIdx || cNit.startsWith(nitIdx) || nitIdx.startsWith(cNit);
+      });
+
+      if (empInformes.length === 0 && empBills.length === 0 && empCustodias.length === 0) continue;
+
+      // Fetch existing empresa_docs para preservar codigoAcceso
+      const rdExist = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitIdx}&select=value`, { headers: _getSbHeaders() });
+      const rdData = await rdExist.json();
+      const existDocs = rdData[0]?.value || null;
+      const codigoAcceso = existDocs?.codigoAcceso || ("EMP-" + nitIdx.slice(-4) + "-" + Math.random().toString(36).substring(2, 6).toUpperCase());
+
+      // Agrupar por periodo
+      const periodoMap = {};
+      const addToPeriodo = (periodo, campo, valor) => {
+        if (!periodoMap[periodo]) periodoMap[periodo] = { periodo, fecha: periodo + "-01", informe: null, certificados: null, cuenta: null, custodia: null };
+        periodoMap[periodo][campo] = valor;
+      };
+      // Informes epidemiológicos
+      empInformes.filter(i => !i.tipo).forEach(inf => {
+        const per = inf.periodo || new Date().toISOString().slice(0, 7);
+        addToPeriodo(per, "informe", { totalPacientes: inf.totalPacientes || 0, resumen: inf.resumen || "", fecha: inf.fecha || per + "-01", statsKey: inf.statsKey || null });
+        if (inf.fecha) periodoMap[per].fecha = inf.fecha;
+      });
+      // Custodias
+      const custTipos = ["custodia", "carta_custodia"];
+      empInformes.filter(i => custTipos.includes(i.tipo)).concat(empCustodias).forEach(cust => {
+        const per = cust.periodo || new Date().toISOString().slice(0, 7);
+        addToPeriodo(per, "custodia", {
+          fecha: cust.fecha || per + "-01",
+          medicoNombre: cust.medicoNombre || activeDoctorData?.nombre || "",
+          medicoLicencia: cust.medicoLicencia || activeDoctorData?.licencia || "",
+          medicoCC: cust.medicoCC || activeDoctorData?.cedula || "",
+          medicoTitulo: cust.medicoTitulo || activeDoctorData?.titulo || "",
+          medicoEmail: cust.medicoEmail || activeDoctorData?.email || "",
+          medicoTel: cust.medicoTel || activeDoctorData?.celular || "",
+          medicoCiudad: cust.medicoCiudad || activeDoctorData?.ciudad || "",
+          firma: cust.firma || activeSignature || null,
+        });
+      });
+      // Facturas / Cuentas de cobro
+      empBills.forEach(bill => {
+        const per = (bill.date || "").slice(0, 7) || new Date().toISOString().slice(0, 7);
+        addToPeriodo(per, "cuenta", {
+          number: bill.number, amount: bill.amount, date: bill.date, concept: bill.concept,
+          amountWords: bill.amountWords || "", pagado: bill.pagado || false,
+          clientName: bill.clientName || data.nombre, clientNit: bill.clientNit || nitIdx,
+          bankName: bill.bankName || "", accountType: bill.accountType || "", accountNumber: bill.accountNumber || "",
+          doctorNombre: bill.doctorNombre || activeDoctorData?.nombre || "",
+          doctorCC: bill.doctorCC || activeDoctorData?.cedula || "",
+          doctorLicencia: bill.doctorLicencia || activeDoctorData?.licencia || "",
+          doctorTitulo: bill.doctorTitulo || activeDoctorData?.titulo || "",
+          doctorCel: bill.doctorCel || activeDoctorData?.celular || "",
+          doctorEmail: bill.doctorEmail || activeDoctorData?.email || "",
+          doctorCiudad: bill.doctorCiudad || activeDoctorData?.ciudad || "",
+          firma: bill.firma || activeSignature || null,
+        });
+      });
+      // Certificados: contar los del periodo por empresa
+      const certCount = [...data.documentos].length;
+      // Agregar certificados al periodo más reciente (o al único disponible)
+      const periodos = Object.values(periodoMap).sort((a, b) => b.periodo.localeCompare(a.periodo));
+      if (periodos.length > 0 && certCount > 0) {
+        periodos[0].certificados = { count: certCount, documentos: [...data.documentos] };
+      }
+
+      if (periodos.length === 0) continue;
+
+      // Preservar periodos existentes no cubiertos + merge
+      const newPeriodKeys = new Set(periodos.map(p => p.periodo));
+      const oldPeriodos = (existDocs?.periodos || []).filter(p => !newPeriodKeys.has(p.periodo));
+      const mergedPeriodos = [...periodos, ...oldPeriodos].sort((a, b) => b.periodo.localeCompare(a.periodo));
+
+      empresaDocsRows.push({
+        key: `siso_portal_empresa_docs_${nitIdx}`,
+        value: {
+          nit: nitIdx,
+          nombre: data.nombre,
+          codigoAcceso,
+          updatedAt: new Date().toISOString(),
+          periodos: mergedPeriodos,
+        },
+      });
     } catch {}
   }
+  if (empresaDocsRows.length > 0) await _sbBulkSet(empresaDocsRows);
 
   const publishedCount = cerradas.length - sinDatos;
   return { ok: publishedCount, fail: portalResult.fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length };
