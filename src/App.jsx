@@ -16948,47 +16948,73 @@ function AppInner() {
     }
   }, []);
   // ── ENCUESTAS: carga directa desde Supabase (no esperar _sbGetAll batch) ─────
-  // Busca siso_encuestas (clave compartida) + todas las claves por usuario antiguas
+  // Busca siso_encuestas (clave compartida) + clave por usuario + rango de claves antiguas
   const _reloadEncuestasFromSupabase = useCallback(async () => {
     setLoadingEncuestas(true);
     try {
-      // 1. Leer clave compartida
+      const uid = currentUser?.user || "drcucalon";
+      const hdrs = _getSbHeaders();
+
+      // 1. Clave compartida principal
       const r1 = await fetch(
         `${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuestas&select=value`,
-        { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
+        { headers: hdrs }
       );
-      const sharedEncs = r1.ok
-        ? (await r1.json())?.[0]?.value || []
-        : [];
+      const sharedEncs = r1.ok ? ((await r1.json())?.[0]?.value || []) : [];
 
-      // 2. Leer claves antiguas por usuario (siso_encuestas_*)
+      // 2. Clave específica del usuario actual (evita el bug de %)
       const r2 = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?key=like.siso_encuestas_%&select=key,value`,
-        { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
+        `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(`siso_encuestas_${uid}`)}&select=value`,
+        { headers: hdrs }
       );
-      const userRows = r2.ok ? await r2.json() : [];
+      const userEncs = r2.ok ? ((await r2.json())?.[0]?.value || []) : [];
 
-      // 3. Fusionar todo — dedup por id
-      const merged = Array.isArray(sharedEncs) ? [...sharedEncs] : [];
-      userRows.forEach(row => {
-        const rowEncs = Array.isArray(row.value) ? row.value : [];
-        rowEncs.forEach(e => { if (e.id && !merged.find(x => x.id === e.id)) merged.push(e); });
-      });
+      // 3. Rango de claves adicionales: gte "siso_encuestas_" lt "siso_encuestas`" (evita %)
+      const P = "siso_encuestas_";
+      const PN = P.slice(0, -1) + "`";
+      const r3 = await fetch(
+        `${_SB_URL}/rest/v1/siso_store?key=gte.${encodeURIComponent(P)}&key=lt.${encodeURIComponent(PN)}&select=key,value&limit=200`,
+        { headers: hdrs }
+      );
+      const rangeRows = r3.ok ? (await r3.json()) : [];
+
+      // 4. Fusionar todo — dedup por id
+      const merged = [];
+      const seen = new Set();
+      const addAll = (arr) => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach(e => {
+          const uid2 = e.id || e.token || JSON.stringify(e).slice(0, 40);
+          if (!seen.has(uid2)) { seen.add(uid2); merged.push(e); }
+        });
+      };
+      addAll(sharedEncs);
+      addAll(userEncs);
+      rangeRows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
 
       if (merged.length > 0) {
         setEncuestas(merged);
         try { localStorage.setItem("siso_encuestas", JSON.stringify(merged)); } catch {}
-        // Si hay más que la clave compartida, migrar y unificar
-        if (merged.length > (Array.isArray(sharedEncs) ? sharedEncs.length : 0)) {
-          _sbSet("siso_encuestas", merged);
-        }
+        // Unificar siempre en la clave compartida Y en la clave de usuario
+        _sbSet("siso_encuestas", merged);
+        _sbSet(`siso_encuestas_${uid}`, merged);
       }
     } catch (err) {
       console.warn("[encuestas reload]", err.message);
     } finally {
       setLoadingEncuestas(false);
     }
-  }, []); // eslint-disable-line
+  }, [currentUser]); // eslint-disable-line
+
+  // Cargar encuestas al hacer login (para que aparezcan siempre sin visitar el tab)
+  const _encuestasLoginLoadedRef = useRef(false);
+  useEffect(() => {
+    if (currentUser && !_encuestasLoginLoadedRef.current) {
+      _encuestasLoginLoadedRef.current = true;
+      _reloadEncuestasFromSupabase();
+    }
+    if (!currentUser) _encuestasLoginLoadedRef.current = false;
+  }, [currentUser, _reloadEncuestasFromSupabase]);
 
   // Cargar encuestas desde Supabase al entrar al tab (una vez por visita)
   const _encuestasTabLoadedRef = useRef(false);
@@ -17609,7 +17635,8 @@ function AppInner() {
           tasks.push(_sbSet("siso_custom_meds", _customMeds));
         // ── Encuestas sociodemográficas (lista + respuestas individuales) ─────────
         if (encuestas?.length) {
-          tasks.push(_sbSet(`siso_encuestas_${_u}`, encuestas));
+          tasks.push(_sbSet(`siso_encuestas_${_u}`, encuestas));  // clave por usuario
+          tasks.push(_sbSet("siso_encuestas", encuestas));         // clave compartida (para carga al login)
           // También respaldar respuestas de cada encuesta que esté en estado activa
           encuestas.forEach(enc => {
             if (enc?.token) {
