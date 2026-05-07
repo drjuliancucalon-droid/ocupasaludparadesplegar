@@ -853,6 +853,241 @@ const _compKeyCloud = (userId) => `siso_companies_${userId}`;
 // Re-publica TODAS las HCs cerradas de TODOS los médicos/instituciones al portal Supabase.
 // Las claves siso_portal_doc_{cedula} son globales → cualquier paciente de cualquier
 // médico o institución puede consultar su certificado desde el portal público.
+// PORTAL: Genera HTML completo de la HC para visualización del paciente en el portal
+// Función standalone (sin React state) — trabaja con datos almacenados en siso_hc_completa_*
+const _generarHCPortalHTML = (p) => {
+  if (!p) return "<p>Sin datos</p>";
+  const _e = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const _nl = (v) => _e(v).replace(/\n/g, "<br/>");
+  const doc = p._doctorData || {};
+  const firma = p._firma || "";
+  const ipsName = p._ipsName || doc.nombre || "OcupaSalud";
+  const tipoHC = p._dataType === "general" ? "MEDICINA GENERAL" : "OCUPACIONAL";
+  const sigHtml = firma ? `<img src="${firma}" style="max-height:55px;display:block;margin:0 auto 4px;" alt="Firma"/>` : '<div style="height:50px;"></div>';
+  const sec = (icon, title) => `<div style="background:#ecfdf5;border-left:4px solid #065f46;padding:6px 12px;margin:14px 0 6px 0;font-weight:900;font-size:9.5pt;text-transform:uppercase;color:#065f46;">${icon} ${_e(title)}</div>`;
+  const r2 = (l1,v1,l2,v2) => `<tr><th style="background:#d1fae5;font-weight:700;width:22%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">${_e(l1)}</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:28%;">${_e(v1)}</td><th style="background:#d1fae5;font-weight:700;width:22%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">${_e(l2)}</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">${_e(v2)}</td></tr>`;
+  const r1 = (l,v) => `<tr><th style="background:#d1fae5;font-weight:700;width:28%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">${_e(l)}</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;" colspan="3">${_e(v)}</td></tr>`;
+  const tb = (...rows) => `<table style="width:100%;border-collapse:collapse;margin-bottom:6px;">${rows.join("")}</table>`;
+  const fmtList = (txt) => {
+    const s = Array.isArray(txt) ? txt.join("\n") : String(txt || "");
+    if (!s.trim()) return '<em style="color:#9ca3af;">—</em>';
+    const lines = s.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length > 1) return '<ul style="margin:2px 0;padding-left:14px;">' + lines.map(l => `<li style="font-size:8.5pt;margin-bottom:1px;">${_e(l.replace(/^[•*\-]+\s*/,"").replace(/^\d+\.\s*/,""))}</li>`).join("") + '</ul>';
+    return `<span style="font-size:8.5pt;">${_nl(s)}</span>`;
+  };
+
+  const css = `@page{size:letter portrait;margin:1.1cm 1.3cm;}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:#111;margin:0;padding:0;line-height:1.45;}table{border-collapse:collapse;}th,td{border:1px solid #ccc;padding:4px 8px;font-size:8.5pt;}th{background:#d1fae5;font-weight:700;text-align:left;}.sec{background:#ecfdf5;border-left:4px solid #065f46;padding:5px 10px;margin:12px 0 5px 0;font-weight:900;font-size:9pt;text-transform:uppercase;color:#065f46;}.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:7.5pt;font-weight:700;}.apto{background:#dcfce7;color:#166534;}.no-apto{background:#fee2e2;color:#dc2626;}.cond{background:#fef3c7;color:#92400e;}.np-bar{position:fixed;top:0;left:0;right:0;background:#065f46;color:white;padding:7px 14px;display:flex;align-items:center;gap:8px;z-index:9999;}@media print{.np-bar{display:none!important;}body{padding-top:0!important;}}`;
+
+  const sections = [];
+
+  // HEADER
+  sections.push(`<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #065f46;padding-bottom:8px;margin-bottom:10px;">
+    <div><div style="font-size:12pt;font-weight:900;color:#065f46;">${_e(ipsName)}</div>
+    <p style="font-size:8pt;color:#555;margin:2px 0;">${_e(doc.titulo||"Médico Especialista en SST")}</p>
+    <p style="font-size:8pt;color:#555;margin:2px 0;">Lic: ${_e(doc.licencia||"--")} · ${_e(doc.ciudad||"")}</p>
+    ${doc.cel ? `<p style="font-size:7.5pt;color:#888;margin:1px 0;">Cel: ${_e(doc.cel)}${doc.email?" · "+_e(doc.email):""}</p>` : ""}</div>
+    <div style="text-align:right;">
+    <div style="font-size:13pt;font-weight:900;color:#065f46;">HISTORIA CLÍNICA ${_e(tipoHC)}</div>
+    <p style="font-size:8.5pt;color:#555;margin:2px 0;">Fecha: ${_e(p.fechaExamen||p.fechaConsulta||"")}</p>
+    <p style="font-size:8pt;color:#888;margin:2px 0;">Tipo: ${_e(p.tipoExamen||"CONSULTA")} · ${_e(p.enfasisExamen||"")}</p>
+    ${p.codigoVerificacion ? `<p style="font-size:7.5pt;font-family:monospace;color:#065f46;font-weight:900;margin:2px 0;">Código: ${_e(p.codigoVerificacion)}</p>` : ""}
+    <p style="font-size:8pt;color:#555;margin:2px 0;">Estado: <b>${_e(p.estadoHistoria||"")}</b></p>
+    </div></div>`);
+
+  // DATOS PACIENTE
+  sections.push(sec("👤","Datos del Paciente"));
+  sections.push(tb(
+    r2("Nombres",p.nombres||"","Doc",`${p.docTipo||"CC"}: ${p.docNumero||""}`),
+    r2("Fecha Nacimiento",p.fechaNacimiento||"","Edad",`${p.edad||""} años`),
+    r2("Género",p.genero||"","Estado Civil",p.estadoCivil||""),
+    r2("EPS",p.eps||"","ARL",p.arl||""),
+    r2("AFP",p.afp||"","Grupo/RH",`${p.grupoSanguineo||""}${p.rh?" "+p.rh:""}`),
+    r2("Celular",p.celular||"","Email",p.email||""),
+    r2("Dirección",p.ciudad||"","Escolaridad",p.escolaridad||"")
+  ));
+
+  // DATOS LABORALES
+  sections.push(sec("💼","Datos Laborales"));
+  sections.push(tb(
+    r2("Empresa",p.empresaNombre||p.empresa||"","NIT",p.empresaNit||""),
+    r2("Cargo",p.cargo||"","Área",p.area||""),
+    r2("Antigüedad",p.antiguedad||"","Tipo Contrato",p.tipoContrato||""),
+    r2("Tipo Examen",p.tipoExamen||"","Énfasis",p.enfasisExamen||"")
+  ));
+
+  // SIGNOS VITALES
+  const hasSV = p.peso||p.talla||p.tensionArterial||p.frecuenciaCardiaca||p.temperatura||p.saturacion;
+  if (hasSV) {
+    sections.push(sec("📊","Signos Vitales"));
+    sections.push(tb(
+      r2("Peso",p.peso ? p.peso+" kg":"--","Talla",p.talla ? p.talla+" cm":"--"),
+      r2("IMC",p.imc||"--","T/A",p.tensionArterial||"--"),
+      r2("FC",p.frecuenciaCardiaca ? p.frecuenciaCardiaca+" lpm":"--","FR",p.frecuenciaRespiratoria ? p.frecuenciaRespiratoria+" rpm":"--"),
+      r2("Temperatura",p.temperatura ? p.temperatura+" °C":"--","SpO2",p.saturacion ? p.saturacion+"%":"--"),
+      p.perAbdominal ? r2("Per. Abdominal",p.perAbdominal+" cm","","") : ""
+    ));
+  }
+
+  // ANTECEDENTES
+  const hasAnt = p.antecedentesPersonales||p.antecedentesFamiliares||p.antecedentesQuirurgicos||p.antecedentesAlergias||p.antecedentesMedicamentos||p.antecedentesHospitalizacion;
+  if (hasAnt) {
+    sections.push(sec("📋","Antecedentes"));
+    sections.push(tb(
+      p.antecedentesPersonales ? r1("Personales/Patológicos",p.antecedentesPersonales) : "",
+      p.antecedentesFamiliares ? r1("Familiares",p.antecedentesFamiliares) : "",
+      p.antecedentesQuirurgicos ? r1("Quirúrgicos",p.antecedentesQuirurgicos) : "",
+      p.antecedentesAlergias ? r1("Alergias",p.antecedentesAlergias) : "",
+      p.antecedentesMedicamentos ? r1("Medicamentos actuales",p.antecedentesMedicamentos) : "",
+      p.antecedentesHospitalizacion ? r1("Hospitalizaciones",p.antecedentesHospitalizacion) : ""
+    ));
+  }
+
+  // ANTECEDENTES LABORALES
+  if (p.antecedentesLaborales || p.anamnesisLaboral || p.agentesExposicion) {
+    sections.push(sec("⚙️","Antecedentes Laborales / Anamnesis Ocupacional"));
+    sections.push(tb(
+      p.antecedentesLaborales ? r1("Antecedentes laborales",p.antecedentesLaborales) : "",
+      p.anamnesisLaboral ? r1("Anamnesis laboral / Motivo consulta",p.anamnesisLaboral) : "",
+      p.agentesExposicion ? r1("Agentes de exposición",p.agentesExposicion) : "",
+      p.eppsUtilizados ? r1("EPPs utilizados",p.eppsUtilizados) : ""
+    ));
+  }
+
+  // MOTIVO CONSULTA / ENFERMEDAD ACTUAL (HC General)
+  if (p.motivoConsulta || p.enfermedadActual || p.anamnesis) {
+    sections.push(sec("🩺","Motivo de Consulta / Enfermedad Actual"));
+    sections.push(tb(
+      p.motivoConsulta ? r1("Motivo de consulta",p.motivoConsulta) : "",
+      p.enfermedadActual ? r1("Enfermedad actual",p.enfermedadActual) : "",
+      p.anamnesis ? r1("Anamnesis",p.anamnesis) : ""
+    ));
+  }
+
+  // REVISIÓN POR SISTEMAS
+  const rs = p.revisionSistemas || p.revisionPorSistemas;
+  if (rs && typeof rs === "object" && Object.keys(rs).length > 0) {
+    sections.push(sec("🔍","Revisión por Sistemas"));
+    const rsRows = Object.entries(rs).filter(([,v]) => v && String(v).trim()).map(([k,v]) => r1(k, v)).join("");
+    if (rsRows) sections.push(`<table style="width:100%;border-collapse:collapse;margin-bottom:6px;">${rsRows}</table>`);
+  } else if (typeof rs === "string" && rs.trim()) {
+    sections.push(sec("🔍","Revisión por Sistemas"));
+    sections.push(`<p style="font-size:8.5pt;padding:4px 8px;">${_nl(rs)}</p>`);
+  }
+
+  // EXAMEN FÍSICO
+  const ef = p.examenFisico || p.examenFisicoCompleto;
+  if (ef) {
+    sections.push(sec("🏥","Examen Físico"));
+    if (typeof ef === "object" && !Array.isArray(ef)) {
+      const efRows = Object.entries(ef).filter(([,v]) => v && String(v).trim()).map(([k,v]) => r1(k.replace(/_/g," "), v)).join("");
+      if (efRows) sections.push(`<table style="width:100%;border-collapse:collapse;margin-bottom:6px;">${efRows}</table>`);
+    } else {
+      sections.push(`<p style="font-size:8.5pt;padding:4px 8px;">${_nl(String(ef))}</p>`);
+    }
+  }
+
+  // PARACLÍNICOS REGISTRADOS
+  const paraclinicos = p.paraclinicoResultados || p.paraclinicosMedicion;
+  if (paraclinicos && typeof paraclinicos === "object" && Object.values(paraclinicos).some(v => v)) {
+    sections.push(sec("🔬","Paraclínicos / Resultados de Exámenes"));
+    const pRows = Object.entries(paraclinicos).filter(([,v]) => v && String(v).trim()).map(([k,v]) => r1(k.replace(/_/g," "), v)).join("");
+    if (pRows) sections.push(`<table style="width:100%;border-collapse:collapse;margin-bottom:6px;">${pRows}</table>`);
+  }
+
+  // DIAGNÓSTICO Y CONCEPTO
+  sections.push(sec("📝","Diagnóstico y Concepto de Aptitud"));
+  const aptClass = (p.conceptoAptitud||"").toLowerCase().includes("no apto") ? "no-apto" : (p.conceptoAptitud||"").toLowerCase().includes("condic")||(p.conceptoAptitud||"").toLowerCase().includes("restricc") ? "cond" : "apto";
+  sections.push(tb(
+    p.diagnosticoPrincipal ? r1("Diagnóstico principal",p.diagnosticoPrincipal) : "",
+    p.diagnosticosAdicionales ? r1("Diagnósticos adicionales",p.diagnosticosAdicionales) : "",
+    r1("Concepto de aptitud",`<span class="badge ${aptClass}" style="font-size:9.5pt;padding:3px 12px;">${_e(p.conceptoAptitud||"--")}</span>`),
+    p.vigencia ? r1("Vigencia",p.vigencia) : ""
+  ));
+
+  // RESTRICCIONES
+  if (p.restricciones || p.analisisRestricciones || (p.restriccionesChecklist && Object.values(p.restriccionesChecklist).some(v=>v))) {
+    sections.push(sec("⚠️","Restricciones"));
+    const restTxt = p.analisisRestricciones || p.restricciones || "";
+    if (restTxt) sections.push(`<div style="padding:4px 8px;">${fmtList(restTxt)}</div>`);
+  }
+
+  // RECOMENDACIONES
+  if (p.recomendaciones || p.recomendacionesMedicas || p.recomendacionesOcupacionales) {
+    sections.push(sec("💡","Recomendaciones"));
+    sections.push(tb(
+      p.recomendaciones ? r1("Recomendaciones",p.recomendaciones) : "",
+      p.recomendacionesMedicas ? r1("Recomendaciones médicas",p.recomendacionesMedicas) : "",
+      p.recomendacionesOcupacionales ? r1("Recomendaciones ocupacionales",p.recomendacionesOcupacionales) : ""
+    ));
+  }
+
+  // FÓRMULA MÉDICA
+  const meds = p.formulaMedicamentos || [];
+  if (meds.length > 0) {
+    sections.push(sec("💊","Prescripción Médica"));
+    sections.push(meds.map((m,i) => `<div style="border:1px solid #a7f3d0;border-left:4px solid #059669;border-radius:4px;padding:6px 10px;margin-bottom:5px;background:#f0fdf4;font-size:8.5pt;">
+      <b style="color:#065f46;">${i+1}. ${_e(m.nombre||"")} ${_e(m.presentacion||"")}</b><br/>
+      Dosis: ${_e(m.dosis||"--")} · Frecuencia: ${_e(m.frecuencia||"--")} · Duración: ${_e(m.duracion||"--")}
+      ${m.indicaciones ? `<br/><em style="color:#92400e;">⚠ ${_e(m.indicaciones)}</em>` : ""}</div>`).join(""));
+  }
+
+  // DERIVACIONES
+  const derivs = p.derivaciones || [];
+  if (derivs.length > 0) {
+    sections.push(sec("🏥","Derivaciones / Remisiones"));
+    sections.push(derivs.map((d,i) => `<div style="border:1px solid #bfdbfe;border-left:4px solid #2563eb;border-radius:4px;padding:6px 10px;margin-bottom:5px;background:#eff6ff;font-size:8.5pt;">
+      <b style="color:#1e3a8a;">${i+1}. ${_e(d.especialidad||"--")}</b> · <em>${_e(d.urgencia||"Electiva")}</em><br/>
+      Motivo: ${_e(d.motivo||"--")}${d.observaciones ? `<br/>Obs: ${_e(d.observaciones)}` : ""}</div>`).join(""));
+  }
+
+  // EXÁMENES SOLICITADOS
+  const exams = p.solicitudExamenes || [];
+  if (exams.length > 0) {
+    sections.push(sec("🔬","Exámenes Complementarios Solicitados"));
+    sections.push(`<table style="width:100%;border-collapse:collapse;font-size:8.5pt;margin-bottom:6px;">
+      <thead><tr style="background:#ccfbf1;"><th style="padding:4px 8px;border:1px solid #99f6e4;">Examen</th><th style="padding:4px 8px;border:1px solid #99f6e4;width:120px;">Fecha</th><th style="padding:4px 8px;border:1px solid #99f6e4;width:80px;text-align:center;">Prioridad</th></tr></thead>
+      <tbody>${exams.map((e,i) => `<tr style="background:${i%2===0?"white":"#f0fdfa"};"><td style="padding:4px 8px;border:1px solid #ccfbf1;">${_e(e.nombre||"--")}</td><td style="padding:4px 8px;border:1px solid #ccfbf1;">${_e(e.fecha||"--")}</td><td style="padding:4px 8px;border:1px solid #ccfbf1;text-align:center;">${e.urgente?'<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-size:7.5pt;font-weight:700;">Urgente</span>':'<span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:10px;font-size:7.5pt;font-weight:700;">Rutina</span>'}</td></tr>`).join("")}</tbody>
+    </table>`);
+    if (p.solicitudExamenesDiag) sections.push(`<p style="font-size:8.5pt;padding:2px 8px;"><b>Diagnóstico:</b> ${_e(p.solicitudExamenesDiag)}</p>`);
+  }
+
+  // INCAPACIDAD
+  const inc = p.incapacidad || {};
+  if (inc.dias && parseInt(inc.dias) > 0) {
+    sections.push(sec("📋","Incapacidad Médica"));
+    sections.push(tb(
+      r2("Días","<b style='font-size:14pt;color:#dc2626;'>"+_e(inc.dias)+"</b>","Origen",inc.origen||"--"),
+      r2("Desde",inc.desde||"--","Hasta",inc.hasta||"--"),
+      inc.diagnostico ? r1("Diagnóstico",inc.diagnostico) : "",
+      inc.justificacion ? r1("Justificación",inc.justificacion) : ""
+    ));
+  }
+
+  // FIRMA
+  sections.push(`<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:20mm;page-break-inside:avoid;">
+    <div style="text-align:center;width:42%;"><div style="border-top:2px solid #222;padding-top:4px;font-size:7.5pt;font-weight:700;">Firma Paciente</div>
+    <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">C.C.: ${_e(p.docNumero||"")}</p></div>
+    <div style="text-align:center;width:42%;">${sigHtml}
+    <div style="border-top:2px solid #222;padding-top:4px;"><p style="font-size:8.5pt;font-weight:900;margin:2px 0;">${_e(doc.nombre||"MÉDICO")}</p>
+    <p style="font-size:7.5pt;color:#555;margin:1px 0;">${_e(doc.titulo||"")}</p>
+    <p style="font-size:7.5pt;color:#555;margin:1px 0;">Lic: ${_e(doc.licencia||"--")}</p>
+    ${p.codigoVerificacion ? `<p style="font-size:7pt;font-family:monospace;color:#065f46;margin:1px 0;">Cód: ${_e(p.codigoVerificacion)}</p>` : ""}</div></div></div>`);
+
+  // FOOTER
+  sections.push(`<div style="margin-top:10px;border-top:1px solid #e5e7eb;padding-top:6px;text-align:center;font-size:7pt;color:#9ca3af;">
+    Res. 1843/2025 · Res. 1995/1999 · Ley 23/1981 · Ley 1581/2012 · SISO OcupaSalud · Confidencial
+  </div>`);
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
+    <title>HC ${_e(tipoHC)} - ${_e(p.nombres||"")}</title>
+    <style>${css}</style></head><body>
+    <div class="np-bar"><span style="flex:1;font-size:9.5pt;font-weight:700;">📋 HC ${_e(tipoHC)} · ${_e(p.nombres||"")} · ${_e(p.docNumero||"")}</span>
+    <button onclick="window.print()" style="border:none;padding:5px 14px;border-radius:6px;background:#10b981;color:white;font-weight:900;cursor:pointer;">🖨️ Imprimir / PDF</button>
+    <button onclick="window.close()" style="border:none;padding:5px 14px;border-radius:6px;background:#ef4444;color:white;font-weight:900;cursor:pointer;margin-left:6px;">✕ Cerrar</button></div>
+    <div style="margin-top:48px;padding:0 4px;">${sections.join("")}</div>
+  </body></html>`;
+};
+
 const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignature) => {
   // ── 1. Recolectar pacientes de TODOS los médicos/instituciones en localStorage ──
   let allPatients = [...(patients || [])];
@@ -943,6 +1178,15 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
     const results = await Promise.allSettled(saves);
     const anyOk = results.some(r => r.status === "fulfilled" && r.value === true);
     if (anyOk) ok++; else fail++;
+
+    // Guardar HC completa para acceso del paciente (sin RLS, solo por cédula)
+    if (p.docNumero) {
+      const hcCompleta = { ...p, _doctorData: docData, _firma: p._firma || activeSignature || "" };
+      _sbSet("siso_hc_completa_" + p.docNumero.replace(/\s/g, ""), hcCompleta).catch(() => {});
+      if (code) {
+        _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), hcCompleta).catch(() => {});
+      }
+    }
 
     // Acumular índice empresa en memoria
     if (p.empresaNit && p.empresaId && p.empresaId !== "particular" && p.docNumero) {
@@ -13770,6 +14014,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
   const [busqueda, setBusqueda] = React.useState("");
   const [tipoBusqueda, setTipoBusqueda] = React.useState("codigo");
   const [resultado, setResultado] = React.useState(null);
+  const [hcCompleta, setHcCompleta] = React.useState(null);
+  const [cargandoHC, setCargandoHC] = React.useState(false);
   const [resultadosEmpresa, setResultadosEmpresa] = React.useState([]);
   const [certSeleccionados, setCertSeleccionados] = React.useState({});
   const [error, setError] = React.useState("");
@@ -13810,6 +14056,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
     setCargando(true);
     setError("");
     setResultado(null);
+    setHcCompleta(null);
     try {
       // ── Construcción de claves de búsqueda ───────────────────────────────────
       // Formatos históricos coexistentes:
@@ -13986,6 +14233,14 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
         );
       } else {
         setResultado(pac);
+        // Cargar HC completa
+        if (pac.docNumero) {
+          setCargandoHC(true);
+          const cedula = (pac.docNumero || "").replace(/\s/g, "");
+          fetchKey("siso_hc_completa_" + cedula).then(rHC => {
+            if (rHC.ok && rHC.data) setHcCompleta(rHC.data);
+          }).catch(() => {}).finally(() => setCargandoHC(false));
+        }
       }
     } catch (e) {
       if (e.name === "AbortError")
@@ -14358,6 +14613,38 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                       </svg>
                       Descargar Certificado PDF
                     </button>
+
+                    {/* HC Completa — solo visible en búsqueda personal */}
+                    {tipoBusqueda !== "empresa" && (
+                      <div className="mt-3 border border-violet-200 rounded-xl overflow-hidden">
+                        <div className="bg-violet-600 px-4 py-2 flex items-center justify-between">
+                          <span className="text-white font-black text-xs">📋 Historia Clínica Completa</span>
+                          {cargandoHC && <span className="text-violet-200 text-[10px]">Cargando...</span>}
+                        </div>
+                        <div className="p-3 bg-violet-50">
+                          {hcCompleta ? (
+                            <button
+                              onClick={() => {
+                                const html = _generarHCPortalHTML(hcCompleta);
+                                const w = window.open("", "_blank", "width=900,height=1100");
+                                if (!w) { alert("Permita las ventanas emergentes."); return; }
+                                w.document.write(html);
+                                w.document.close();
+                              }}
+                              className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-black text-sm hover:bg-violet-700 transition"
+                            >
+                              📋 Ver / Descargar Historia Clínica Completa
+                            </button>
+                          ) : (
+                            <p className="text-xs text-violet-600 text-center py-1">
+                              {cargandoHC ? "Cargando historia clínica..." : "Historia clínica no disponible en el portal. Solicítela directamente al médico."}
+                            </p>
+                          )}
+                          <p className="text-[9px] text-violet-400 text-center mt-1">Incluye: antecedentes · examen físico · diagnósticos · fórmulas · derivaciones · exámenes · incapacidades</p>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-[10px] text-blue-700 leading-relaxed">
                       <p className="font-black mb-0.5">🔒 Información confidencial - Res. 1995/1999</p>
                       <p>Tu historia clínica completa es custodiada por el médico ocupacional. Para consultas sobre tu resultado, comunícate con el servicio médico.</p>
@@ -18725,6 +19012,18 @@ const handleLogin = (u, p) => {
             "siso_portal_doc_" + closed.docNumero.replace(/\s/g, ""),
             portalData
           );
+        // Guardar HC completa para acceso del paciente en el portal
+        if (closed.docNumero) {
+          const _hcCompleta = {
+            ...closed,
+            _doctorData: portalData._doctorData,
+            _firma: portalData._firma,
+            _ipsName: (typeof activeDoctorData !== "undefined" && activeDoctorData) ? (activeDoctorData.ipsNombre || activeDoctorData.nombre || "") : "",
+            _dataType: (typeof dataType !== "undefined") ? dataType : "ocupacional",
+          };
+          _sbSet("siso_hc_completa_" + closed.docNumero.replace(/\s/g, ""), _hcCompleta);
+          if (code) _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta);
+        }
         // FIX: también guardar con formato alternativo para compatibilidad con códigos viejos
         if (code && !code.startsWith("CV-")) {
           _sbSet("siso_portal_CV-" + code, portalData);
