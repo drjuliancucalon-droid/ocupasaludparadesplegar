@@ -719,25 +719,29 @@ const _sbBulkSet = async (rows) => {
 };
 const _sbGetAll = async () => {
   try {
-    // Paginación: Supabase retorna máx 1000 filas por defecto → iterar hasta agotar
-    const result = {};
-    const PAGE = 1000;
-    let offset = 0;
-    while (true) {
+    // Supabase limita por max_rows del servidor (típicamente 1000).
+    // Usamos Prefer: count=none + Range para obtener hasta 2000 filas en dos requests.
+    const hdrs = { ..._getSbHeaders(), "Prefer": "count=none" };
+    const fetchPage = async (from, to) => {
       const r = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at&limit=${PAGE}&offset=${offset}`,
-        { headers: _getSbHeaders() }
+        `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
+        { headers: { ...hdrs, "Range": `${from}-${to}` } }
       );
-      if (!r.ok) break;
+      if (!r.ok) return [];
       const rows = await r.json();
-      if (!Array.isArray(rows) || rows.length === 0) break;
-      rows.forEach((row) => {
-        result[row.key] = { value: row.value, updatedAt: row.updated_at };
-      });
-      if (rows.length < PAGE) break; // última página
-      offset += PAGE;
-    }
-    return Object.keys(result).length > 0 ? result : null;
+      return Array.isArray(rows) ? rows : [];
+    };
+    const [page1, page2] = await Promise.all([
+      fetchPage(0, 999),
+      fetchPage(1000, 1999),
+    ]);
+    const all = [...page1, ...page2];
+    if (all.length === 0) return null;
+    const result = {};
+    all.forEach((row) => {
+      result[row.key] = { value: row.value, updatedAt: row.updated_at };
+    });
+    return result;
   } catch {
     return null;
   }
