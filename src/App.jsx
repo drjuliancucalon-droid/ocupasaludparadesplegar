@@ -16009,6 +16009,9 @@ function AppInner() {
   };
   // SUPABASE: estado del indicador de sincronización en la nube
   const [syncStatus, setSyncStatus] = useState("idle");
+  // OFFLINE: estado de conexión y pendientes
+  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [offlinePending, setOfflinePending] = useState(0);
   const [showSyncReport, setShowSyncReport] = useState(false);
   const [syncReport, setSyncReport] = useState(null); // 'idle'|'loading'|'syncing'|'ok'|'error'
   const [alertMsg, setAlertMsg] = useState("");
@@ -16855,6 +16858,32 @@ function AppInner() {
     _syncStatusCallback = setSyncStatus;
     return () => {
       _syncStatusCallback = null;
+    };
+  }, []);
+
+  // OFFLINE: detectar cambios de conexión y actualizar UI
+  useEffect(() => {
+    const goOnline = () => {
+      setIsOffline(false);
+      setSyncStatus("syncing");
+      // Importar syncNow dinámicamente para no romper si el módulo no carga
+      import('./utils/syncManager.js').then(m => m.syncNow()).catch(() => {});
+    };
+    const goOffline = () => {
+      setIsOffline(true);
+      setSyncStatus("idle");
+    };
+    window.addEventListener('online',  goOnline);
+    window.addEventListener('offline', goOffline);
+    // Escuchar actualizaciones del syncManager
+    import('./utils/syncManager.js').then(m => {
+      m.onSyncStatus(({ pendingCount }) => {
+        if (typeof pendingCount === 'number') setOfflinePending(pendingCount);
+      });
+    }).catch(() => {});
+    return () => {
+      window.removeEventListener('online',  goOnline);
+      window.removeEventListener('offline', goOffline);
     };
   }, []);
 
@@ -22254,26 +22283,39 @@ Esta historia clínica debe conservarse mínimo 20 años.
               </button>
             </>
           )}
-          <button
-            title={syncStatus === "error" ? "Error de sync — clic para diagnóstico y restauración" : _syncTitle}
-            onClick={() => { if (syncStatus === "error" || syncStatus === "idle") handleDiagnosticoNube(); }}
-            className={
-              "flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print transition " +
-              _syncBg +
-              (syncStatus === "error" ? " cursor-pointer hover:opacity-80" : " cursor-default")
-            }
-          >
-            {syncStatus === "syncing" || syncStatus === "loading" ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : syncStatus === "ok" ? (
-              <Cloud className="w-3 h-3" />
-            ) : syncStatus === "error" ? (
+          {/* Badge Offline / Sync — muestra estado de conexión y pendientes */}
+          {isOffline ? (
+            <span
+              title={offlinePending > 0
+                ? `Sin conexión — ${offlinePending} cambio${offlinePending !== 1 ? 's' : ''} pendiente${offlinePending !== 1 ? 's' : ''} de sincronizar al volver online`
+                : "Sin conexión — trabajando en modo offline. Los cambios se sincronizarán automáticamente."}
+              className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print bg-red-50 text-red-600 border-red-200 cursor-default"
+            >
               <WifiOff className="w-3 h-3" />
-            ) : (
-              <Cloud className="w-3 h-3 opacity-40" />
-            )}{" "}
-            {_syncTxt}
-          </button>
+              {offlinePending > 0 ? `Offline (${offlinePending})` : "Offline"}
+            </span>
+          ) : (
+            <button
+              title={syncStatus === "error" ? "Error de sync — clic para diagnóstico y restauración" : _syncTitle}
+              onClick={() => { if (syncStatus === "error" || syncStatus === "idle") handleDiagnosticoNube(); }}
+              className={
+                "flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print transition " +
+                _syncBg +
+                (syncStatus === "error" ? " cursor-pointer hover:opacity-80" : " cursor-default")
+              }
+            >
+              {syncStatus === "syncing" || syncStatus === "loading" ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : syncStatus === "ok" ? (
+                <Cloud className="w-3 h-3" />
+              ) : syncStatus === "error" ? (
+                <WifiOff className="w-3 h-3" />
+              ) : (
+                <Cloud className="w-3 h-3 opacity-40" />
+              )}{" "}
+              {_syncTxt}
+            </button>
+          )}
           {["administrador", "medico", "super_admin"].includes(
             currentUser?.role
           ) && (

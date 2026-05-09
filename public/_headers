@@ -1,6 +1,25 @@
 /*
+  # Seguridad base
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  X-XSS-Protection: 1; mode=block
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
+  # HSTS: forzar HTTPS siempre (evita downgrade a HTTP en redes comprometidas)
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+  # CSP: lista blanca de orígenes permitidos (protección XSS real)
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://cdn.tailwindcss.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; img-src 'self' data: blob: https://res.cloudinary.com https://api.qrserver.com https://*.supabase.co; connect-src 'self' https://*.supabase.co https://api.cloudinary.com https://generativelanguage.googleapis.com https://api.groq.com https://api.together.xyz https://openrouter.ai https://api.emailjs.com https://cdnjs.cloudflare.com; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self';
+
+# Service Worker: debe poder cachear sin restricciones de cache
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate
+  Service-Worker-Allowed: /
+
+# manifest.json: sin caché para recibir actualizaciones
+/manifest.json
+  Cache-Control: no-cache
+
+# Assets compilados: caché larga (Vite usa hashes en nombres)
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

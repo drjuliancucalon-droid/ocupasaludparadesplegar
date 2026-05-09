@@ -1,0 +1,41 @@
+{
+  "name": "SISO - Sistema de Salud Ocupacional",
+  "short_name": "SISO",
+  "description": "OcupaSalud - Historia clínica, agenda y gestión médica ocupacional",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0891b2",
+  "orientation": "any",
+  "scope": "/",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='24' fill='%230891b2'/><text x='96' y='130' font-size='110' text-anchor='middle' fill='white'>⚕</text></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='64' fill='%230891b2'/><text x='256' y='350' font-size='290' text-anchor='middle' fill='white'>⚕</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["medical", "health", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Nueva Historia Clínica",
+      "short_name": "Nueva HC",
+      "url": "/?accion=nueva_hc",
+      "description": "Crear nueva historia clínica"
+    },
+    {
+      "name": "Ver Agenda",
+      "short_name": "Agenda",
+      "url": "/?accion=agenda",
+      "description": "Ver agenda del día"
+    }
+  ]
+}

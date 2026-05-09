@@ -328,3 +328,69 @@ export const readArrayFromSupabase = async (supabaseKey, localKey) => {
 };
 
 export { _SB_URL, _SB_KEY, _SB_SERVICE_KEY, _SB_HEADERS, _PROXY_URL, _securePost, _sbSet, _sbGetAll, _sbDelete, _sbQueue, _SB_KEYS, _SB_KEY_PREFIXES, _sbRl, _rlCheck, _sbStorageUpload, _sbStorageGetSignedUrl, _sbStorageDelete, _SB_BUCKET, _validateMimeType, _syncStatusCallback, _sync, _patKey, _patKeyCloud, _compKey, _compKeyCloud };
+
+// ══════════════════════════════════════════════════════════════════════════
+// CAPA OFFLINE — Wrappers híbridos sobre las funciones existentes
+// NO modifican el comportamiento online actual.
+// Agregan: lectura desde IndexedDB si no hay internet, cola offline.
+// ══════════════════════════════════════════════════════════════════════════
+import { idbGet, idbSet, enqueueSync, countSyncQueue } from './offlineDB.js';
+
+/**
+ * syncArrayToSupabaseOffline — versión offline-safe de syncArrayToSupabase
+ * Reemplaza la función existente con compatibilidad total.
+ * Online: guarda local + Supabase (igual que antes)
+ * Offline: guarda local + encola para sync posterior
+ */
+export const syncArrayToSupabaseOffline = async (supabaseKey, data) => {
+  // Siempre guardar localmente primero (inmediato, sin esperar red)
+  try { localStorage.setItem(supabaseKey, JSON.stringify(data)); } catch {}
+  await idbSet(supabaseKey, data).catch(() => {});
+
+  // Si hay internet → subir a Supabase igual que antes
+  if (navigator.onLine) {
+    const ok = await _sbSet(supabaseKey, data).catch(() => false);
+    if (ok) return { ok: true, source: 'supabase' };
+  }
+
+  // Sin internet o fallo → encolar para sync
+  await enqueueSync('upsert', supabaseKey, data);
+  const pending = await countSyncQueue();
+  console.log(`[SISO OFFLINE] ${supabaseKey} encolado — ${pending} pendientes`);
+  return { ok: true, source: 'offline-queued' };
+};
+
+/**
+ * readArrayFromSupabaseOffline — versión offline-safe de readArrayFromSupabase
+ * Online: igual que antes (Supabase → localStorage)
+ * Offline: devuelve desde IndexedDB → localStorage (sin error, sin espera)
+ */
+export const readArrayFromSupabaseOffline = async (supabaseKey, localKey) => {
+  // Si hay internet → comportamiento original (Supabase primero)
+  if (navigator.onLine) {
+    try {
+      const r = await fetch(
+        `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(supabaseKey)}&select=value`,
+        { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
+      );
+      if (r.ok) {
+        const rows = await r.json();
+        if (rows?.[0]?.value && Array.isArray(rows[0].value)) {
+          try { localStorage.setItem(localKey || supabaseKey, JSON.stringify(rows[0].value)); } catch {}
+          // Actualizar IndexedDB en background
+          idbSet(localKey || supabaseKey, rows[0].value).catch(() => {});
+          return rows[0].value;
+        }
+      }
+    } catch {}
+  }
+
+  // Offline o fallo → IndexedDB primero, luego localStorage
+  const idbVal = await idbGet(localKey || supabaseKey).catch(() => null);
+  if (idbVal && Array.isArray(idbVal)) return idbVal;
+
+  try {
+    const stored = JSON.parse(localStorage.getItem(localKey || supabaseKey) || '[]');
+    return Array.isArray(stored) ? stored : [];
+  } catch { return []; }
+};
