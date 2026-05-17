@@ -16265,6 +16265,12 @@ function AppInner() {
   const [lastSavedInforme, setLastSavedInforme] = useState(null); // informe guardado listo para publicar en portal
   const [showExportTable, setShowExportTable] = useState(false);
   const [precioPorPaciente, setPrecioPorPaciente] = useState("");
+  // Modos de precio: 'global' | 'individual' | 'porFecha'
+  const [precioModo, setPrecioModo] = useState("global");
+  // { [pacienteIdx]: number } — precio individual por fila de la tabla
+  const [preciosIndividuales, setPreciosIndividuales] = useState({});
+  // { [fecha]: number } — precio por grupo de fecha
+  const [preciosPorFecha, setPreciosPorFecha] = useState({});
   // Exportar tabla de pacientes como CSV (sin datos sensibles -- confidencialidad Res.1843/2025 Art.19)
   const exportPatientTable = (patients, compName) => {
     const headers = [
@@ -28279,79 +28285,209 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       </div>
                     </div>
                   </div>
-                  {/* Precio por paciente + total + cuenta de cobro */}
-                  <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-4 no-print">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs font-bold text-gray-700 whitespace-nowrap">
-                          💰 Precio por paciente ($):
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          placeholder="0"
-                          value={precioPorPaciente}
-                          onChange={(e) => setPrecioPorPaciente(e.target.value)}
-                          className="border border-orange-300 rounded-lg px-2 py-1.5 text-sm font-bold w-32 text-right focus:outline-none focus:ring-2 focus:ring-orange-400"
-                        />
-                      </div>
-                      {precioPorPaciente && total > 0 && (
-                        <>
-                          <div className="bg-white border border-orange-300 rounded-lg px-3 py-1.5 text-sm font-black text-orange-700">
-                            Total: $
-                            {(
-                              parseFloat(precioPorPaciente || 0) * total
-                            ).toLocaleString("es-CO")}
-                          </div>
-                          <div className="text-[10px] text-gray-500">
-                            {total} pacientes × $
-                            {parseFloat(precioPorPaciente).toLocaleString(
-                              "es-CO"
+                  {/* ══ PANEL DE PRECIO — 3 modos ══ */}
+                  {(() => {
+                    // ── Calcular total según modo activo ──────────────────
+                    const _totalGlobal = parseFloat(precioPorPaciente || 0) * total;
+
+                    const _totalIndividual = filtered.reduce((sum, _, idx) => {
+                      return sum + parseFloat(preciosIndividuales[idx] || precioPorPaciente || 0);
+                    }, 0);
+
+                    // Agrupar por fecha para modo porFecha
+                    const _gruposFecha = filtered.reduce((acc, p) => {
+                      const f = p.fechaExamen || "Sin fecha";
+                      if (!acc[f]) acc[f] = [];
+                      acc[f].push(p);
+                      return acc;
+                    }, {});
+                    const _totalPorFecha = Object.entries(_gruposFecha).reduce((sum, [f, pacs]) => {
+                      return sum + (parseFloat(preciosPorFecha[f] || precioPorPaciente || 0) * pacs.length);
+                    }, 0);
+
+                    const _totalFinal = precioModo === "global" ? _totalGlobal
+                      : precioModo === "individual" ? _totalIndividual
+                      : _totalPorFecha;
+
+                    const _hayTotal = _totalFinal > 0;
+
+                    // ── Concepto para la cuenta de cobro ─────────────────
+                    const _concepto = precioModo === "global"
+                      ? `EXAMENES MEDICOS OCUPACIONALES - ${total} trabajador(es) evaluado(s) · $${parseFloat(precioPorPaciente||0).toLocaleString("es-CO")} c/u`
+                      : precioModo === "individual"
+                      ? `EXAMENES MEDICOS OCUPACIONALES - ${total} trabajador(es) · Precios individuales · Total $${_totalIndividual.toLocaleString("es-CO")}`
+                      : `EXAMENES MEDICOS OCUPACIONALES - ` + Object.entries(_gruposFecha).map(([f, pacs]) =>
+                          `${f}: ${pacs.length} pac×$${parseFloat(preciosPorFecha[f]||precioPorPaciente||0).toLocaleString("es-CO")}`
+                        ).join(" · ") + ` · Total $${_totalPorFecha.toLocaleString("es-CO")}`;
+
+                    // ── Generar cuenta de cobro ───────────────────────────
+                    const _generarCuenta = () => {
+                      const comp = companies.find(c => c.id === selectedCompanyReport);
+                      const _maxBill = savedBillsList.reduce((mx, b) => {
+                        const n = parseInt(b.number || "0", 10); return n > mx ? n : mx;
+                      }, 0);
+                      const nextNum = String(_maxBill + 1).padStart(3, "0");
+                      setBillData(p => ({
+                        ...p,
+                        companyId: selectedCompanyReport || "",
+                        clientName: comp?.nombre || compName,
+                        clientNit: comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : "",
+                        amount: String(_totalFinal),
+                        number: nextNum,
+                        date: new Date().toISOString().split("T")[0],
+                        concept: _concepto,
+                      }));
+                      goTo("bill");
+                    };
+
+                    return (
+                      <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-4 no-print">
+                        {/* Selector de modo */}
+                        <div className="flex items-center gap-2 mb-3 flex-wrap">
+                          <span className="text-xs font-bold text-gray-700">💰 Modo de precio:</span>
+                          {[
+                            { id: "global",     label: "🔵 Precio único" },
+                            { id: "individual", label: "👤 Individual" },
+                            { id: "porFecha",   label: "📅 Por fecha" },
+                          ].map(m => (
+                            <button
+                              key={m.id}
+                              onClick={() => setPrecioModo(m.id)}
+                              className={`px-3 py-1 rounded-lg text-xs font-bold border transition ${
+                                precioModo === m.id
+                                  ? "bg-orange-600 text-white border-orange-600"
+                                  : "bg-white text-gray-600 border-gray-300 hover:border-orange-400"
+                              }`}
+                            >{m.label}</button>
+                          ))}
+                        </div>
+
+                        {/* ── MODO GLOBAL ── */}
+                        {precioModo === "global" && (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <div className="flex items-center gap-2">
+                              <label className="text-xs font-bold text-gray-700 whitespace-nowrap">Precio por paciente ($):</label>
+                              <input
+                                type="number" min="0" placeholder="0"
+                                value={precioPorPaciente}
+                                onChange={e => setPrecioPorPaciente(e.target.value)}
+                                className="border border-orange-300 rounded-lg px-2 py-1.5 text-sm font-bold w-32 text-right focus:outline-none focus:ring-2 focus:ring-orange-400"
+                              />
+                            </div>
+                            {precioPorPaciente && total > 0 && (
+                              <>
+                                <div className="bg-white border border-orange-300 rounded-lg px-3 py-1.5 text-sm font-black text-orange-700">
+                                  Total: ${_totalGlobal.toLocaleString("es-CO")}
+                                </div>
+                                <div className="text-[10px] text-gray-500">
+                                  {total} pacientes × ${parseFloat(precioPorPaciente).toLocaleString("es-CO")}
+                                </div>
+                              </>
                             )}
                           </div>
-                          <button
-                            onClick={() => {
-                              const comp = companies.find(
-                                (c) => c.id === selectedCompanyReport
-                              );
-                              const total2 =
-                                parseFloat(precioPorPaciente || 0) * total;
-                              const _maxBill = savedBillsList.reduce(
-                                (mx, b) => {
-                                  const n = parseInt(b.number || "0", 10);
-                                  return n > mx ? n : mx;
-                                },
-                                0
-                              );
-                              const nextNum = String(_maxBill + 1).padStart(
-                                3,
-                                "0"
-                              );
-                              setBillData((p) => ({
-                                ...p,
-                                companyId: selectedCompanyReport || "",
-                                clientName: comp?.nombre || compName,
-                                clientNit: comp
-                                  ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}`
-                                  : "",
-                                amount: String(total2),
-                                number: nextNum,
-                                date: new Date().toISOString().split("T")[0],
-                                concept: `EXAMENES MEDICOS OCUPACIONALES - ${total} trabajador(es) evaluado(s) · $${parseFloat(
-                                  precioPorPaciente
-                                ).toLocaleString("es-CO")} c/u`,
-                              }));
-                              goTo("bill");
-                            }}
-                            className="bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 hover:bg-orange-700 shadow ml-auto"
-                          >
-                            <Receipt className="w-3.5 h-3.5" /> Generar Cuenta
-                            de Cobro
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
+                        )}
+
+                        {/* ── MODO INDIVIDUAL ── */}
+                        {precioModo === "individual" && (
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2 mb-2">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs font-bold text-gray-700 whitespace-nowrap">Precio base ($):</label>
+                                <input
+                                  type="number" min="0" placeholder="0"
+                                  value={precioPorPaciente}
+                                  onChange={e => setPrecioPorPaciente(e.target.value)}
+                                  className="border border-orange-300 rounded-lg px-2 py-1.5 text-sm font-bold w-32 text-right focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                />
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const init = {};
+                                  filtered.forEach((_, i) => { init[i] = parseFloat(precioPorPaciente || 0); });
+                                  setPreciosIndividuales(init);
+                                }}
+                                className="bg-orange-100 text-orange-700 border border-orange-300 px-3 py-1 rounded-lg text-xs font-bold hover:bg-orange-200"
+                              >↕ Aplicar base a todos</button>
+                              {_totalIndividual > 0 && (
+                                <div className="bg-white border border-orange-300 rounded-lg px-3 py-1.5 text-sm font-black text-orange-700 ml-auto">
+                                  Total: ${_totalIndividual.toLocaleString("es-CO")}
+                                </div>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-gray-400 mb-1">
+                              💡 Usa "Aplicar base a todos" y luego edita el precio de cada fila en la tabla de abajo
+                            </p>
+                          </div>
+                        )}
+
+                        {/* ── MODO POR FECHA ── */}
+                        {precioModo === "porFecha" && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs font-bold text-gray-700 whitespace-nowrap">Precio base ($):</label>
+                                <input
+                                  type="number" min="0" placeholder="0"
+                                  value={precioPorPaciente}
+                                  onChange={e => setPrecioPorPaciente(e.target.value)}
+                                  className="border border-orange-300 rounded-lg px-2 py-1.5 text-sm font-bold w-28 text-right focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                />
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const init = {};
+                                  Object.keys(_gruposFecha).forEach(f => { init[f] = parseFloat(precioPorPaciente || 0); });
+                                  setPreciosPorFecha(init);
+                                }}
+                                className="bg-orange-100 text-orange-700 border border-orange-300 px-3 py-1 rounded-lg text-xs font-bold hover:bg-orange-200"
+                              >↕ Aplicar base a todas las fechas</button>
+                            </div>
+                            <div className="space-y-1.5 mb-2">
+                              {Object.entries(_gruposFecha).sort(([a],[b])=>a.localeCompare(b)).map(([fecha, pacs]) => {
+                                const precioF = parseFloat(preciosPorFecha[fecha] || precioPorPaciente || 0);
+                                const subtotal = precioF * pacs.length;
+                                return (
+                                  <div key={fecha} className="flex items-center gap-2 bg-white border border-orange-100 rounded-lg px-3 py-1.5 flex-wrap">
+                                    <span className="text-xs font-black text-orange-800 w-24">📅 {fecha}</span>
+                                    <span className="text-[10px] text-gray-500">{pacs.length} pac.</span>
+                                    <span className="text-[10px] text-gray-400">×</span>
+                                    <input
+                                      type="number" min="0" placeholder="0"
+                                      value={preciosPorFecha[fecha] ?? precioPorPaciente ?? ""}
+                                      onChange={e => setPreciosPorFecha(p => ({...p, [fecha]: e.target.value}))}
+                                      className="border border-orange-300 rounded px-2 py-1 text-xs font-bold w-28 text-right focus:outline-none focus:ring-1 focus:ring-orange-400"
+                                    />
+                                    <span className="text-[10px] text-gray-400">=</span>
+                                    <span className="text-xs font-black text-emerald-700">${subtotal.toLocaleString("es-CO")}</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {_totalPorFecha > 0 && (
+                              <div className="flex items-center justify-end gap-2">
+                                <span className="text-[10px] text-gray-500">{total} pacientes en {Object.keys(_gruposFecha).length} fecha(s)</span>
+                                <div className="bg-white border border-orange-300 rounded-lg px-3 py-1.5 text-sm font-black text-orange-700">
+                                  Total: ${_totalPorFecha.toLocaleString("es-CO")}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Botón generar cuenta — visible en todos los modos cuando hay total */}
+                        {_hayTotal && (
+                          <div className="flex justify-end mt-3">
+                            <button
+                              onClick={_generarCuenta}
+                              className="bg-orange-600 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2 hover:bg-orange-700 shadow"
+                            >
+                              <Receipt className="w-3.5 h-3.5" /> Generar Cuenta de Cobro
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {/* Botones de exportación y tabla */}
                   <div className="flex flex-wrap gap-2 mb-4 no-print">
                     <button
@@ -28509,6 +28645,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <div className="bg-slate-800 px-4 py-2 flex items-center justify-between">
                         <span className="text-white text-xs font-bold uppercase tracking-wide">
                           Tabla de Trabajadores -- {filtered.length} registros
+                          {precioModo === "individual" && (
+                            <span className="ml-2 text-orange-300 font-normal normal-case">
+                              · Editando precios individuales
+                            </span>
+                          )}
                         </span>
                         <span className="text-slate-400 text-[10px]">
                           ID anonimizado · Res.1843/2025 Art.19 - Confidencial
@@ -28530,10 +28671,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                 "Tipo Examen",
                                 "Énfasis",
                                 "Fecha",
+                                ...(precioModo === "individual" ? ["Precio ($)"] : []),
                               ].map((h) => (
                                 <th
                                   key={h}
-                                  className="px-2 py-1.5 font-bold text-left whitespace-nowrap border-r border-slate-600 last:border-0"
+                                  className={`px-2 py-1.5 font-bold text-left whitespace-nowrap border-r border-slate-600 last:border-0 ${
+                                    h === "Precio ($)" ? "text-orange-300 bg-slate-600" : ""
+                                  }`}
                                 >
                                   {h}
                                 </th>
@@ -28597,8 +28741,39 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                 <td className="px-2 py-1 whitespace-nowrap">
                                   {p.fechaExamen || "--"}
                                 </td>
+                                {/* Columna precio individual — solo en modo individual */}
+                                {precioModo === "individual" && (
+                                  <td className="px-2 py-1 bg-orange-50">
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      placeholder={precioPorPaciente || "0"}
+                                      value={preciosIndividuales[idx] ?? ""}
+                                      onChange={e =>
+                                        setPreciosIndividuales(prev => ({
+                                          ...prev,
+                                          [idx]: e.target.value,
+                                        }))
+                                      }
+                                      className="border border-orange-300 rounded px-1.5 py-0.5 w-24 text-right font-bold text-[10px] focus:outline-none focus:ring-1 focus:ring-orange-400 bg-white"
+                                    />
+                                  </td>
+                                )}
                               </tr>
                             ))}
+                            {/* Fila de total en modo individual */}
+                            {precioModo === "individual" && (
+                              <tr className="bg-orange-100 border-t-2 border-orange-400 font-black">
+                                <td colSpan={11} className="px-2 py-1.5 text-right text-xs text-orange-800">
+                                  TOTAL ({filtered.length} pacientes):
+                                </td>
+                                <td className="px-2 py-1.5 text-xs text-orange-800 font-black whitespace-nowrap">
+                                  ${filtered.reduce((sum, _, i) =>
+                                    sum + parseFloat(preciosIndividuales[i] || precioPorPaciente || 0), 0
+                                  ).toLocaleString("es-CO")}
+                                </td>
+                              </tr>
+                            )}
                           </tbody>
                         </table>
                       </div>

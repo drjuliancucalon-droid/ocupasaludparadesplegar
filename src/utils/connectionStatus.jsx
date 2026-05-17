@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// SISO OcupaSalud — connectionStatus.js v1.0
+// SISO OcupaSalud — connectionStatus.jsx v1.0
 // Hook de React + utilidades para estado de conexión online/offline.
 // Detecta: online, offline, sincronizando, pendientes, última sync.
 // ═══════════════════════════════════════════════════════════════
