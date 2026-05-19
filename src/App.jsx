@@ -14936,7 +14936,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-teal-50 via-white to-cyan-50 font-sans flex flex-col">
       {/* ── Barra superior ── */}
-      <div className="bg-gradient-to-r from-teal-700 to-blue-700 px-5 py-4 flex items-center justify-between shadow-lg">
+      <div className="bg-gradient-to-r from-teal-700 to-blue-700 px-5 py-4 flex items-center justify-between shadow-lg" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-xl">
             🧑‍💼
@@ -15041,7 +15041,6 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                   : "Ej: 1234567890"
               }
               maxLength={50}
-              autoFocus
               autoComplete="off"
             />
           </div>
@@ -15292,18 +15291,18 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                 </button>
               </div>
             </div>
-            <div className="max-h-[400px] overflow-y-auto">
-              <table className="w-full text-xs">
+            <div className="max-h-[400px] overflow-y-auto overflow-x-auto">
+              <table className="min-w-full text-xs" style={{ minWidth: '600px' }}>
                 <thead className="bg-gray-50 sticky top-0">
                   <tr>
                     <th className="p-2 w-8">☐</th>
                     <th className="p-2 text-left font-bold text-gray-600">#</th>
                     <th className="p-2 text-left font-bold text-gray-600">Trabajador</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Documento</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Tipo</th>
+                    <th className="p-2 text-left font-bold text-gray-600 hidden sm:table-cell">Documento</th>
+                    <th className="p-2 text-left font-bold text-gray-600 hidden md:table-cell">Tipo</th>
                     <th className="p-2 text-left font-bold text-gray-600">Concepto</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Fecha</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Documentos</th>
+                    <th className="p-2 text-left font-bold text-gray-600 hidden sm:table-cell">Fecha</th>
+                    <th className="p-2 text-left font-bold text-gray-600">Docs</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -15318,10 +15317,10 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                         <td className="p-2 text-center cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><input type="checkbox" checked={!!certSeleccionados[i]} readOnly /></td>
                         <td className="p-2 text-gray-400 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{i + 1}</td>
                         <td className="p-2 font-bold text-gray-800 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.nombres || "--"}</td>
-                        <td className="p-2 font-mono cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.docNumero || "--"}</td>
-                        <td className="p-2 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.tipoExamen || "--"}</td>
+                        <td className="p-2 font-mono cursor-pointer hidden sm:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.docNumero || "--"}</td>
+                        <td className="p-2 cursor-pointer hidden md:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.tipoExamen || "--"}</td>
                         <td className="p-2 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${col.badge}`}>{col.dot} {p.conceptoAptitud || "--"}</span></td>
-                        <td className="p-2 text-gray-500 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.fechaExamen || "--"}</td>
+                        <td className="p-2 text-gray-500 cursor-pointer hidden sm:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.fechaExamen || "--"}</td>
                         <td className="p-2">
                           <div className="flex gap-1 flex-wrap">
                             {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} title={`Receta (${pMeds} med.)`} className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-black rounded hover:bg-emerald-200 transition">💊 {pMeds}</button>}
