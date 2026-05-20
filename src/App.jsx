@@ -17054,6 +17054,129 @@ function AppInner() {
     }
   }, [companiesTab, _reloadEncuestasFromSupabase]);
 
+  // ── AUTO-REFRESH: Sincronizar datos desde Supabase al cambiar de vista ──────
+  // Cada vista recarga solo sus claves relevantes — no bloquea la UI.
+  // Cooldown de 60 s por vista para no saturar Supabase.
+  const _viewRefreshTs = useRef({});
+  const _VIEW_COOLDOWN  = 60000; // ms
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const now    = Date.now();
+    const userId = currentUser.user;
+    const suffix = currentUser.empresaId
+      ? "empresa_" + currentUser.empresaId
+      : userId || "shared";
+
+    // Cooldown: misma vista, mismo usuario → esperar 60 s
+    const ck = `${view}::${userId}`;
+    if (now - (_viewRefreshTs.current[ck] || 0) < _VIEW_COOLDOWN) return;
+    _viewRefreshTs.current[ck] = now;
+
+    // Mapa vista → claves Supabase a consultar
+    const VIEW_KEYS = {
+      patients:   [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
+      historia:   [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
+      dashboard:  [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
+      companies:  [`siso_companies_${userId}`],
+      perfilips:  [`siso_companies_${userId}`],
+      reporte:    [`siso_informes_${userId}`, `siso_saved_reports`],
+      bill:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`],
+      caja:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`, `siso_caja_movs_${suffix}`],
+      agenda:     [`siso_atenciones_cerradas`, `siso_patients_${userId}`],
+      asistencia: [`siso_atenciones_cerradas`],
+      sve:        [`siso_patients_${userId}`],
+      arl:        [`siso_patients_${userId}`],
+      custodia:   [`siso_cartas_custodia_${userId}`, `siso_cartas_custodia`],
+    };
+
+    const keys = VIEW_KEYS[view] || [];
+    if (keys.length === 0) return;
+
+    const hdrs = _getSbHeaders();
+
+    (async () => {
+      try {
+        const fetchKey = (key) =>
+          Promise.race([
+            fetch(
+              `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(key)}&select=key,value`,
+              { headers: hdrs }
+            ).then(r => r.ok ? r.json() : []).then(d => ({ key, value: d[0]?.value ?? null })),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 6000)),
+          ]).catch(() => ({ key, value: null }));
+
+        const results = await Promise.all(keys.map(fetchKey));
+
+        for (const { key, value } of results) {
+          if (value === null || value === undefined) continue;
+
+          // ── Pacientes ──────────────────────────────────────────────────────
+          if ((key.startsWith("siso_patients_") || key.startsWith("siso_db_patients_")) && Array.isArray(value) && value.length > 0) {
+            setPatientsList(prev => {
+              if (value.length > prev.length || JSON.stringify(value) !== JSON.stringify(prev)) {
+                _ls.setItem(_patKey(userId), JSON.stringify(value));
+                dataReadyRef.current = true;
+                return value;
+              }
+              return prev;
+            });
+          }
+
+          // ── Empresas ───────────────────────────────────────────────────────
+          if (key.startsWith("siso_companies_") && Array.isArray(value) && value.length > 0) {
+            setCompanies(prev => {
+              if (value.length > prev.length || JSON.stringify(value) !== JSON.stringify(prev)) {
+                _ls.setItem(_compKey(userId), JSON.stringify(value));
+                return value;
+              }
+              return prev;
+            });
+          }
+
+          // ── Cuentas de cobro ───────────────────────────────────────────────
+          if (key.startsWith("siso_saved_bills") && Array.isArray(value)) {
+            setSavedBillsList(prev =>
+              value.length >= prev.length ? value : prev
+            );
+            try { _ls.setItem(key, JSON.stringify(value)); } catch {}
+          }
+
+          // ── Reportes / Propuestas ──────────────────────────────────────────
+          if (key === "siso_saved_reports" && Array.isArray(value)) {
+            setSavedReports(prev => value.length >= prev.length ? value : prev);
+            try { _ls.setItem("siso_saved_reports", JSON.stringify(value)); } catch {}
+          }
+
+          // ── Informes epidemiológicos ───────────────────────────────────────
+          if (key.startsWith("siso_informes_") && Array.isArray(value)) {
+            setSavedInformes(prev => value.length >= prev.length ? value : prev);
+            try { localStorage.setItem("siso_informes", JSON.stringify(value)); } catch {}
+          }
+
+          // ── Atenciones agenda ──────────────────────────────────────────────
+          if (key === "siso_atenciones_cerradas" && Array.isArray(value)) {
+            setAtencionesCerradas(prev => value.length >= prev.length ? value : prev);
+            try { _ls.setItem("siso_atenciones_cerradas", JSON.stringify(value)); } catch {}
+          }
+
+          // ── Caja movimientos ───────────────────────────────────────────────
+          if (key.startsWith("siso_caja_movs_") && Array.isArray(value)) {
+            setCajaMovimientos(prev => value.length >= prev.length ? value : prev);
+            try { _ls.setItem(`siso_caja_${suffix}`, JSON.stringify(value)); } catch {}
+          }
+
+          // ── Cartas custodia ────────────────────────────────────────────────
+          if (key.startsWith("siso_cartas_custodia") && Array.isArray(value)) {
+            try { localStorage.setItem("siso_cartas_custodia", JSON.stringify(value)); } catch {}
+          }
+        }
+      } catch (err) {
+        console.warn("[SISO] Auto-refresh error:", err.message);
+      }
+    })();
+  }, [view, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── PERF-01: CSS Global — Print + Mobile + content-visibility ─────────────
   useEffect(() => {
     if (document.getElementById("siso-perf-styles")) return;
