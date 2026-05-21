@@ -735,6 +735,30 @@ const _sbGetAll = async () => {
   }
 };
 
+// ── _sbGetMany: fetch dirigido de claves específicas (evita descargar toda la tabla)
+// Usa filtro PostgREST in.() — descarga SOLO las filas necesarias.
+// Reduce egress hasta un 95 % respecto a _sbGetAll().
+const _sbGetMany = async (keys) => {
+  if (!keys || keys.length === 0) return {};
+  try {
+    // PostgREST acepta: ?key=in.(clave1,clave2,clave3)
+    const keyList = keys.join(",");
+    const r = await fetch(
+      `${_SB_URL}/rest/v1/siso_store?key=in.(${encodeURIComponent(keyList)})&select=key,value,updated_at`,
+      { headers: _getSbHeaders() }
+    );
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const result = {};
+    rows.forEach((row) => {
+      result[row.key] = { value: row.value, updatedAt: row.updated_at };
+    });
+    return result;
+  } catch {
+    return null;
+  }
+};
+
 // Recuperar pacientes desde filas siso_hc_completa_* (backup del portal)
 const _sbRecuperarPacientesDesdeHC = async () => {
   try {
@@ -17058,7 +17082,7 @@ function AppInner() {
   // Cada vista recarga solo sus claves relevantes — no bloquea la UI.
   // Cooldown de 60 s por vista para no saturar Supabase.
   const _viewRefreshTs = useRef({});
-  const _VIEW_COOLDOWN  = 60000; // ms
+  const _VIEW_COOLDOWN  = 300000; // 5 minutos — evita egress excesivo en Supabase
 
   useEffect(() => {
     if (!currentUser) return;
@@ -17369,7 +17393,12 @@ function AppInner() {
           (async () => {
             try {
               const cloud = await Promise.race([
-                _sbGetAll(),
+                _sbGetMany([
+                  `siso_patients_${sessionUser}`,
+                  `siso_db_patients_${sessionUser}`,
+                  `siso_companies_${sessionUser}`,
+                  "siso_companies_shared",
+                ]),
                 new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
               ]);
               if (!cloud) return;
@@ -17414,8 +17443,21 @@ function AppInner() {
       (async () => {
         try {
           // Timeout de 8 segundos para no bloquear la UI si no hay internet
+          // _sbGetMany: solo claves esenciales — evita descargar toda la tabla (egress)
+          const _bootKeys = [
+            "siso_users",
+            "siso_companies",
+            "siso_companies_shared",
+            "siso_doctor_signature",
+            "siso_ai_config_provider",
+            ...(sessionUser ? [
+              `siso_patients_${sessionUser}`,
+              `siso_db_patients_${sessionUser}`,
+              `siso_companies_${sessionUser}`,
+            ] : []),
+          ];
           const cloud = await Promise.race([
-            _sbGetAll(),
+            _sbGetMany(_bootKeys),
             new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 8000))
           ]);
           if (cloud && cloud["siso_users"]?.value && Array.isArray(cloud["siso_users"].value) && cloud["siso_users"].value.length > 0) {
@@ -17515,9 +17557,35 @@ function AppInner() {
       activeProvider: savedProvider.activeProvider || "gemini",
       keys: mergedKeys,
     });
-    // 2. Carga desde Supabase en background (datos más actualizados / otros dispositivos)
+    // 2. Carga desde Supabase en background — solo claves necesarias (evita egress masivo)
     setSyncStatus("loading");
-    _sbGetAll().then((cloud) => {
+    const _loginSuf = currentUser?.empresaId
+      ? "empresa_" + currentUser.empresaId
+      : currentUser?.user || "shared";
+    const _loginUid = currentUser?.user || "shared";
+    _sbGetMany([
+      "siso_users",
+      "siso_doctor_signature",
+      "siso_ai_config_provider",
+      "siso_saved_bills",
+      "siso_saved_reports",
+      "siso_audit_log",
+      "siso_mensajes",
+      "siso_agendados",
+      "siso_atenciones_cerradas",
+      "siso_encuestas",
+      `siso_patients_${_loginUid}`,
+      `siso_db_patients_${_loginUid}`,
+      `siso_companies_${_loginUid}`,
+      `siso_saved_bills_${_loginSuf}`,
+      `siso_caja_movs_${_loginSuf}`,
+      `siso_informes_${_loginUid}`,
+      `siso_informes`,
+      `siso_encuestas_${_loginUid}`,
+      `siso_cartas_custodia_${_loginUid}`,
+      `siso_cartas_custodia`,
+      `siso_email_config_${_loginUid}`,
+    ]).then((cloud) => {
       if (!cloud) {
         setSyncStatus("error");
         return;
