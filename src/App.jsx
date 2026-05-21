@@ -805,6 +805,64 @@ const _sbGetMany = async (keys) => {
   }
 };
 
+// ── EGRESS GUARD: funciones para no enviar datos pesados a Supabase ─────────
+
+// Elimina strings base64 de cualquier valor antes de guardarlo en Supabase.
+// Las imágenes (firmas, logos) se quedan solo en localStorage / Cloudinary.
+const _stripBase64Deep = (val) => {
+  if (!val) return val;
+  if (typeof val === "string")
+    return val.length > 8000 && val.startsWith("data:") ? null : val;
+  if (Array.isArray(val)) return val.map(_stripBase64Deep);
+  if (typeof val === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(val))
+      out[k] = _stripBase64Deep(v);
+    return out;
+  }
+  return val;
+};
+
+// Versión liviana de un paciente para guardar en Supabase.
+// Conserva todo excepto campos de audio/visión/espirometría raw (pueden ser enormes).
+// Los datos completos siempre quedan en localStorage.
+const _slimPatient = (p) => {
+  if (!p) return p;
+  const {
+    audiometriaRaw, espirometriaRaw, visionRaw,
+    imgAudiometria, imgEspirometria, imgVision,
+    adjuntos,                                // adjuntos en Cloudinary — solo metadatos
+    ...rest
+  } = p;
+  return {
+    ...rest,
+    adjuntos: Array.isArray(adjuntos)
+      ? adjuntos.map(({ file, dataUrl, ...meta }) => meta)  // quitar binarios
+      : adjuntos,
+  };
+};
+
+// _sbSetSafe: igual que _sbSet pero strip de base64 y logos antes de enviar.
+// Usar para claves que pueden contener imágenes embebidas.
+const _sbSetSafe = async (key, value) => {
+  // La firma del médico NO va a Supabase — es muy grande y está en localStorage
+  if (key === "siso_doctor_signature") return true;
+  const safe = _stripBase64Deep(value);
+  return _sbSet(key, safe);
+};
+
+// Timestamp de última sincronización exitosa (para evitar sync redundante)
+const SYNC_MAX_AGE_MS = 2 * 60 * 60 * 1000; // 2 horas
+const _isSyncFresh = () => {
+  try {
+    const ts = parseInt(localStorage.getItem("siso_last_sync_ts") || "0");
+    return Date.now() - ts < SYNC_MAX_AGE_MS;
+  } catch { return false; }
+};
+const _markSyncFresh = () => {
+  try { localStorage.setItem("siso_last_sync_ts", Date.now().toString()); } catch {}
+};
+
 // Recuperar pacientes desde filas siso_hc_completa_* (backup del portal)
 const _sbRecuperarPacientesDesdeHC = async () => {
   try {
@@ -9234,7 +9292,7 @@ const LicenciasTab = ({
     );
     setUsersList(upd);
     _sync("siso_users", JSON.stringify(upd));
-    _sbSet("siso_users", upd); // sync inmediato a nube
+    _sbSetSafe("siso_users", upd); // sync inmediato a nube (sin base64)
     if (currentUser?.user === u.user) {
       setCurrentUser((prev) => ({
         ...prev,
@@ -17605,14 +17663,30 @@ function AppInner() {
       keys: mergedKeys,
     });
     // 2. Carga desde Supabase en background — solo claves necesarias (evita egress masivo)
+    // CACHE: si datos tienen < 2 horas y localStorage tiene contenido, omitir fetch
     setSyncStatus("loading");
     const _loginSuf = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
       : currentUser?.user || "shared";
     const _loginUid = currentUser?.user || "shared";
+
+    const _hasLocalData = (() => {
+      try {
+        const pats = JSON.parse(localStorage.getItem(`siso_db_patients_${_loginUid}`) || "[]");
+        return Array.isArray(pats) && pats.length > 0;
+      } catch { return false; }
+    })();
+
+    if (_isSyncFresh() && _hasLocalData) {
+      // Datos frescos en localStorage — no descargar Supabase esta vez
+      setSyncStatus("ok");
+      console.log("[SISO] ✅ Sync omitido — datos frescos (< 2 h)");
+      return;
+    }
+
     _sbGetMany([
       "siso_users",
-      "siso_doctor_signature",
+      // siso_doctor_signature excluida: es base64 pesada, vive en localStorage
       "siso_ai_config_provider",
       "siso_saved_bills",
       "siso_saved_reports",
@@ -17766,12 +17840,8 @@ function AppInner() {
           return merged;
         });
       }
-      // Doctor signature
-      if (cloud["siso_doctor_signature"]?.value) {
-        const sig = cloud["siso_doctor_signature"].value;
-        setDoctorSignature(sig);
-        _ls.setItem("siso_doctor_signature", sig);
-      }
+      // Doctor signature: NO se trae de Supabase (es base64 pesado — vive en localStorage)
+      // Se carga desde _ls.getItem("siso_doctor_signature") en el arranque de la app.
       // AI provider
       if (cloud["siso_ai_config_provider"]?.value) {
         const prov = cloud["siso_ai_config_provider"].value;
@@ -17781,6 +17851,7 @@ function AppInner() {
         }));
       }
       setSyncStatus("ok");
+      _markSyncFresh(); // registrar timestamp de sync exitoso → evita re-fetch < 2 h
       // Intentar vaciar la cola de pendientes
       _sbQueue.flush();
     });
@@ -17874,11 +17945,16 @@ function AppInner() {
           ? "empresa_" + currentUser.empresaId
           : currentUser?.user || "shared";
         // GUARD: solo guardar pacientes/empresas si tenemos datos reales
-        const _patToSave   = patientsList.length > 0 ? patientsList : null;
-        const _compToSave  = companies.length   > 0 ? companies    : null;
+        // Pacientes: versión slim para Supabase (sin base64, sin binarios)
+        // Los datos completos permanecen en localStorage
+        const _patFull   = patientsList.length > 0 ? patientsList : null;
+        const _patToSave = _patFull ? _patFull.map(_slimPatient) : null;
+        // Empresas: sin logos base64
+        const _compFull   = companies.length > 0 ? companies : null;
+        const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
         const _u           = currentUser?.user  || "shared";
         const tasks = [
-          // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (nunca se pierden) ──
+          // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (sin base64) ──
           ...(_patToSave  ? [
             _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon   (primaria)
             _sbSet(_patKey(_u),      _patToSave),   // siso_db_patients_drcucalon (respaldo)
@@ -17887,8 +17963,8 @@ function AppInner() {
             _sbSet(_compKeyCloud(_u), _compToSave), // siso_companies_drcucalon  (primaria)
             _sbSet("siso_companies_shared", _compToSave), // respaldo compartido
           ] : []),
-          // ── Datos operativos ──────────────────────────────────────────────────────
-          _sbSet("siso_users",                            usersList),
+          // ── Datos operativos — usuarios sin base64 de firmas ─────────────────────
+          _sbSetSafe("siso_users",                        usersList),  // strip firma/logo
           _sbSet(`siso_saved_bills_${_asSuf}`,            savedBillsList),
           _sbSet("siso_saved_reports",                    savedReports),
           _sbSet("siso_audit_log",                        auditLog),
@@ -17897,9 +17973,8 @@ function AppInner() {
           _sbSet(`siso_atenciones_${_asSuf}`,             atencionesCerradas),
           _sbSet("siso_ai_config_provider", { activeProvider: aiConfig.activeProvider }),
         ];
-        // ── Firma y datos del médico ──────────────────────────────────────────────
-        if (doctorSignature)
-          tasks.push(_sbSet("siso_doctor_signature", doctorSignature));
+        // ── Firma del médico: NO va a Supabase (base64 pesado, vive en localStorage) ──
+        // if (doctorSignature) tasks.push(_sbSet("siso_doctor_signature", doctorSignature));
         if (currentUser?.doctorData && currentUser?.user)
           tasks.push(_sbSet(`siso_doctor_data_${currentUser.user}`, currentUser.doctorData));
         // ── Módulos adicionales (guardar siempre aunque estén vacíos para marcar timestamp) ──
