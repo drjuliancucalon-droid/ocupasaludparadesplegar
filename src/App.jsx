@@ -717,12 +717,58 @@ const _sbBulkSet = async (rows) => {
   }
   return { ok, fail };
 };
-const _sbGetAll = async () => {
+const _sbGetAll = async (userId) => {
   try {
-    const r = await fetch(
-      `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
-      { headers: _getSbHeaders() }
-    );
+    let url = `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`;
+
+    if (userId === "all_patients") {
+      url += `&key=ilike.siso_patients_%25`;
+    } else {
+      let uList = [];
+      if (userId) {
+        if (Array.isArray(userId)) uList = userId;
+        else uList = [userId];
+      } else {
+        try {
+          const s = _ls.getItem("siso_session");
+          const session = s ? JSON.parse(s) : null;
+          if (session?.user) {
+            uList.push(session.user);
+            const scopedId = session.empresaId ? "empresa_" + session.empresaId : session.user;
+            if (scopedId !== session.user) {
+              uList.push(scopedId);
+            }
+          }
+        } catch {}
+      }
+
+      if (uList.length > 0) {
+        const sharedKeys = [
+          "siso_users",
+          "siso_companies_shared",
+          "siso_saved_bills",
+          "siso_saved_reports",
+          "siso_audit_log",
+          "siso_mensajes",
+          "siso_ai_config_provider",
+          "siso_doctor_signature",
+          "siso_privacidad_aceptada",
+          "siso_atenciones_cerradas",
+          "siso_arl_reportes",
+          "siso_encuestas",
+          "siso_cotizaciones",
+          "siso_cartas_custodia"
+        ];
+        const sharedIn = sharedKeys.join(",");
+        const orParts = [
+          `key.in.(${sharedIn})`,
+          ...uList.map(u => `key.ilike.%25_${encodeURIComponent(u)}`)
+        ];
+        url += `&or=(${orParts.join(",")})`;
+      }
+    }
+
+    const r = await fetch(url, { headers: _getSbHeaders() });
     if (!r.ok) return null;
     const rows = await r.json();
     const result = {};
@@ -16922,6 +16968,7 @@ function AppInner() {
   useEffect(() => {
     if (!currentUser) return; // solo si hay sesión activa
     const _reloadUsersFromCloud = async () => {
+      if (document.hidden) return;
       try {
         // Estrategia 1: clave dedicada de permisos (más ligera, solo para secretaria)
         if (currentUser.role === "secretaria") {
@@ -16962,8 +17009,8 @@ function AppInner() {
     };
     // Ejecutar inmediatamente al montar/cambiar currentUser
     _reloadUsersFromCloud();
-    // Polling cada 30 segundos mientras la sesión esté activa
-    const _pollInterval = setInterval(_reloadUsersFromCloud, 30000);
+    // Polling cada 5 minutos mientras la sesión esté activa
+    const _pollInterval = setInterval(_reloadUsersFromCloud, 300000);
     return () => clearInterval(_pollInterval);
   }, [currentUser?.user]); // eslint-disable-line react-hooks/exhaustive-deps
   // ══ B-09: Seguridad de cabeceras ═══════════════════════════════════════════
@@ -19094,7 +19141,7 @@ const handleLogin = (u, p) => {
       // Resuelve el caso de nuevo dispositivo / caché borrado / contraseña cambiada
       if (!found) {
         try {
-          const cloudData = await _sbGetAll();
+          const cloudData = await _sbGetAll(u);
           if (cloudData?.["siso_users"]?.value && Array.isArray(cloudData["siso_users"].value)) {
             const cloudUserList = cloudData["siso_users"].value;
             // FIX: REEMPLAZAR usuarios locales con datos de nube (no solo agregar faltantes)
@@ -19340,7 +19387,7 @@ const handleLogin = (u, p) => {
         setSavedBillsList(
           _loadScoped(`siso_saved_bills_${_storageUserId}`, "siso_saved_bills")
         );
-        _sbGetAll().then((cloud) => {
+        _sbGetAll([_storageUserId, found.user]).then((cloud) => {
           if (!cloud) return;
           // Pacientes del usuario específico (o empresa compartida)
           // Buscar en ambas claves posibles: cloud key y db key (compatibilidad)
@@ -20963,7 +21010,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
     // Para consultar certificados de TODOS los médicos (solo certificados)
     if (searchAllDoctors) {
       try {
-        const cloud = await _sbGetAll();
+        const cloud = await _sbGetAll("all_patients");
         if (cloud) {
           Object.entries(cloud).forEach(([key, entry]) => {
             if (

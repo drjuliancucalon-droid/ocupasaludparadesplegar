@@ -1,6 +1,27 @@
 /*
+  # Seguridad base — activos y sin conflictos
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  X-XSS-Protection: 1; mode=block
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
+  # HSTS: forzar HTTPS (evita downgrade en redes comprometidas)
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+  # CSP: pendiente de implementar cuando Tailwind migre de CDN a npm.
+  # Tailwind Play CDN requiere 'unsafe-eval' (JIT compiler) lo que
+  # hace inviable una CSP estricta mientras se use la versión CDN.
+  # TODO: npm install tailwindcss → compilar CSS estático → activar CSP.
+
+# Service Worker: sin caché para recibir actualizaciones del SW
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate
+  Service-Worker-Allowed: /
+
+# manifest.json: sin caché para PWA install updates
+/manifest.json
+  Cache-Control: no-cache
+
+# Assets compilados con hash (Vite): caché larga, inmutables
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

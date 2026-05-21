@@ -1,4 +1,4 @@
-﻿﻿// src/utils/supabase.js - Supabase Cloud Sync
+// src/utils/supabase.js - Supabase Cloud Sync
 import { _ls, _ss } from './storage.js';
 
 const _PROXY_URL =
@@ -107,12 +107,58 @@ const _sbSet = async (key, value) => {
   if (!_rlCheck()) return false;
   return await _securePost(key, value);
 };
-const _sbGetAll = async () => {
+const _sbGetAll = async (userId) => {
   try {
-    const r = await fetch(
-      `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`,
-      { headers: _SB_HEADERS }
-    );
+    let url = `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`;
+
+    if (userId === "all_patients") {
+      url += `&key=ilike.siso_patients_%25`;
+    } else {
+      let uList = [];
+      if (userId) {
+        if (Array.isArray(userId)) uList = userId;
+        else uList = [userId];
+      } else {
+        try {
+          const s = _ls.getItem("siso_session");
+          const session = s ? JSON.parse(s) : null;
+          if (session?.user) {
+            uList.push(session.user);
+            const scopedId = session.empresaId ? "empresa_" + session.empresaId : session.user;
+            if (scopedId !== session.user) {
+              uList.push(scopedId);
+            }
+          }
+        } catch {}
+      }
+
+      if (uList.length > 0) {
+        const sharedKeys = [
+          "siso_users",
+          "siso_companies_shared",
+          "siso_saved_bills",
+          "siso_saved_reports",
+          "siso_audit_log",
+          "siso_mensajes",
+          "siso_ai_config_provider",
+          "siso_doctor_signature",
+          "siso_privacidad_aceptada",
+          "siso_atenciones_cerradas",
+          "siso_arl_reportes",
+          "siso_encuestas",
+          "siso_cotizaciones",
+          "siso_cartas_custodia"
+        ];
+        const sharedIn = sharedKeys.join(",");
+        const orParts = [
+          `key.in.(${sharedIn})`,
+          ...uList.map(u => `key.ilike.%25_${encodeURIComponent(u)}`)
+        ];
+        url += `&or=(${orParts.join(",")})`;
+      }
+    }
+
+    const r = await fetch(url, { headers: _SB_HEADERS });
     if (!r.ok) return null;
     const rows = await r.json();
     const result = {};

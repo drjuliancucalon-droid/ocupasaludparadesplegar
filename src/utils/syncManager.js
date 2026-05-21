@@ -342,8 +342,9 @@ export const initSyncManager = () => {
     });
   }
 
-  // Sync periódico cada 5 minutos (cuando hay internet)
+  // Sync periódico cada 5 minutos (cuando hay internet y la pestaña está activa)
   _state.syncInterval = setInterval(() => {
+    if (document.hidden) return;
     if (navigator.onLine && !_state.isSyncing) {
       syncNow().catch(() => {});
     }
