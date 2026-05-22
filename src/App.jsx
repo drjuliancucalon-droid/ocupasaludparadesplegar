@@ -16817,6 +16817,7 @@ function AppInner() {
   const [editingCompany, setEditingCompany] = useState(null);
   const [loadingEncuestas, setLoadingEncuestas] = useState(false);
   const [encuestasSyncStatus, setEncuestasSyncStatus] = useState(null); // null|'saving'|'ok'|'error'
+  const [importExcelModal, setImportExcelModal] = useState(null); // null | { enc, step, rows, headers, mapping, preview }
   // ── MODAL AGENDAR DESDE ENCUESTA ──
   const [agendarEncModal, setAgendarEncModal] = useState(null); // null | {enc, resps}
   const [agendarEncForm, setAgendarEncForm] = useState({
@@ -31744,6 +31745,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
                               setAgendarEncModal({ enc, resps });
                             } catch { showAlert("Error al cargar respuestas para agendar."); }
                           }} className="px-3 py-1.5 bg-orange-50 text-orange-700 text-[10px] font-black rounded-lg hover:bg-orange-100">📅 Agendar Todos</button>
+                          <button
+                            onClick={() => setImportExcelModal({ enc, step: 'upload', rows: [], headers: [], mapping: {}, preview: [] })}
+                            className="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-[10px] font-black rounded-lg hover:bg-indigo-100"
+                          >📊 Cargar Excel</button>
                         </div>
                         {/* TABLA DE RESPUESTAS (expandible) */}
                         {enc._showResps && enc._respuestas && enc._respuestas.length > 0 && (
@@ -31787,6 +31792,239 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* ══ MODAL IMPORTAR EXCEL DESDE ENCUESTA ══ */}
+          {importExcelModal && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                {/* Header */}
+                <div className="bg-indigo-700 p-4 rounded-t-2xl flex justify-between items-center sticky top-0 z-10">
+                  <div>
+                    <p className="text-white font-black text-sm">📊 Importar desde Excel</p>
+                    <p className="text-indigo-200 text-[10px]">{importExcelModal.enc.empresaNombre} · {importExcelModal.enc.tipoExamen}</p>
+                  </div>
+                  <button onClick={() => setImportExcelModal(null)} className="text-white font-black text-xl hover:text-indigo-200">✕</button>
+                </div>
+                <div className="p-5 space-y-5">
+
+                  {/* PASO 1: Subir archivo */}
+                  {importExcelModal.step === 'upload' && (
+                    <div className="space-y-4">
+                      <p className="text-sm text-gray-700">Seleccione el archivo Excel con la lista de trabajadores:</p>
+                      <label className="block border-2 border-dashed border-indigo-300 rounded-2xl p-8 text-center cursor-pointer hover:border-indigo-500 hover:bg-indigo-50 transition-colors">
+                        <span className="text-4xl block mb-2">📂</span>
+                        <span className="text-sm font-black text-indigo-700">Haz clic para seleccionar archivo</span>
+                        <span className="text-[10px] text-gray-500 block mt-1">Formatos: .xlsx · .xls · .csv</span>
+                        <input type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (!window.XLSX) { showAlert("La librería Excel aún no cargó. Recarga la página e intenta de nuevo."); return; }
+                            const reader = new FileReader();
+                            reader.onload = (ev) => {
+                              try {
+                                const wb = window.XLSX.read(ev.target.result, { type: 'binary' });
+                                const ws = wb.Sheets[wb.SheetNames[0]];
+                                const data = window.XLSX.utils.sheet_to_json(ws, { defval: '', raw: false });
+                                if (!data.length) { showAlert("El archivo no tiene datos. Verifique que tenga encabezados en la fila 1."); return; }
+                                const headers = Object.keys(data[0]);
+                                // Auto-detectar columnas por nombre
+                                const DETECT = {
+                                  nombres:         ['nombre', 'nombres', 'trabajador', 'empleado', 'name', 'apellido'],
+                                  docNumero:       ['cedula', 'cédula', 'cc', 'documento', 'doc', 'identificacion', 'identificación', 'nro doc', 'n° doc'],
+                                  docTipo:         ['tipo doc', 'tipo_doc', 'tipodoc', 'tipo documento'],
+                                  cargo:           ['cargo', 'puesto', 'ocupacion', 'ocupación', 'perfil'],
+                                  eps:             ['eps', 'entidad salud', 'aseguradora salud'],
+                                  arl:             ['arl', 'riesgo', 'aseguradora riesgo'],
+                                  afp:             ['afp', 'pension', 'pensión', 'fondo pensiones', 'pensiones'],
+                                  celular:         ['celular', 'telefono', 'teléfono', 'tel', 'movil', 'móvil', 'cel', 'contacto'],
+                                  email:           ['email', 'correo', 'mail', 'e-mail', 'correo electronico'],
+                                  genero:          ['genero', 'género', 'sexo'],
+                                  fechaNacimiento: ['fecha nac', 'nacimiento', 'fecha_nac', 'fechanac', 'fec nac', 'fecha de nacimiento'],
+                                  ciudad:          ['ciudad', 'municipio', 'localidad'],
+                                  areaCargo:       ['area', 'área', 'dependencia', 'seccion', 'sección', 'departamento'],
+                                  antiguedad:      ['antiguedad', 'antigüedad', 'tiempo empresa', 'tiempo de servicio'],
+                                  tipoContrato:    ['contrato', 'tipo contrato', 'vinculacion', 'vinculación'],
+                                };
+                                const autoMap = {};
+                                headers.forEach(h => {
+                                  const hl = h.toLowerCase().trim();
+                                  for (const [field, variants] of Object.entries(DETECT)) {
+                                    if (!autoMap[field] && variants.some(v => hl.includes(v))) {
+                                      autoMap[field] = h;
+                                    }
+                                  }
+                                });
+                                setImportExcelModal(prev => ({
+                                  ...prev,
+                                  step: 'map',
+                                  rows: data,
+                                  headers,
+                                  mapping: autoMap,
+                                  preview: data.slice(0, 5),
+                                }));
+                              } catch (err) { showAlert("Error al leer el archivo.\n\nVerifique que sea un Excel válido (.xlsx/.xls) o CSV con separador coma."); }
+                            };
+                            reader.readAsBinaryString(file);
+                          }}
+                        />
+                      </label>
+                      <div className="bg-indigo-50 rounded-xl p-3 text-[10px] text-indigo-700 space-y-1">
+                        <p className="font-black">💡 Tips para el Excel:</p>
+                        <p>• La <b>primera fila</b> debe tener los encabezados (Nombre, Cédula, Cargo, EPS…)</p>
+                        <p>• Columnas mínimas requeridas: <b>Nombre</b> y/o <b>Cédula</b></p>
+                        <p>• Los campos faltantes se completan durante la consulta</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PASO 2: Mapeo de columnas + preview */}
+                  {importExcelModal.step === 'map' && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-black text-gray-800">
+                          ✅ {importExcelModal.rows.length} trabajadores detectados
+                        </p>
+                        <button onClick={() => setImportExcelModal(prev => ({ ...prev, step: 'upload' }))}
+                          className="text-[10px] text-indigo-600 font-black hover:underline">← Cambiar archivo</button>
+                      </div>
+
+                      {/* Mapeo de columnas */}
+                      <div>
+                        <p className="text-[10px] font-black text-gray-600 uppercase mb-2">Asignar columnas del Excel a campos SISO:</p>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                          {[
+                            { field: 'nombres',         label: 'Nombre completo *', req: true },
+                            { field: 'docNumero',        label: 'N° Documento *',    req: true },
+                            { field: 'docTipo',          label: 'Tipo Doc.' },
+                            { field: 'cargo',            label: 'Cargo' },
+                            { field: 'areaCargo',        label: 'Área / Dependencia' },
+                            { field: 'eps',              label: 'EPS' },
+                            { field: 'arl',              label: 'ARL' },
+                            { field: 'afp',              label: 'AFP / Pensión' },
+                            { field: 'celular',          label: 'Celular / Tel.' },
+                            { field: 'email',            label: 'Email' },
+                            { field: 'genero',           label: 'Género' },
+                            { field: 'fechaNacimiento',  label: 'Fecha Nacimiento' },
+                            { field: 'ciudad',           label: 'Ciudad' },
+                            { field: 'antiguedad',       label: 'Antigüedad' },
+                            { field: 'tipoContrato',     label: 'Tipo Contrato' },
+                          ].map(({ field, label, req }) => (
+                            <div key={field}>
+                              <label className={`text-[9px] font-bold block mb-0.5 ${req ? 'text-indigo-700' : 'text-gray-600'}`}>{label}</label>
+                              <select
+                                value={importExcelModal.mapping[field] || ''}
+                                onChange={e => setImportExcelModal(prev => ({ ...prev, mapping: { ...prev.mapping, [field]: e.target.value || undefined } }))}
+                                className="w-full p-1.5 border rounded-lg text-[10px]"
+                              >
+                                <option value="">— no mapear —</option>
+                                {importExcelModal.headers.map(h => (
+                                  <option key={h} value={h}>{h}</option>
+                                ))}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Vista previa */}
+                      <div>
+                        <p className="text-[10px] font-black text-gray-600 uppercase mb-1">Vista previa (primeras 5 filas):</p>
+                        <div className="overflow-x-auto border border-indigo-200 rounded-xl">
+                          <table className="w-full text-[9px]">
+                            <thead className="bg-indigo-100">
+                              <tr>
+                                {['#','Nombre','Documento','Cargo','EPS','Celular'].map(h => (
+                                  <th key={h} className="px-2 py-1.5 text-left font-black text-indigo-700 whitespace-nowrap">{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {importExcelModal.preview.map((row, i) => (
+                                <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-indigo-50/40'}>
+                                  <td className="px-2 py-1 text-gray-400">{i + 1}</td>
+                                  <td className="px-2 py-1 font-bold text-gray-800">{String(row[importExcelModal.mapping.nombres] || '—')}</td>
+                                  <td className="px-2 py-1 font-mono text-gray-600">{String(row[importExcelModal.mapping.docNumero] || '—')}</td>
+                                  <td className="px-2 py-1">{String(row[importExcelModal.mapping.cargo] || '—')}</td>
+                                  <td className="px-2 py-1">{String(row[importExcelModal.mapping.eps] || '—')}</td>
+                                  <td className="px-2 py-1">{String(row[importExcelModal.mapping.celular] || '—')}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {importExcelModal.rows.length > 5 && (
+                          <p className="text-[9px] text-gray-400 mt-1 text-right">… y {importExcelModal.rows.length - 5} trabajador(es) más</p>
+                        )}
+                      </div>
+
+                      {/* Botones confirmar */}
+                      <div className="flex gap-3 justify-end pt-2 border-t">
+                        <button onClick={() => setImportExcelModal(null)}
+                          className="px-4 py-2 bg-gray-100 text-gray-700 text-xs font-black rounded-xl hover:bg-gray-200">
+                          Cancelar
+                        </button>
+                        <button
+                          disabled={!importExcelModal.mapping.nombres && !importExcelModal.mapping.docNumero}
+                          onClick={async () => {
+                            const { enc, rows, mapping } = importExcelModal;
+                            try {
+                              // Cargar respuestas existentes
+                              const existing = await fetch(
+                                `${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`,
+                                { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
+                              ).then(r => r.json()).then(d => d[0]?.value || []).catch(() => []);
+
+                              // Convertir filas Excel al formato de respuesta de encuesta
+                              const newResps = rows.map((row, i) => ({
+                                id: `excel_${Date.now()}_${i}`,
+                                nombres:         String(row[mapping.nombres]         || '').trim(),
+                                docTipo:         String(row[mapping.docTipo]         || 'CC').trim() || 'CC',
+                                docNumero:       String(row[mapping.docNumero]       || '').trim(),
+                                cargo:           String(row[mapping.cargo]           || '').trim(),
+                                areaCargo:       String(row[mapping.areaCargo]       || '').trim(),
+                                eps:             String(row[mapping.eps]             || '').trim(),
+                                arl:             String(row[mapping.arl]             || '').trim(),
+                                afp:             String(row[mapping.afp]             || '').trim(),
+                                celular:         String(row[mapping.celular]         || '').trim(),
+                                email:           String(row[mapping.email]           || '').trim(),
+                                genero:          String(row[mapping.genero]          || '').trim(),
+                                fechaNacimiento: String(row[mapping.fechaNacimiento] || '').trim(),
+                                ciudad:          String(row[mapping.ciudad]          || '').trim(),
+                                antiguedad:      String(row[mapping.antiguedad]      || '').trim(),
+                                tipoContrato:    String(row[mapping.tipoContrato]    || '').trim(),
+                                importado: false,
+                                estado: 'excel',
+                                _fuenteExcel: true,
+                                _fechaImport: new Date().toISOString(),
+                              })).filter(r => r.nombres || r.docNumero);
+
+                              // Evitar duplicados por docNumero
+                              const existingDocs = new Set(existing.map(r => String(r.docNumero || '')).filter(Boolean));
+                              const nuevos = newResps.filter(r => !r.docNumero || !existingDocs.has(r.docNumero));
+                              const duplicados = newResps.length - nuevos.length;
+                              const merged = [...existing, ...nuevos];
+
+                              await _sbSet(`siso_encuesta_resp_${enc.token}`, merged);
+                              setImportExcelModal(null);
+                              // Refrescar la vista de la encuesta
+                              const updEnc = encuestas.map(e => e.id === enc.id ? { ...e, _showResps: false, _respuestas: undefined } : e);
+                              setEncuestas(updEnc);
+                              showAlert(`✅ Excel importado exitosamente.\n\n• ${nuevos.length} trabajador(es) agregados\n${duplicados > 0 ? `• ${duplicados} duplicado(s) omitido(s)\n` : ''}• Use "👁️ Ver Respuestas" para confirmar\n• Luego use "⬆️ Importar Pacientes" o "📅 Agendar Todos"`);
+                            } catch { showAlert("Error al guardar los datos. Verifique su conexión e intente de nuevo."); }
+                          }}
+                          className="px-5 py-2 bg-indigo-700 text-white text-xs font-black rounded-xl hover:bg-indigo-800 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          ✅ Importar {importExcelModal.rows.length} trabajador(es)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
               </div>
             </div>
           )}
