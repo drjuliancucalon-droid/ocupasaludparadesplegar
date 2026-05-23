@@ -17258,12 +17258,32 @@ function AppInner() {
           // ── Pacientes ──────────────────────────────────────────────────────
           if ((key.startsWith("siso_patients_") || key.startsWith("siso_db_patients_")) && Array.isArray(value) && value.length > 0) {
             setPatientsList(prev => {
-              if (value.length > prev.length || JSON.stringify(value) !== JSON.stringify(prev)) {
-                _ls.setItem(_patKey(userId), JSON.stringify(value));
-                dataReadyRef.current = true;
-                return value;
+              // FUSIÓN INTELIGENTE: nunca degradar un HC "Cerrada" local con datos viejos de Supabase.
+              // Escenario: el write asíncrono de handleCloseHistory no llegó aún a Supabase →
+              // el auto-refresh devuelve la versión sin "Cerrada" → sin esta protección, la HC
+              // volvería a mostrarse como "Abierta" aunque ya fue cerrada localmente.
+              const prevMap = new Map(prev.map(p => [p.id, p]));
+              let changed = false;
+              const merged = value.map(cloudPat => {
+                const localPat = prevMap.get(cloudPat.id);
+                // Si localmente está "Cerrada" pero la nube no lo refleja aún, preservar local
+                if (localPat?.estadoHistoria === "Cerrada" && cloudPat.estadoHistoria !== "Cerrada") {
+                  return localPat; // no degradar
+                }
+                if (!localPat || JSON.stringify(cloudPat) !== JSON.stringify(localPat)) changed = true;
+                return cloudPat;
+              });
+              // Añadir pacientes locales que no están en la nube (ej: recién creados)
+              for (const localPat of prev) {
+                if (!value.find(cp => cp.id === localPat.id)) {
+                  merged.push(localPat);
+                  changed = true;
+                }
               }
-              return prev;
+              if (!changed && merged.length === prev.length) return prev;
+              _ls.setItem(_patKey(userId), JSON.stringify(merged));
+              dataReadyRef.current = true;
+              return merged;
             });
           }
 
@@ -20024,12 +20044,17 @@ const handleLogin = (u, p) => {
           firmaDigital,
         };
         setData(closed);
-        const list = [...patientsList];
-        const idx = list.findIndex((p) => p.id === closed.id);
-        if (idx >= 0) list[idx] = closed;
-        else list.push(closed);
-        setPatientsList(list);
-        _syncPatients(list);
+        // Usar functional update para evitar problema de closure estale:
+        // patientsList capturado en el closure puede ser una versión anterior
+        // si React actualizó el estado durante el await _generarHashHC.
+        setPatientsList(prev => {
+          const list = [...prev];
+          const idx = list.findIndex((p) => p.id === closed.id);
+          if (idx >= 0) list[idx] = closed;
+          else list.push(closed);
+          _syncPatients(list); // escribe a localStorage (sync) y Supabase (async)
+          return list;
+        });
         // PORTAL PÚBLICO: guardar resumen en clave pública (sin RLS)
         // Política SQL necesaria: CREATE POLICY portal_public_read ON siso_store FOR SELECT USING (key LIKE 'siso_portal_%');
         const portalData = {
@@ -21867,7 +21892,23 @@ Esta historia clínica debe conservarse mínimo 20 años.
           ? "empresa_" + currentUser.empresaId
           : _activeUser;
         const snPat = sp(_patKey(_suidGoTo), null);
-        if (snPat !== null) setPatientsList(snPat);
+        // Fusión inteligente: preservar HCs "Cerradas" en memoria aunque localStorage
+        // esté desactualizado (puede ocurrir si _syncPatients aún no completó el write).
+        if (snPat !== null) setPatientsList(prev => {
+          if (!prev.length) return snPat;
+          const prevMap = new Map(prev.map(p => [p.id, p]));
+          const merged = snPat.map(lsPat => {
+            const memPat = prevMap.get(lsPat.id);
+            if (memPat?.estadoHistoria === "Cerrada" && lsPat.estadoHistoria !== "Cerrada") {
+              return memPat; // preservar estado "Cerrada" en memoria
+            }
+            return lsPat;
+          });
+          for (const memPat of prev) {
+            if (!snPat.find(lp => lp.id === memPat.id)) merged.push(memPat);
+          }
+          return merged;
+        });
         const snComp = sp(_compKey(_suidGoTo), null);
         if (snComp !== null) setCompanies(snComp);
       }
