@@ -17189,8 +17189,12 @@ function AppInner() {
   // Cooldown de 60 s por vista para no saturar Supabase.
   const _viewRefreshTs = useRef({});
   const _VIEW_COOLDOWN  = 300000; // 5 minutos — evita egress excesivo en Supabase
+  const _prevViewRef    = useRef(null); // para detectar si venimos de "historia"
 
   useEffect(() => {
+    const prevView = _prevViewRef.current;
+    _prevViewRef.current = view;
+
     if (!currentUser) return;
     const now    = Date.now();
     const userId = currentUser.user;
@@ -17203,9 +17207,14 @@ function AppInner() {
     if (now - (_viewRefreshTs.current[ck] || 0) < _VIEW_COOLDOWN) return;
     _viewRefreshTs.current[ck] = now;
 
+    // Si venimos de "historia", no recargamos pacientes desde Supabase ahora mismo.
+    // Evita condición de carrera donde el write asíncrono aún no llegó a Supabase
+    // y el read devuelve la versión antigua sin el contenido generado por la IA.
+    const comingFromHC = prevView === "historia";
+
     // Mapa vista → claves Supabase a consultar
     const VIEW_KEYS = {
-      patients:   [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
+      patients:   comingFromHC ? [] : [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
       historia:   [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
       dashboard:  [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
       companies:  [`siso_companies_${userId}`],
@@ -18511,6 +18520,8 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
           sveRecomendado: parsed.sveRecomendado.filter(s => s && !s.includes("si aplica")),
         }));
       }
+      // ── Marcar HC como modificada para que el guardia de salida y el autoguardado funcionen ──
+      _setHcDirty(true);
       const extraMsg = [
         parsed.derivaciones?.length > 0
           ? `\n• ${parsed.derivaciones.length} derivación(es) sugerida(s)`
