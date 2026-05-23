@@ -16160,6 +16160,11 @@ function AppInner() {
   const [usersList, setUsersList] = useState(initialUsers);
   const [usersReady, setUsersReady] = useState(false); // FIX: esperar Supabase antes de login
   const [patientsList, setPatientsList] = useState([]);
+  // Ref siempre actualizado con el valor más reciente de patientsList.
+  // Evita el problema de "stale closure" en funciones async como handleCloseHistory,
+  // donde la variable capturada en el closure puede ser una versión anterior.
+  const patientsListRef = useRef([]);
+  useEffect(() => { patientsListRef.current = patientsList; }, [patientsList]);
   const [savedReports, setSavedReports] = useState([]);
   const [savedBills, setSavedBills] = useState([]);
   // ── Atenciones cerradas desde agenda (tiempo real) ────────────────────────
@@ -19996,11 +20001,9 @@ const handleLogin = (u, p) => {
       return;
     }
     // AUTO-GUARDAR antes de mostrar el diálogo de confirmación.
-    // Esto escribe el estado actual (incluye contenido de IA) en Supabase
-    // antes de que el usuario confirme el cierre. Para cuando navegue al
-    // dashboard, el write ya llegó y el auto-refresh devuelve "Cerrada".
+    // Usa patientsListRef.current (siempre fresco) en lugar del closure estale.
     {
-      const _preList = [...patientsList];
+      const _preList = [...patientsListRef.current];
       const _preSaveIdx = _preList.findIndex((p) => p.id === data.id);
       const _preSave = { ...data, _medicoId: currentUser?.user, _autoSavedBeforeClose: true };
       if (_preSaveIdx >= 0) _preList[_preSaveIdx] = _preSave;
@@ -20044,17 +20047,16 @@ const handleLogin = (u, p) => {
           firmaDigital,
         };
         setData(closed);
-        // Usar functional update para evitar problema de closure estale:
-        // patientsList capturado en el closure puede ser una versión anterior
-        // si React actualizó el estado durante el await _generarHashHC.
-        setPatientsList(prev => {
-          const list = [...prev];
+        // patientsListRef.current tiene siempre el valor más reciente,
+        // incluso después del await (evita el problema de stale closure).
+        {
+          const list = [...patientsListRef.current];
           const idx = list.findIndex((p) => p.id === closed.id);
           if (idx >= 0) list[idx] = closed;
           else list.push(closed);
+          setPatientsList(list);
           _syncPatients(list); // escribe a localStorage (sync) y Supabase (async)
-          return list;
-        });
+        }
         // PORTAL PÚBLICO: guardar resumen en clave pública (sin RLS)
         // Política SQL necesaria: CREATE POLICY portal_public_read ON siso_store FOR SELECT USING (key LIKE 'siso_portal_%');
         const portalData = {
