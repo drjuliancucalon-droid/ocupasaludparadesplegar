@@ -17213,19 +17213,24 @@ function AppInner() {
     const comingFromHC = prevView === "historia";
 
     // Mapa vista → claves Supabase a consultar
+    // NOTA: si venimos de "historia", omitimos siso_patients_* en TODAS las vistas.
+    // Esto evita la carrera entre el write asíncrono de Firma/Guardar y el read
+    // del auto-refresh, que devolvía la versión vieja y mostraba "Abierta" en dashboard.
     const VIEW_KEYS = {
       patients:   comingFromHC ? [] : [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
       historia:   [`siso_patients_${userId}`, `siso_db_patients_${userId}`],
-      dashboard:  [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
+      dashboard:  comingFromHC
+        ? [`siso_companies_${userId}`, `siso_atenciones_cerradas`]
+        : [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
       companies:  [`siso_companies_${userId}`],
       perfilips:  [`siso_companies_${userId}`],
       reporte:    [`siso_informes_${userId}`, `siso_saved_reports`],
       bill:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`],
       caja:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`, `siso_caja_movs_${suffix}`],
-      agenda:     [`siso_atenciones_cerradas`, `siso_patients_${userId}`],
+      agenda:     comingFromHC ? [`siso_atenciones_cerradas`] : [`siso_atenciones_cerradas`, `siso_patients_${userId}`],
       asistencia: [`siso_atenciones_cerradas`],
-      sve:        [`siso_patients_${userId}`],
-      arl:        [`siso_patients_${userId}`],
+      sve:        comingFromHC ? [] : [`siso_patients_${userId}`],
+      arl:        comingFromHC ? [] : [`siso_patients_${userId}`],
       custodia:   [`siso_cartas_custodia_${userId}`, `siso_cartas_custodia`],
     };
 
@@ -19969,6 +19974,18 @@ const handleLogin = (u, p) => {
     if (!data.conceptoAptitud && dataType === "ocupacional") {
       showAlert("Debe generar el concepto de aptitud antes de cerrar.");
       return;
+    }
+    // AUTO-GUARDAR antes de mostrar el diálogo de confirmación.
+    // Esto escribe el estado actual (incluye contenido de IA) en Supabase
+    // antes de que el usuario confirme el cierre. Para cuando navegue al
+    // dashboard, el write ya llegó y el auto-refresh devuelve "Cerrada".
+    {
+      const _preList = [...patientsList];
+      const _preSaveIdx = _preList.findIndex((p) => p.id === data.id);
+      const _preSave = { ...data, _medicoId: currentUser?.user, _autoSavedBeforeClose: true };
+      if (_preSaveIdx >= 0) _preList[_preSaveIdx] = _preSave;
+      else _preList.push(_preSave);
+      _syncPatients(_preList);
     }
     // NORMATIVO: Res. 1843/2025 - aviso no-bloqueante de vigencia
     if (dataType === "ocupacional" && !data.vigencia) {
