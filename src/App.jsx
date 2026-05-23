@@ -17907,7 +17907,8 @@ function AppInner() {
             data.fechaExamen || new Date().toISOString().split("T")[0],
           _autoSaved: new Date().toISOString(),
         };
-        const list = [...patientsList];
+        // patientsListRef.current: siempre fresco, nunca stale closure
+        const list = [...patientsListRef.current];
         const idx = list.findIndex((p) => p.id === toSave.id);
         if (idx >= 0) list[idx] = toSave;
         else list.push(toSave);
@@ -19984,7 +19985,9 @@ const handleLogin = (u, p) => {
       _medicoId: currentUser?.user,
       fechaExamen: data.fechaExamen || new Date().toISOString().split("T")[0],
     };
-    const list = [...patientsList];
+    // patientsListRef.current evita el stale closure: contiene siempre
+    // la lista más reciente aunque este evento capture una versión anterior.
+    const list = [...patientsListRef.current];
     const idx = list.findIndex((p) => p.id === toSave.id);
     if (idx >= 0) list[idx] = toSave;
     else list.push(toSave);
