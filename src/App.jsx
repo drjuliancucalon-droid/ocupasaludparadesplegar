@@ -14854,6 +14854,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
   const [intentos, setIntentos] = React.useState(0);
   const [bloqueadoHasta, setBloqueadoHasta] = React.useState(0);
   const [codigoPortal, setCodigoPortal] = React.useState(""); // código de acceso empresa
+  const [empresaAtenciones, setEmpresaAtenciones] = React.useState(null); // {nit,nombre,fechas,atenciones[]}
+  const [fechaFiltroEmpresa, setFechaFiltroEmpresa] = React.useState(""); // "" = todas las fechas
   const MAX_INTENTOS = 6;
   const BLOQUEO_MS = 5 * 60 * 1000; // 5 minutos
 
@@ -15015,13 +15017,26 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
             } catch {}
           }
           if (empresaIdx && empresaIdx.documentos && empresaIdx.documentos.length > 0) {
-            // Fetch each worker's portal data
+            // ── Intentar cargar índice multi-fecha primero ─────────────────────
+            const nitFound = empresaIdx.nit || nitClean;
+            const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nitFound);
+            if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
+              setEmpresaAtenciones(rAt.data);
+              setResultadosEmpresa(rAt.data.atenciones);
+              setFechaFiltroEmpresa("");
+              setCertSeleccionados({});
+              setCargando(false);
+              return;
+            }
+            // ── Fallback: cargar individual por documento ──────────────────────
             const resultados = [];
             for (const doc of empresaIdx.documentos) {
               const rDoc = await fetchKey("siso_portal_doc_" + doc.replace(/\s/g, ""));
               if (rDoc.ok && rDoc.data) resultados.push(rDoc.data);
             }
             if (resultados.length > 0) {
+              setEmpresaAtenciones(null);
+              setFechaFiltroEmpresa("");
               setResultadosEmpresa(resultados);
               setCertSeleccionados({});
               setCargando(false);
@@ -15250,6 +15265,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                   setError("");
                   setResultado(null);
                   setResultadosEmpresa([]);
+                  setEmpresaAtenciones(null);
+                  setFechaFiltroEmpresa("");
                 }}
                 className={`flex-1 py-2 text-xs font-black rounded-lg transition ${
                   tipoBusqueda === opt.v
@@ -15499,49 +15516,114 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
           />
         )}
 
-        {/* ── Resultados Empresa (múltiples certificados) ── */}
-        {resultadosEmpresa.length > 0 && (
+        {/* ── Resultados Empresa (múltiples certificados + filtro por fecha) ── */}
+        {resultadosEmpresa.length > 0 && (() => {
+          // ── Calcular fechas disponibles y trabajadores únicos ─────────────
+          const fechasDisponibles = empresaAtenciones?.fechas
+            ? [...empresaAtenciones.fechas].sort()
+            : [...new Set(resultadosEmpresa.map(p => p.fechaExamen || "").filter(Boolean))].sort();
+          const multiDate = fechasDisponibles.length > 1;
+
+          // ── Filtrar atenciones según fecha seleccionada ───────────────────
+          const atencionesVisibles = fechaFiltroEmpresa
+            ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa)
+            : resultadosEmpresa;
+
+          const trabajadoresUnicos = new Set(resultadosEmpresa.map(p => p.docNumero)).size;
+          const empNombre = empresaAtenciones?.nombre || resultadosEmpresa[0]?.empresaNombre || "Empresa";
+
+          // ── Formato fecha legible ─────────────────────────────────────────
+          const fmtFecha = (f) => {
+            if (!f) return "";
+            const [y, m, d] = f.split("-");
+            return `${d}/${m}/${y}`;
+          };
+
+          return (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            <div className="bg-blue-700 px-4 py-3 flex items-center justify-between">
+            {/* Encabezado */}
+            <div className="bg-blue-700 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
               <div>
                 <p className="text-white font-black text-sm">🏢 Certificados de la Empresa</p>
-                <p className="text-blue-200 text-[10px]">{resultadosEmpresa[0]?.empresaNombre || "Empresa"} · {resultadosEmpresa.length} certificado(s)</p>
+                <p className="text-blue-200 text-[10px]">
+                  {empNombre} · {trabajadoresUnicos} trabajador(es) · {resultadosEmpresa.length} atención(es)
+                  {multiDate && <span className="ml-1 text-yellow-300 font-black">· {fechasDisponibles.length} fechas</span>}
+                </p>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 <button onClick={() => {
                   const all = {};
-                  resultadosEmpresa.forEach((_, i) => { all[i] = true; });
-                  setCertSeleccionados(Object.keys(certSeleccionados).length === resultadosEmpresa.length ? {} : all);
+                  atencionesVisibles.forEach((_, i) => { all[i] = true; });
+                  setCertSeleccionados(Object.keys(certSeleccionados).length === atencionesVisibles.length ? {} : all);
                 }} className="px-3 py-1 bg-white/20 text-white text-[10px] font-black rounded-lg hover:bg-white/30">
-                  {Object.keys(certSeleccionados).length === resultadosEmpresa.length ? "☑ Deseleccionar" : "☐ Seleccionar todos"}
+                  {Object.keys(certSeleccionados).length === atencionesVisibles.length ? "☑ Deseleccionar" : "☐ Seleccionar todos"}
                 </button>
                 <button onClick={() => {
-                  const sel = resultadosEmpresa.filter((_, i) => certSeleccionados[i]);
-                  const pacs = sel.length > 0 ? sel : resultadosEmpresa;
+                  const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
+                  const pacs = sel.length > 0 ? sel : atencionesVisibles;
                   const w = window.open("","_blank","width=900,height=700");
                   if (!w) return;
-                  // Generar certificados completos usando el mismo formato de la plataforma
                   const certs = pacs.map((p, i) => {
                     const certHtml = _generarCertificadoDesdePortal(p);
-                    // Extraer solo el body del HTML generado
                     const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
                     const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
                     return `<div style="${i > 0 ? "page-break-before:always;" : ""}padding-top:${i > 0 ? "10mm" : "0"};">${bodyContent}</div>`;
                   }).join("");
-                  // Extraer los estilos del primer certificado
                   const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                   const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                   const styles = styleMatch ? styleMatch[1] : "";
-                  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados - ${pacs[0]?.empresaNombre || "Empresa"}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles} .np-dl{position:fixed;top:10px;right:10px;z-index:9999;} @media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
+                  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados - ${empNombre}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles} .np-dl{position:fixed;top:10px;right:10px;z-index:9999;} @media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
                   w.document.close();
                 }} className="px-3 py-1 bg-emerald-500 text-white text-[10px] font-black rounded-lg hover:bg-emerald-600">
-                  📥 Descargar {Object.keys(certSeleccionados).length > 0 ? `(${Object.keys(certSeleccionados).length})` : `todos (${resultadosEmpresa.length})`}
+                  📥 Descargar {Object.keys(certSeleccionados).length > 0 ? `(${Object.keys(certSeleccionados).length})` : `(${atencionesVisibles.length})`}
                 </button>
               </div>
             </div>
-            <div className="max-h-[400px] overflow-y-auto overflow-x-auto">
-              <table className="min-w-full text-xs" style={{ minWidth: '600px' }}>
-                <thead className="bg-gray-50 sticky top-0">
+
+            {/* ── Filtro por fecha (solo si hay múltiples fechas) ── */}
+            {multiDate && (
+              <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider flex items-center gap-1">
+                  📅 Fecha de atención:
+                </span>
+                <button
+                  onClick={() => { setFechaFiltroEmpresa(""); setCertSeleccionados({}); }}
+                  className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition ${
+                    !fechaFiltroEmpresa
+                      ? "bg-blue-700 text-white border-blue-700"
+                      : "bg-white text-blue-700 border-blue-300 hover:border-blue-500"
+                  }`}
+                >
+                  Todas ({resultadosEmpresa.length})
+                </button>
+                {fechasDisponibles.map(f => {
+                  const cnt = resultadosEmpresa.filter(p => p.fechaExamen === f).length;
+                  return (
+                    <button
+                      key={f}
+                      onClick={() => { setFechaFiltroEmpresa(f); setCertSeleccionados({}); }}
+                      className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition ${
+                        fechaFiltroEmpresa === f
+                          ? "bg-blue-700 text-white border-blue-700"
+                          : "bg-white text-blue-600 border-blue-200 hover:border-blue-500"
+                      }`}
+                    >
+                      {fmtFecha(f)} <span className="opacity-70">({cnt})</span>
+                    </button>
+                  );
+                })}
+                {fechaFiltroEmpresa && (
+                  <span className="text-[10px] text-blue-500 italic ml-1">
+                    Mostrando {atencionesVisibles.length} de {resultadosEmpresa.length} atenciones
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* ── Tabla de trabajadores ── */}
+            <div className="max-h-[450px] overflow-y-auto overflow-x-auto">
+              <table className="min-w-full text-xs" style={{ minWidth: '620px' }}>
+                <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
                     <th className="p-2 w-8">☐</th>
                     <th className="p-2 text-left font-bold text-gray-600">#</th>
@@ -15549,26 +15631,41 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                     <th className="p-2 text-left font-bold text-gray-600 hidden sm:table-cell">Documento</th>
                     <th className="p-2 text-left font-bold text-gray-600 hidden md:table-cell">Tipo</th>
                     <th className="p-2 text-left font-bold text-gray-600">Concepto</th>
-                    <th className="p-2 text-left font-bold text-gray-600 hidden sm:table-cell">Fecha</th>
+                    <th className="p-2 text-left font-bold text-gray-600">Fecha</th>
                     <th className="p-2 text-left font-bold text-gray-600">Docs</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {resultadosEmpresa.map((p, i) => {
+                  {atencionesVisibles.map((p, i) => {
                     const col = colorAptitud(p.conceptoAptitud);
                     const pMeds = (p.formulaMedicamentos || []).length;
                     const pDerivs = (p.derivaciones || []).length;
                     const pExams = (p.solicitudExamenes || []).length;
                     const pIncap = p.incapacidad?.aplica;
+                    // Detectar si este trabajador tiene más atenciones en otras fechas
+                    const otrasAtenciones = multiDate
+                      ? resultadosEmpresa.filter(a => a.docNumero === p.docNumero && a.fechaExamen !== p.fechaExamen).length
+                      : 0;
                     return (
-                      <tr key={i} className={`border-b border-gray-50 hover:bg-blue-50 ${certSeleccionados[i] ? "bg-blue-50" : ""}`}>
+                      <tr key={`${p.docNumero}-${p.fechaExamen}-${i}`} className={`border-b border-gray-50 hover:bg-blue-50 ${certSeleccionados[i] ? "bg-blue-50" : ""}`}>
                         <td className="p-2 text-center cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><input type="checkbox" checked={!!certSeleccionados[i]} readOnly /></td>
                         <td className="p-2 text-gray-400 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{i + 1}</td>
-                        <td className="p-2 font-bold text-gray-800 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.nombres || "--"}</td>
+                        <td className="p-2 font-bold text-gray-800 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
+                          <div>{p.nombres || "--"}</div>
+                          {otrasAtenciones > 0 && (
+                            <div className="text-[9px] text-blue-500 font-normal mt-0.5">
+                              +{otrasAtenciones} atención(es) en otras fechas
+                            </div>
+                          )}
+                        </td>
                         <td className="p-2 font-mono cursor-pointer hidden sm:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.docNumero || "--"}</td>
                         <td className="p-2 cursor-pointer hidden md:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.tipoExamen || "--"}</td>
                         <td className="p-2 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${col.badge}`}>{col.dot} {p.conceptoAptitud || "--"}</span></td>
-                        <td className="p-2 text-gray-500 cursor-pointer hidden sm:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.fechaExamen || "--"}</td>
+                        <td className="p-2 text-gray-700 font-mono cursor-pointer whitespace-nowrap" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${fechaFiltroEmpresa === p.fechaExamen ? "bg-blue-100 text-blue-700" : "text-gray-500"}`}>
+                            {fmtFecha(p.fechaExamen) || "--"}
+                          </span>
+                        </td>
                         <td className="p-2">
                           <div className="flex gap-1 flex-wrap">
                             {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} title={`Receta (${pMeds} med.)`} className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-black rounded hover:bg-emerald-200 transition">💊 {pMeds}</button>}
@@ -15585,7 +15682,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
               </table>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── Resultado — renderizado en columna derecha del grid (ver arriba) ── */}
         {false &&
