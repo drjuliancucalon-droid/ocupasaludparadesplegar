@@ -13055,14 +13055,30 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
   const [error, setError] = useLocalState("");
   const [loading, setLoading] = useLocalState(false);
   const [encInfo, setEncInfo] = useLocalState(null);
+  // JWT anónimo para escritura — sb_publishable_* NO es un JWT válido para Authorization:Bearer.
+  // Obtenemos un access_token real de Supabase Auth (anon sign-in) antes de guardar.
+  const anonJwtRef = React.useRef(null);
 
-  // Cargar info de la encuesta (empresa, tipo examen)
+  // Cargar info de la encuesta (empresa, tipo examen) + obtener JWT anónimo para escritura
   React.useEffect(() => {
     if (!token) return;
+    // Usar solo apikey en la cabecera (sb_publishable_* no es JWT válido como Bearer)
     fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_${token}&select=value`, {
-      headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
+      headers: { apikey: sbKey }
     }).then(r => r.json()).then(d => {
       if (d[0]?.value) setEncInfo(d[0].value);
+    }).catch(() => {});
+
+    // Obtener JWT anónimo de Supabase para poder escribir con Authorization:Bearer válido
+    // (necesario porque RLS requiere un JWT válido para INSERT/UPDATE)
+    fetch(`${sbUrl}/auth/v1/token?grant_type=anonymous`, {
+      method: "POST",
+      headers: { apikey: sbKey, "Content-Type": "application/json" },
+      body: "{}",
+    }).then(r => r.json()).then(d => {
+      if (d?.access_token) {
+        anonJwtRef.current = d.access_token;
+      }
     }).catch(() => {});
   }, [token]);
 
@@ -13077,26 +13093,52 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
     setError("");
     setLoading(true);
     try {
-      // Leer respuestas existentes
+      // Leer respuestas existentes — solo apikey (lectura anónima permitida)
       const resp = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
-        headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` }
+        headers: { apikey: sbKey }
       });
       const existing = await resp.json();
-      const respuestas = existing[0]?.value || [];
+      const respuestas = Array.isArray(existing[0]?.value) ? existing[0].value : [];
       // Verificar duplicado por cédula
       if (respuestas.find(r => r.docNumero === form.docNumero.trim())) {
         setError("Ya se registraron datos con este número de documento."); setLoading(false); return;
       }
       // Agregar respuesta
       respuestas.push({ ...form, nombres: form.nombres.trim().toUpperCase(), docNumero: form.docNumero.trim(), id: "resp_" + Date.now(), timestamp: new Date().toISOString(), estado: "completa" });
-      // Guardar
-      await fetch(`${sbUrl}/rest/v1/siso_store`, {
+
+      // Headers de escritura: usar JWT anónimo si está disponible, si no solo apikey
+      // NUNCA usar sb_publishable_* como Bearer — no es un JWT válido y Supabase lo rechaza
+      const writeHeaders = {
+        apikey: sbKey,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      };
+      if (anonJwtRef.current) {
+        writeHeaders.Authorization = `Bearer ${anonJwtRef.current}`;
+      }
+
+      // Guardar respuesta
+      const saveResp = await fetch(`${sbUrl}/rest/v1/siso_store`, {
         method: "POST",
-        headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+        headers: writeHeaders,
         body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, value: respuestas, updated_at: new Date().toISOString() }),
       });
+
+      // ── Verificar éxito real antes de mostrar pantalla de confirmación ──
+      if (!saveResp.ok) {
+        let errDetail = "";
+        try { const errBody = await saveResp.json(); errDetail = errBody?.message || errBody?.msg || ""; } catch {}
+        console.error("[Encuesta] Error HTTP al guardar:", saveResp.status, errDetail);
+        setError(`Error al enviar sus datos (código ${saveResp.status}). Por favor intente de nuevo. Si el error persiste, contáctenos.`);
+        setLoading(false);
+        return;
+      }
+
       setEnviado(true);
-    } catch (e) { setError("Error al enviar. Intente de nuevo."); }
+    } catch (e) {
+      console.error("[Encuesta] Error de red:", e);
+      setError("Error de conexión. Verifique su internet e intente de nuevo.");
+    }
     setLoading(false);
   };
 
