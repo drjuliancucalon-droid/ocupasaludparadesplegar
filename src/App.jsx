@@ -13082,6 +13082,33 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
     }).catch(() => {});
   }, [token]);
 
+  // ── Helper: intentar escribir en Supabase con un JWT dado (o sin él) ──────
+  const _tryWrite = async (respuestas, jwt) => {
+    const headers = {
+      apikey: sbKey,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    };
+    if (jwt) headers.Authorization = `Bearer ${jwt}`;
+    return fetch(`${sbUrl}/rest/v1/siso_store`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, value: respuestas, updated_at: new Date().toISOString() }),
+    });
+  };
+
+  // ── Helper: verificar que el dato quedó realmente guardado en Supabase ───
+  const _verifyWrite = async (respId) => {
+    try {
+      const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
+        headers: { apikey: sbKey },
+      });
+      const d = await r.json();
+      const saved = Array.isArray(d[0]?.value) ? d[0].value : [];
+      return saved.some(x => x.id === respId);
+    } catch { return false; }
+  };
+
   const handleSubmit = async () => {
     if (!form.nombres.trim() || form.nombres.trim().length < 5) { setError("Ingrese su nombre completo."); return; }
     if (!form.docNumero.trim()) { setError("Ingrese su número de documento."); return; }
@@ -13093,50 +13120,95 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
     setError("");
     setLoading(true);
     try {
-      // Leer respuestas existentes — solo apikey (lectura anónima permitida)
-      const resp = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
-        headers: { apikey: sbKey }
+      // ── 1. Leer respuestas existentes (lectura anónima siempre permitida) ──
+      const readResp = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
+        headers: { apikey: sbKey },
       });
-      const existing = await resp.json();
+      const existing = await readResp.json();
       const respuestas = Array.isArray(existing[0]?.value) ? existing[0].value : [];
-      // Verificar duplicado por cédula
+
+      // ── 2. Verificar duplicado por cédula ────────────────────────────────
       if (respuestas.find(r => r.docNumero === form.docNumero.trim())) {
         setError("Ya se registraron datos con este número de documento."); setLoading(false); return;
       }
-      // Agregar respuesta
-      respuestas.push({ ...form, nombres: form.nombres.trim().toUpperCase(), docNumero: form.docNumero.trim(), id: "resp_" + Date.now(), timestamp: new Date().toISOString(), estado: "completa" });
 
-      // Headers de escritura: usar JWT anónimo si está disponible, si no solo apikey
-      // NUNCA usar sb_publishable_* como Bearer — no es un JWT válido y Supabase lo rechaza
-      const writeHeaders = {
-        apikey: sbKey,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      };
-      if (anonJwtRef.current) {
-        writeHeaders.Authorization = `Bearer ${anonJwtRef.current}`;
-      }
-
-      // Guardar respuesta
-      const saveResp = await fetch(`${sbUrl}/rest/v1/siso_store`, {
-        method: "POST",
-        headers: writeHeaders,
-        body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, value: respuestas, updated_at: new Date().toISOString() }),
+      // ── 3. Construir la nueva respuesta con ID único para verificación ───
+      const respId = "resp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+      respuestas.push({
+        ...form,
+        nombres: form.nombres.trim().toUpperCase(),
+        docNumero: form.docNumero.trim(),
+        id: respId,
+        timestamp: new Date().toISOString(),
+        estado: "completa",
       });
 
-      // ── Verificar éxito real antes de mostrar pantalla de confirmación ──
-      if (!saveResp.ok) {
+      // ── 4. Intento 1: con JWT anónimo (si fue obtenido al montar) ────────
+      let saveOk = false;
+      let saveResp = await _tryWrite(respuestas, anonJwtRef.current);
+
+      if (saveResp.ok) {
+        // Verificar lectura de vuelta para confirmar persistencia real
+        saveOk = await _verifyWrite(respId);
+        if (!saveOk) {
+          console.warn("[Encuesta] POST OK pero dato no aparece en lectura — posible demora de Supabase, reintentando...");
+          // Pequeña espera y reintento de verificación
+          await new Promise(res => setTimeout(res, 1500));
+          saveOk = await _verifyWrite(respId);
+        }
+      }
+
+      // ── 5. Intento 2: sin JWT (solo apikey → rol anónimo de Supabase) ───
+      if (!saveOk && !saveResp.ok) {
+        console.warn("[Encuesta] Intento 1 fallido (status", saveResp.status, "). Reintentando sin Authorization header...");
+        saveResp = await _tryWrite(respuestas, null);
+        if (saveResp.ok) {
+          await new Promise(res => setTimeout(res, 1000));
+          saveOk = await _verifyWrite(respId);
+        }
+      }
+
+      // ── 6. Intento 3: refrescar JWT anónimo y reintentar ─────────────────
+      if (!saveOk) {
+        try {
+          const rAuth = await fetch(`${sbUrl}/auth/v1/token?grant_type=anonymous`, {
+            method: "POST",
+            headers: { apikey: sbKey, "Content-Type": "application/json" },
+            body: "{}",
+          });
+          const authData = await rAuth.json();
+          if (authData?.access_token) {
+            anonJwtRef.current = authData.access_token;
+            saveResp = await _tryWrite(respuestas, anonJwtRef.current);
+            if (saveResp.ok) {
+              await new Promise(res => setTimeout(res, 1000));
+              saveOk = await _verifyWrite(respId);
+            }
+          }
+        } catch {}
+      }
+
+      // ── 7. Resultado final ───────────────────────────────────────────────
+      if (!saveOk) {
         let errDetail = "";
-        try { const errBody = await saveResp.json(); errDetail = errBody?.message || errBody?.msg || ""; } catch {}
-        console.error("[Encuesta] Error HTTP al guardar:", saveResp.status, errDetail);
-        setError(`Error al enviar sus datos (código ${saveResp.status}). Por favor intente de nuevo. Si el error persiste, contáctenos.`);
+        try {
+          const errBody = await saveResp.json();
+          errDetail = errBody?.message || errBody?.hint || errBody?.msg || String(saveResp.status);
+        } catch { errDetail = String(saveResp.status || "sin respuesta"); }
+        console.error("[Encuesta] ❌ No se pudo guardar después de 3 intentos:", errDetail);
+        setError(
+          "❌ No fue posible guardar sus datos. " +
+          "Por favor tome una captura de pantalla de este formulario y comuníquese con la empresa. " +
+          "Código de error: " + errDetail
+        );
         setLoading(false);
         return;
       }
 
-      setEnviado(true);
+      console.log("[Encuesta] ✅ Respuesta guardada y verificada en Supabase. ID:", respId);
+      setEnviado(respId);  // guardar el ID de confirmación
     } catch (e) {
-      console.error("[Encuesta] Error de red:", e);
+      console.error("[Encuesta] Error inesperado:", e);
       setError("Error de conexión. Verifique su internet e intente de nuevo.");
     }
     setLoading(false);
@@ -13146,14 +13218,20 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
   const EPS_LIST = ["NUEVA EPS","SANITAS","SALUD TOTAL","MEDIMÁS","COMPENSAR","SURA","COOMEVA","FAMISANAR","COOSALUD","MUTUAL SER","COMFENALCO","CAJACOPI","ASMET SALUD","EMSSANAR","MALLAMAS","AIC","PIJAOS SALUD","CAPITAL SALUD","ALIANSALUD","OTRA"];
   const ARL_LIST = ["ARL SURA","POSITIVA","AXA COLPATRIA","SEGUROS BOLÍVAR","COLMENA","LA EQUIDAD","MAPFRE","LIBERTY","ALFA"];
 
+  // enviado es ahora el respId (string) cuando fue confirmado, o false
   if (enviado) return (
     <div className="min-h-screen bg-emerald-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md text-center">
-        <div className="text-5xl mb-4">✅</div>
-        <h2 className="text-xl font-black text-emerald-800 mb-2">¡Datos enviados!</h2>
-        <p className="text-sm text-gray-600 mb-1">Sus datos sociodemográficos fueron registrados correctamente.</p>
-        <p className="text-xs text-gray-400">Su cita para examen médico ocupacional será agendada próximamente.</p>
-        {encInfo && <p className="text-xs text-emerald-600 font-bold mt-3">Empresa: {encInfo.empresaNombre}</p>}
+        <div className="text-6xl mb-4">✅</div>
+        <h2 className="text-xl font-black text-emerald-800 mb-2">¡Datos registrados!</h2>
+        <p className="text-sm text-gray-600 mb-1">Sus datos sociodemográficos fueron <strong>guardados correctamente</strong> en el sistema.</p>
+        <p className="text-xs text-gray-400 mt-2">Su cita para examen médico ocupacional será agendada próximamente.</p>
+        {encInfo && <p className="text-xs text-emerald-600 font-bold mt-3">🏥 {encInfo.empresaNombre}</p>}
+        <div className="mt-4 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+          <p className="text-[10px] text-gray-500">Código de confirmación</p>
+          <p className="text-xs font-mono font-bold text-emerald-700 break-all">{enviado}</p>
+          <p className="text-[9px] text-gray-400 mt-1">Guarde este código como comprobante de envío.</p>
+        </div>
       </div>
     </div>
   );
