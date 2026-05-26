@@ -17549,7 +17549,15 @@ function AppInner() {
             // Supabase siempre es la fuente de verdad — sin comparar tamaños.
             setAtencionesCerradas(value);
             try {
-              _ls.setItem("siso_atenciones_cerradas", JSON.stringify(value));
+              const _jv = JSON.stringify(value);
+              _ls.setItem("siso_atenciones_cerradas", _jv);
+              // Sincronizar también la clave específica del usuario para evitar
+              // que el login init cargue datos desactualizados de la clave local.
+              const _sess2 = JSON.parse(_ls.getItem("siso_session") || "{}");
+              const _suf2 = _sess2?.empresaId
+                ? "empresa_" + _sess2.empresaId
+                : _sess2?.user || "shared";
+              _ls.setItem(`siso_atenciones_${_suf2}`, _jv);
               _ls.setItem("siso_atenciones_v", "2"); // marcar cache como válido
             } catch {}
           }
@@ -17905,9 +17913,11 @@ function AppInner() {
       sp(`siso_agendados_${_initSuf}`, null) ?? sp("siso_agendados", [])
     );
     setAtencionesCerradas(
-      // Solo usar caché local si está marcado como v2 (sincronizado desde Supabase)
+      // Solo usar caché local si está marcado como v2 (sincronizado desde Supabase).
+      // Prioridad: siso_atenciones_cerradas (escrito por Supabase sync, siempre limpio)
+      // Fallback: clave específica del usuario (escrita al cerrar HCs localmente).
       _ls.getItem("siso_atenciones_v") === "2"
-        ? (sp(`siso_atenciones_${_initSuf}`, null) ?? sp("siso_atenciones_cerradas", []))
+        ? (sp("siso_atenciones_cerradas", null) ?? sp(`siso_atenciones_${_initSuf}`, []))
         : []
     );
     setSavedBillsList(
