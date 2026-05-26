@@ -19226,6 +19226,16 @@ JSON REQUERIDO (estructura exacta):
       );
       if (!confirmEmpty) return;
     }
+    // GUARD: no sobreescribir atenciones cerradas si el estado aún no cargó desde Supabase
+    if (dataReadyRef.current && patientsList.length > 0 && atencionesCerradas.length === 0) {
+      const confirmAtenciones = window.confirm(
+        "⚠️ ADVERTENCIA: Las atenciones cerradas aparecen vacías en este momento.\n\n" +
+        "Esto puede ocurrir si la sincronización inicial aún no terminó.\n\n" +
+        "Guardar ahora sobreescribiría las atenciones con un listado vacío.\n\n" +
+        "¿Desea continuar de todas formas?"
+      );
+      if (!confirmAtenciones) return;
+    }
     setSyncStatus("syncing");
     const ts = new Date().toISOString();
     const currentKeys = sps("siso_ai_keys", aiConfig.keys || {});
@@ -19278,9 +19288,11 @@ JSON REQUERIDO (estructura exacta):
     await _sbQueue.flush();
     const allOk = Object.values(results).every(Boolean);
     setSyncStatus(allOk ? "ok" : "error");
+    const failedItems = Object.entries(results).filter(([, ok]) => !ok).map(([k]) => k);
     setSyncReport({
       ts,
       results,
+      failedItems, // lista explícita de qué falló
       summary: {
         pacientes: patientsList.length,
         empresas: companies.length,
@@ -19292,7 +19304,17 @@ JSON REQUERIDO (estructura exacta):
         apiKeys: keysGuardadas,
       },
     });
+    // Siempre mostrar el reporte; si hay errores, también alertar al usuario
     setShowSyncReport(true);
+    if (!allOk) {
+      setTimeout(() => {
+        window.alert(
+          `⚠️ Guardado incompleto — ${failedItems.length} colección${failedItems.length !== 1 ? "es" : ""} no se guardaron:\n\n` +
+          failedItems.map(f => `• ${f}`).join("\n") +
+          "\n\nRevisa tu conexión e intenta guardar de nuevo."
+        );
+      }, 300);
+    }
   };
 
   // ── RECUPERACIÓN DE EMERGENCIA: escanear todas las claves de Supabase ─────────────────
@@ -22212,7 +22234,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
         ? "bg-emerald-50 text-emerald-700 border-emerald-200"
         : syncStatus === "syncing" || syncStatus === "loading"
         ? "bg-blue-50 text-blue-700 border-blue-200"
-        : "bg-red-50 text-red-500 border-red-200";
+        : syncStatus === "error"
+        ? "bg-red-50 text-red-500 border-red-200"
+        : "bg-gray-50 text-gray-400 border-gray-200"; // idle — gris neutro, no alarma
     const _syncTxt =
       syncStatus === "ok"
         ? "Nube ✓"
@@ -22220,7 +22244,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
         ? "Sync..."
         : syncStatus === "loading"
         ? "Cargando..."
-        : "Sin nube";
+        : syncStatus === "error"
+        ? "Sin nube"   // rojo solo en error real
+        : "Sin sync";  // idle: gris, no es un error
     const _syncTitle =
       syncStatus === "ok"
         ? "Sincronizado"
