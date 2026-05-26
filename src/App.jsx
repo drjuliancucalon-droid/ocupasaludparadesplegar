@@ -17543,7 +17543,10 @@ function AppInner() {
 
           // ── Atenciones agenda ──────────────────────────────────────────────
           if (key === "siso_atenciones_cerradas" && Array.isArray(value)) {
-            setAtencionesCerradas(prev => value.length >= prev.length ? value : prev);
+            // Siempre usar la versión de Supabase (es la fuente de verdad)
+            // NOTA: no usar value.length >= prev.length porque un cleanup legítimo
+            // puede reducir el número de entradas (dedup) y debe prevalecer.
+            setAtencionesCerradas(value);
             try { _ls.setItem("siso_atenciones_cerradas", JSON.stringify(value)); } catch {}
           }
 
