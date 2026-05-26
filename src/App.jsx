@@ -16388,6 +16388,9 @@ function AppInner() {
   // ── Atenciones cerradas desde agenda (tiempo real) ────────────────────────
   const [atencionesCerradas, setAtencionesCerradas] = useState(() => {
     try {
+      // v2: si el marcador no existe, ignorar caché local y esperar sync de Supabase.
+      // Esto garantiza que un dedup/limpieza en Supabase siempre prevalece sobre localStorage.
+      if (_ls.getItem("siso_atenciones_v") !== "2") return [];
       return JSON.parse(_ls.getItem("siso_atenciones_cerradas") || "[]");
     } catch {
       return [];
@@ -17543,11 +17546,12 @@ function AppInner() {
 
           // ── Atenciones agenda ──────────────────────────────────────────────
           if (key === "siso_atenciones_cerradas" && Array.isArray(value)) {
-            // Siempre usar la versión de Supabase (es la fuente de verdad)
-            // NOTA: no usar value.length >= prev.length porque un cleanup legítimo
-            // puede reducir el número de entradas (dedup) y debe prevalecer.
+            // Supabase siempre es la fuente de verdad — sin comparar tamaños.
             setAtencionesCerradas(value);
-            try { _ls.setItem("siso_atenciones_cerradas", JSON.stringify(value)); } catch {}
+            try {
+              _ls.setItem("siso_atenciones_cerradas", JSON.stringify(value));
+              _ls.setItem("siso_atenciones_v", "2"); // marcar cache como válido
+            } catch {}
           }
 
           // ── Caja movimientos ───────────────────────────────────────────────
@@ -17901,8 +17905,10 @@ function AppInner() {
       sp(`siso_agendados_${_initSuf}`, null) ?? sp("siso_agendados", [])
     );
     setAtencionesCerradas(
-      sp(`siso_atenciones_${_initSuf}`, null) ??
-        sp("siso_atenciones_cerradas", [])
+      // Solo usar caché local si está marcado como v2 (sincronizado desde Supabase)
+      _ls.getItem("siso_atenciones_v") === "2"
+        ? (sp(`siso_atenciones_${_initSuf}`, null) ?? sp("siso_atenciones_cerradas", []))
+        : []
     );
     setSavedBillsList(
       sp(`siso_saved_bills_${_initSuf}`, null) ?? sp("siso_saved_bills", [])
@@ -20429,6 +20435,7 @@ const handleLogin = (u, p) => {
           setAtencionesCerradas(updAC);
           _sync(`siso_atenciones_${_hcSuf}`, JSON.stringify(updAC));
           _sbSet(`siso_atenciones_${_hcSuf}`, updAC);
+          try { _ls.setItem("siso_atenciones_v", "2"); } catch {} // mantener marcador de versión
         }
         // ── PASO 3: Auto-facturación — generar movimiento en Caja ─────────────────
         try {
