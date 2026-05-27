@@ -17954,7 +17954,24 @@ function AppInner() {
       } catch { return false; }
     })();
 
-    if (_isSyncFresh() && _hasLocalData) {
+    // DATA-FIX-v2: si hay atenciones locales con empresaId vacío pero empresaNit conocido,
+    // invalidar el caché para forzar re-descarga desde Supabase (datos corregidos).
+    const _needsDataFix = (() => {
+      if (localStorage.getItem("siso_data_fix_v2") === "done") return false;
+      try {
+        const _ac = JSON.parse(localStorage.getItem("siso_atenciones_cerradas") || localStorage.getItem(`siso_atenciones_${_loginUid}`) || "[]");
+        if (!Array.isArray(_ac) || _ac.length === 0) return false;
+        // Detectar registros sin empresaId pero con empresaNit o empresaNombre conocidos
+        const _hasBad = _ac.some(a => !a.empresaId && (a.empresaNit || a.empresaNombre));
+        return _hasBad;
+      } catch { return false; }
+    })();
+    if (_needsDataFix) {
+      console.log("[SISO] 🔄 DATA-FIX-v2: detectados registros sin empresaId — forzando re-sync desde Supabase");
+      try { localStorage.removeItem("siso_last_sync_ts"); } catch {}
+    }
+
+    if (_isSyncFresh() && _hasLocalData && !_needsDataFix) {
       // Datos frescos en localStorage — no descargar Supabase esta vez
       setSyncStatus("ok");
       console.log("[SISO] ✅ Sync omitido — datos frescos (< 2 h)");
@@ -18145,6 +18162,8 @@ function AppInner() {
       }
       setSyncStatus("ok");
       _markSyncFresh(); // registrar timestamp de sync exitoso → evita re-fetch < 2 h
+      // DATA-FIX-v2: marcar como completado para no forzar re-sync en próximas sesiones
+      try { localStorage.setItem("siso_data_fix_v2", "done"); } catch {}
       // Intentar vaciar la cola de pendientes
       _sbQueue.flush();
     });
@@ -30699,7 +30718,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
       : allUnique.filter((p) => p._medicoId === currentUser?.user);
     const list = listFiltered.filter((p) => {
       const matchSearch = !patientSearchTerm || p.nombres?.toLowerCase().includes(patientSearchTerm.toLowerCase()) || (p.docNumero || "").includes(patientSearchTerm);
-      const matchEmpresa = !patFiltroEmpresa || p.empresaId === patFiltroEmpresa || (patFiltroEmpresa === "particular" && (!p.empresaId || p.empresaId === "particular"));
+      // EMPRESA-FIX: también coincidir por NIT si empresaId está vacío (datos importados/migrados)
+      const _filtroEmp = companies.find((c) => c.id === patFiltroEmpresa);
+      const _nitFiltro = _filtroEmp?.nit || "";
+      const matchEmpresa = !patFiltroEmpresa
+        || p.empresaId === patFiltroEmpresa
+        || (_nitFiltro && (p.empresaNit || "").replace(/[-\s]/g, "").startsWith(_nitFiltro.replace(/[-\s]/g, "")))
+        || (patFiltroEmpresa === "particular" && (!p.empresaId || p.empresaId === "particular"));
       const fechaP = (p.fechaExamen || p.fechaRegistro || "").split("T")[0];
       const matchDesde = !patFiltroDesde || fechaP >= patFiltroDesde;
       const matchHasta = !patFiltroHasta || fechaP <= patFiltroHasta;
