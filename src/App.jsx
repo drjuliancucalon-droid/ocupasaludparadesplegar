@@ -18087,6 +18087,22 @@ function AppInner() {
         [],
         "siso_atenciones_cerradas"
       );
+      // SYNC-FIX: si siso_atenciones_cerradas tiene más registros que siso_atenciones_drcucalon,
+      // actualizar drcucalon para mantener ambas claves en sincronía.
+      // Esto previene que el usuario vea datos incompletos después del login.
+      {
+        const _cerradasCloud = cloud["siso_atenciones_cerradas"]?.value;
+        const _drcKey = `siso_atenciones_${_loginUid}`;
+        if (Array.isArray(_cerradasCloud) && _cerradasCloud.length > 0) {
+          const _drcCloud = cloud[_drcKey]?.value;
+          const _drcLen = Array.isArray(_drcCloud) ? _drcCloud.length : 0;
+          if (_cerradasCloud.length > _drcLen) {
+            // cerradas es más completa — actualizar drcucalon en background
+            _sbSet(_drcKey, _cerradasCloud);
+            _ls.setItem(_drcKey, JSON.stringify(_cerradasCloud));
+          }
+        }
+      }
       // Usuarios: PREFERIR datos de nube sobre initialUsers (FIX: persistencia de contraseña y datos médico)
       if (
         cloud["siso_users"]?.value &&
@@ -18248,7 +18264,9 @@ function AppInner() {
           _sbSet("siso_audit_log",                        auditLog),
           _sbSet("siso_mensajes",                         mensajes),
           _sbSet(`siso_agendados_${_asSuf}`,              agendados),
-          _sbSet(`siso_atenciones_${_asSuf}`,             atencionesCerradas),
+          // SYNC-FIX: doble escritura atenciones — cerradas (autoritativa) + por usuario
+          _sbSet("siso_atenciones_cerradas",               atencionesCerradas),
+          _sbSet(`siso_atenciones_${_asSuf}`,              atencionesCerradas),
           _sbSet("siso_ai_config_provider", { activeProvider: aiConfig.activeProvider }),
         ];
         // ── Firma del médico: NO va a Supabase (base64 pesado, vive en localStorage) ──
@@ -19258,7 +19276,13 @@ JSON REQUERIDO (estructura exacta):
       "Log de auditoría": _sbSet("siso_audit_log", auditLog),
       "Mensajes internos": _sbSet("siso_mensajes", mensajes),
       "Agenda / Citas": _sbSet(`siso_agendados_${_bkSuf}`, agendados),
-      "Atenciones cerradas": _sbSet(`siso_atenciones_${_bkSuf}`, atencionesCerradas),
+      // SYNC-FIX: escribir a AMBAS claves para que siempre estén en sincronía.
+      // siso_atenciones_cerradas = fuente autoritativa (leída en login)
+      // siso_atenciones_${_bkSuf} = clave por usuario (también leída en algunos flujos)
+      "Atenciones cerradas": Promise.all([
+        _sbSet("siso_atenciones_cerradas", atencionesCerradas),
+        _sbSet(`siso_atenciones_${_bkSuf}`, atencionesCerradas),
+      ]).then(([r1, r2]) => r1 && r2),
       "Configuración IA (proveedor)": _sbSet("siso_ai_config_provider", {
         activeProvider: aiConfig.activeProvider,
       }),
@@ -20463,9 +20487,12 @@ const handleLogin = (u, p) => {
             cerradaEn: new Date().toISOString(),
             estadoHistoria: "Cerrada",
           };
-          const updAC = [nuevaAtencion, ...atencionesCerradas].slice(0, 100); // máx 100 registros
+          // SYNC-FIX: sin límite de 100 — guardar TODOS los registros.
+          // Doble escritura: siso_atenciones_cerradas (fuente autoritativa) + clave por usuario.
+          const updAC = [nuevaAtencion, ...atencionesCerradas];
           setAtencionesCerradas(updAC);
           _sync(`siso_atenciones_${_hcSuf}`, JSON.stringify(updAC));
+          _sbSet("siso_atenciones_cerradas", updAC);
           _sbSet(`siso_atenciones_${_hcSuf}`, updAC);
           try { _ls.setItem("siso_atenciones_v", "2"); } catch {} // mantener marcador de versión
         }
