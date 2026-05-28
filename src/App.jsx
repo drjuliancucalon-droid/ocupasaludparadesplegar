@@ -31237,26 +31237,35 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       nuevosCodigos[n] = code;
                       return { ...c, portalCode: code };
                     });
-                    // Guardar en Supabase en paralelo
+                    // Guardar en Supabase en paralelo — siempre preservar código existente
+                    const codigosFinales = { ...nuevosCodigos };
                     await Promise.all(Object.entries(nuevosCodigos).map(async ([nit, code]) => {
                       try {
                         const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nit + "&select=value", { headers: _getSbHeaders() });
                         const d = await r.json();
                         const existing = d[0]?.value || null;
+                        // Prioridad: 1) código ya en Supabase, 2) código nuevo generado
+                        const codigoFinal = existing?.codigoAcceso || code;
+                        codigosFinales[nit] = codigoFinal;
                         const comp = companies.find(c => (c.nit || "").replace(/[^0-9]/g, "") === nit);
                         const docsData = {
                           nit,
                           nombre: existing?.nombre || comp?.nombre || "",
-                          codigoAcceso: code,
+                          codigoAcceso: codigoFinal,
                           updatedAt: new Date().toISOString(),
                           periodos: existing?.periodos || [],
                         };
                         await _sbSet("siso_portal_empresa_docs_" + nit, docsData);
                       } catch {}
                     }));
-                    setCompanies(updatedCompanies);
-                    _syncCompanies(updatedCompanies);
-                    setEmpresaPortalCodes(prev => ({ ...prev, ...nuevosCodigos }));
+                    // Sincronizar portalCode local con el código real de Supabase
+                    const updatedWithReal = companies.map(c => {
+                      const n = (c.nit || "").replace(/[^0-9]/g, "");
+                      return codigosFinales[n] ? { ...c, portalCode: codigosFinales[n] } : c;
+                    });
+                    setCompanies(updatedWithReal);
+                    _syncCompanies(updatedWithReal);
+                    setEmpresaPortalCodes(prev => ({ ...prev, ...codigosFinales }));
                     showAlert("✅ " + Object.keys(nuevosCodigos).length + " empresa(s) activadas con código de portal.");
                     btn.disabled = false;
                     btn.textContent = "🔑 Activar todas";
