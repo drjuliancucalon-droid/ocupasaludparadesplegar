@@ -17433,6 +17433,21 @@ function AppInner() {
           } catch {}
         }));
         setEmpresaPortalCodes(codes);
+        // Sincronizar portalCode local con el código REAL de Supabase
+        // Esto corrige discrepancias cuando el write anterior falló silenciosamente
+        let hayCambios = false;
+        const companiesSynced = companies.map(cx => {
+          const n = (cx.nit || "").replace(/[^0-9]/g, "");
+          if (codes[n] && codes[n] !== cx.portalCode) {
+            hayCambios = true;
+            return { ...cx, portalCode: codes[n] };
+          }
+          return cx;
+        });
+        if (hayCambios) {
+          setCompanies(companiesSynced);
+          _syncCompanies(companiesSynced);
+        }
       })();
     }
     if (companiesTab !== "lista") {
