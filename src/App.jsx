@@ -18260,12 +18260,26 @@ function AppInner() {
         // GUARD: solo guardar pacientes/empresas si tenemos datos reales
         // Pacientes: versión slim para Supabase (sin base64, sin binarios)
         // Los datos completos permanecen en localStorage
-        const _patFull   = patientsList.length > 0 ? patientsList : null;
+        const _u           = currentUser?.user  || "shared";
+        // PROTECCIÓN ANTI-REGRESIÓN: si localStorage tiene más pacientes que la
+        // lista en memoria (puede ocurrir si otra pestaña o sesión añadió registros),
+        // fusionar para nunca reducir el total guardado en Supabase.
+        const _patFull = (() => {
+          if (patientsList.length === 0) return null;
+          try {
+            const stored = JSON.parse(_ls.getItem(_patKey(_u)) || "[]");
+            if (Array.isArray(stored) && stored.length > patientsList.length) {
+              const ids = new Set(patientsList.map(p => p.id));
+              const extras = stored.filter(p => !ids.has(p.id));
+              if (extras.length > 0) return [...patientsList, ...extras];
+            }
+          } catch { /* usar patientsList tal cual */ }
+          return patientsList;
+        })();
         const _patToSave = _patFull ? _patFull.map(_slimPatient) : null;
         // Empresas: sin logos base64
         const _compFull   = companies.length > 0 ? companies : null;
         const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
-        const _u           = currentUser?.user  || "shared";
         const tasks = [
           // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (sin base64) ──
           ...(_patToSave  ? [
