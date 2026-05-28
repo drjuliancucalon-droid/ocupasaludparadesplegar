@@ -17446,7 +17446,8 @@ function AppInner() {
         });
         if (hayCambios) {
           setCompanies(companiesSynced);
-          _syncCompanies(companiesSynced);
+          // Solo actualizar localStorage, no Supabase (evita freeze con 30 empresas simultáneas)
+          try { localStorage.setItem("siso_companies", JSON.stringify(companiesSynced)); } catch {}
         }
       })();
     }
