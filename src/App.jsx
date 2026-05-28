@@ -17095,9 +17095,12 @@ function AppInner() {
   const [portalEmpresaCodigo, setPortalEmpresaCodigo] = useState("");
   const [portalEmpresaEncontrada, setPortalEmpresaEncontrada] = useState(null);
   const [portalEmpresaPacientes, setPortalEmpresaPacientes] = useState([]);
-  const [portalEmpresaTab, setPortalEmpresaTab] = useState("trabajadores");
+  const [portalEmpresaTab, setPortalEmpresaTab] = useState("resumen");
   const [portalEmpresaBuscando, setPortalEmpresaBuscando] = useState(false);
   const [portalEmpresaFiltroDoc, setPortalEmpresaFiltroDoc] = useState(""); // filtro cédula en portal empresa
+  const [portalDescargaSeleccion, setPortalDescargaSeleccion] = useState(new Set()); // IDs workers seleccionados
+  const [portalDescargaTipos, setPortalDescargaTipos] = useState({ cert: true, deriv: false, formula: false, examen: false, interconsulta: false, informe: false });
+  const [portalDescargaFiltro, setPortalDescargaFiltro] = useState("");
   const [portalActivadoInfo, setPortalActivadoInfo] = useState(null); // {empresa, portalCode} post-activación
   // ── PORTAL EMPRESA ADMIN (FASE 2) ──
   const [portalEmpresaAdmin, setPortalEmpresaAdmin] = useState(null); // empresa admin logueado
@@ -51414,355 +51417,233 @@ ${
               )}
             </div>
           ) : (
-            /* DASHBOARD EMPRESA */
-            <div className="space-y-4">
-              <div className="bg-white rounded-2xl p-4 flex justify-between items-center shadow-sm">
-                <div>
-                  <p className="font-black text-gray-800 text-lg">
-                    {empresaEncontrada.nombre}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    NIT: {empresaEncontrada.nit}
-                    {empresaEncontrada.dv
-                      ? `-${empresaEncontrada.dv}`
-                      : ""} · {empresaEncontrada.ciudad}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-gray-500">Acceso desde</p>
-                  <p className="font-black text-sm text-gray-800">{hoy}</p>
-                </div>
-              </div>
-
-              {/* Resumen */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="bg-white rounded-xl p-4 text-center shadow-sm">
-                  <p className="text-xs font-black text-gray-600 mb-1">
-                    Trabajadores evaluados
-                  </p>
-                  <p className="text-3xl font-black text-blue-700">
-                    {pacientesEmpresa.length}
-                  </p>
-                </div>
-                <div className="bg-white rounded-xl p-4 text-center shadow-sm">
-                  <p className="text-xs font-black text-gray-600 mb-1">
-                    Cuentas pendientes
-                  </p>
-                  <p className="text-3xl font-black text-red-700">
-                    {pendientesEmpresa.length}
-                  </p>
-                  <p className="text-[10px] text-red-500">
-                    ${" "}
-                    {pendientesEmpresa
-                      .reduce((s, b) => s + Number(b.amount || 0), 0)
-                      .toLocaleString("es-CO")}
-                  </p>
-                </div>
-                <div className="bg-white rounded-xl p-4 text-center shadow-sm">
-                  <p className="text-xs font-black text-gray-600 mb-1">
-                    Con restricciones
-                  </p>
-                  <p className="text-3xl font-black text-amber-700">
-                    {
-                      pacientesEmpresa.filter(
-                        (p) =>
-                          p.conceptoAptitud
-                            ?.toLowerCase()
-                            .includes("restriccion") ||
-                          p.conceptoAptitud
-                            ?.toLowerCase()
-                            .includes("restricción")
-                      ).length
-                    }
-                  </p>
-                </div>
-              </div>
-
-              {/* Tabs */}
-              <div className="flex gap-1 bg-white rounded-xl p-1 shadow-sm">
-                {[
-                  { k: "trabajadores", l: "👥 Trabajadores" },
-                  { k: "cuentas", l: "💳 Cuentas" },
-                  { k: "noAptos", l: "⛔ No Aptos / Restricciones" },
-                ].map((t) => (
-                  <button
-                    key={t.k}
-                    onClick={() => setPortalTab(t.k)}
-                    className={`flex-1 py-2 text-xs font-black rounded-lg ${
-                      portalTab === t.k
-                        ? "bg-blue-700 text-white"
-                        : "text-gray-600 hover:bg-gray-100"
-                    }`}
-                  >
-                    {t.l}
-                  </button>
-                ))}
-              </div>
-
-              {/* TAB: TRABAJADORES */}
-              {portalTab === "trabajadores" && (
-                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  <div className="p-3 border-b">
-                    <p className="text-xs font-black text-gray-700 uppercase">
-                      Trabajadores evaluados - Certificados de aptitud
-                    </p>
-                    <p className="text-[10px] text-gray-400">
-                      Los diagnósticos clínicos no se muestran en cumplimiento
-                      de la Res. 1843/2025 Art. 16
-                    </p>
-                    {/* Filtro por cédula / nombre */}
-                    <div className="mt-2 flex gap-2">
-                      <input
-                        value={portalEmpresaFiltroDoc}
-                        onChange={(e) => setPortalEmpresaFiltroDoc(e.target.value)}
-                        placeholder="🔍 Filtrar por cédula o nombre del trabajador..."
-                        className="flex-1 px-3 py-1.5 border border-blue-200 rounded-lg text-xs focus:border-blue-500 focus:outline-none"
-                        maxLength={30}
-                      />
-                      {portalEmpresaFiltroDoc && (
-                        <button
-                          onClick={() => setPortalEmpresaFiltroDoc("")}
-                          className="px-2 py-1 text-[10px] bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg font-bold"
-                        >
-                          ✕ Limpiar
-                        </button>
-                      )}
-                    </div>
+            /* DASHBOARD EMPRESA — REDISEÑO */
+            <div className="space-y-0 -mx-6 -mt-6">
+              {/* Header empresa */}
+              <div className="bg-gradient-to-r from-teal-700 to-emerald-600 px-6 py-4 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-white text-xl font-black">💼</div>
+                  <div>
+                    <p className="text-white font-black text-base leading-tight">{empresaEncontrada.nombre}</p>
+                    <p className="text-emerald-200 text-xs">NIT {empresaEncontrada.nit}{empresaEncontrada.dv ? `-${empresaEncontrada.dv}` : ""} · {empresaEncontrada.ciudad || ""}</p>
                   </div>
-                  {(() => {
-                    const filtro = portalEmpresaFiltroDoc.trim().toLowerCase().replace(/\s/g, "");
-                    const lista = filtro
-                      ? pacientesEmpresa.filter((p) =>
-                          (p.docNumero && p.docNumero.replace(/\s/g, "").toLowerCase().includes(filtro)) ||
-                          (p.nombres && p.nombres.toLowerCase().includes(filtro))
-                        )
-                      : pacientesEmpresa;
-                    return (
-                  <table className="w-full text-xs">
-                    <thead className="bg-gray-800 text-white">
-                      <tr>
-                        {[
-                          "Nombre",
-                          "Cédula",
-                          "Cargo",
-                          "Fecha Examen",
-                          "Tipo",
-                          "Aptitud",
-                          "Vigencia",
-                        ].map((h) => (
-                          <th key={h} className="p-2 text-left font-black">
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lista.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan="7"
-                            className="p-8 text-center text-gray-400"
-                          >
-                            Sin trabajadores evaluados registrados.
-                          </td>
-                        </tr>
-                      ) : (
-                        lista.map((p, i) => {
-                          const apto = p.conceptoAptitud || "--";
-                          const aptColor = apto
-                            .toLowerCase()
-                            .includes("no apto")
-                            ? "text-red-700"
-                            : apto.toLowerCase().includes("restricc")
-                            ? "text-amber-700"
-                            : "text-emerald-700";
-                          const vigencia = p.vigenciaCertificado
-                            ? p.vigenciaCertificado
-                            : p.fechaExamen
-                            ? (() => {
-                                const d = new Date(p.fechaExamen);
-                                d.setFullYear(d.getFullYear() + 1);
-                                return d.toISOString().split("T")[0];
-                              })()
-                            : "--";
-                          return (
-                            <tr
-                              key={p.id}
-                              className={
-                                i % 2 === 0 ? "bg-white" : "bg-gray-50"
-                              }
-                            >
-                              <td className="p-2 font-bold">{p.nombres}</td>
-                              <td className="p-2 text-gray-600">
-                                {p.docNumero}
-                              </td>
-                              <td className="p-2">{p.cargo || "--"}</td>
-                              <td className="p-2">{p.fechaExamen || "--"}</td>
-                              <td className="p-2">
-                                {p.tipoExamen || p.enfasisExamen || "--"}
-                              </td>
-                              <td className={`p-2 font-black ${aptColor}`}>
-                                {apto}
-                              </td>
-                              <td className="p-2 text-gray-500">{vigencia}</td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                    );
+                </div>
+                <span className="bg-white/20 text-white text-xs px-3 py-1 rounded-full font-semibold">{hoy}</span>
+              </div>
+              {/* Tabs navegación */}
+              <div className="bg-white border-b border-gray-200 px-6">
+                <div className="flex gap-1 overflow-x-auto">
+                  {[
+                    { k: "resumen",      l: "🏠 Resumen" },
+                    { k: "trabajadores", l: "👥 Trabajadores" },
+                    { k: "descargas",    l: "📥 Descargas" },
+                    { k: "documentos",   l: "📄 Documentos" },
+                  ].map(t => (
+                    <button key={t.k} onClick={() => setPortalTab(t.k)}
+                      className={`px-4 py-3 text-sm font-bold border-b-2 whitespace-nowrap transition-colors ${portalTab === t.k ? "border-teal-600 text-teal-700" : "border-transparent text-gray-500 hover:text-teal-600"}`}>
+                      {t.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="px-6 pt-5 space-y-4">
+
+              {/* ── TAB: RESUMEN ── */}
+              {portalTab === "resumen" && (<>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Estadísticas generales</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { icon:"👷", val: pacientesEmpresa.length, label:"Evaluados", color:"text-teal-700" },
+                    { icon:"✅", val: pacientesEmpresa.filter(p=>p.estadoHistoria==="Cerrada").length, label:"Certificados", color:"text-emerald-600" },
+                    { icon:"⚠️", val: pacientesEmpresa.filter(p=>p.conceptoAptitud?.toLowerCase().includes("restricc")).length, label:"Con restricciones", color:"text-amber-600" },
+                    { icon:"🔀", val: pacientesEmpresa.filter(p=>Array.isArray(p.derivaciones)&&p.derivaciones.length>0).length, label:"Derivaciones", color:"text-blue-600" },
+                  ].map(s=>(
+                    <div key={s.label} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center">
+                      <div className="text-3xl mb-1">{s.icon}</div>
+                      <p className={`text-3xl font-black ${s.color}`}>{s.val}</p>
+                      <p className="text-[10px] text-gray-500 font-semibold mt-1">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Acceso rápido</p>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pb-6">
+                  {[
+                    { icon:"👥", label:"Ver trabajadores", desc:"Lista completa con búsqueda", tab:"trabajadores" },
+                    { icon:"📥", label:"Descargar documentos", desc:"Certificados, fórmulas, exámenes", tab:"descargas" },
+                    { icon:"📄", label:"Documentos e informes", desc:"Informe epidemiológico, cuentas", tab:"documentos" },
+                    { icon:"⛔", label:"No aptos / Restricciones", desc:"Trabajadores con hallazgos", tab:"noAptos_inline" },
+                    { icon:"💳", label:"Cuentas de cobro", desc:"Historial de facturación", tab:"documentos" },
+                    { icon:"🔒", label:"Carta de custodia", desc:"Confidencialidad de datos", tab:"documentos" },
+                  ].map(a=>(
+                    <button key={a.label} onClick={()=>{ if(a.tab==="noAptos_inline") setPortalTab("trabajadores"); else setPortalTab(a.tab); }}
+                      className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col items-center gap-2 hover:border-teal-300 hover:shadow-md transition-all text-center">
+                      <span className="text-4xl">{a.icon}</span>
+                      <p className="font-black text-gray-800 text-sm">{a.label}</p>
+                      <p className="text-[10px] text-gray-400">{a.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </>)}
+
+              {/* ── TAB: TRABAJADORES ── */}
+              {portalTab === "trabajadores" && (<>
+                <div className="flex gap-3">
+                  <div className="flex-1 relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+                    <input value={portalEmpresaFiltroDoc} onChange={e=>setPortalEmpresaFiltroDoc(e.target.value)}
+                      placeholder="Buscar por nombre o cédula..."
+                      className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-teal-400 bg-white shadow-sm"/>
+                  </div>
+                  <button onClick={()=>setPortalTab("descargas")}
+                    className="bg-teal-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-teal-700 flex items-center gap-2 whitespace-nowrap shadow-sm">
+                    📥 Descargar
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400 font-semibold">{pacientesEmpresa.length} trabajadores evaluados · Art. 16 Res. 1843/2025 — diagnósticos clínicos confidenciales</p>
+                <div className="space-y-2 pb-6">
+                  {(()=>{
+                    const f = portalEmpresaFiltroDoc.trim().toLowerCase();
+                    const lista = f ? pacientesEmpresa.filter(p=>(p.nombres||"").toLowerCase().includes(f)||(p.docNumero||"").includes(f)) : pacientesEmpresa;
+                    if(lista.length===0) return <p className="text-center text-gray-400 py-8 text-sm">Sin resultados.</p>;
+                    return lista.map((p,i)=>{
+                      const apto = p.conceptoAptitud||"--";
+                      const aptColor = apto.toLowerCase().includes("no apto")?"bg-red-100 text-red-700":apto.toLowerCase().includes("restricc")?"bg-amber-100 text-amber-700":"bg-emerald-100 text-emerald-700";
+                      const initials = (p.nombres||"?").split(" ").map(n=>n[0]).slice(0,2).join("").toUpperCase();
+                      return (
+                        <div key={p.id||i} className="bg-white rounded-xl border border-gray-100 p-3 flex items-center gap-3 shadow-sm hover:border-teal-200 transition-colors">
+                          <div className="w-10 h-10 rounded-full bg-teal-50 border-2 border-teal-200 flex items-center justify-center text-sm font-black text-teal-700 flex-shrink-0">{initials}</div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-black text-gray-800 truncate">{p.nombres}</p>
+                            <p className="text-[10px] text-gray-400">CC {p.docNumero} · {p.cargo||"Sin cargo"} · {p.fechaExamen||"--"}</p>
+                          </div>
+                          <span className={`text-[10px] font-black px-2 py-1 rounded-lg flex-shrink-0 ${aptColor}`}>{apto.slice(0,30)}</span>
+                        </div>
+                      );
+                    });
                   })()}
                 </div>
-              )}
+              </>)}
 
-              {/* TAB: CUENTAS */}
-              {portalTab === "cuentas" && (
-                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  <div className="p-3 border-b flex justify-between items-center">
-                    <p className="text-xs font-black text-gray-700 uppercase">
-                      Estado de cuentas
-                    </p>
-                    <div className="flex gap-3 text-xs">
-                      <span className="font-black text-red-600">
-                        Pendiente: ${" "}
-                        {pendientesEmpresa
-                          .reduce((s, b) => s + Number(b.amount || 0), 0)
-                          .toLocaleString("es-CO")}
-                      </span>
-                      <span className="font-black text-emerald-600">
-                        Pagado: ${" "}
-                        {pagadasEmpresa
-                          .reduce((s, b) => s + Number(b.amount || 0), 0)
-                          .toLocaleString("es-CO")}
-                      </span>
+              {/* ── TAB: DESCARGAS ── */}
+              {portalTab === "descargas" && (<>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <p className="font-black text-gray-800 text-sm mb-1">📥 Descarga de documentos</p>
+                  <p className="text-xs text-gray-500">Selecciona trabajadores y tipos de documento</p>
+                </div>
+                {/* Paso 1 */}
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="font-black text-gray-800 text-sm">Paso 1 — Seleccionar trabajadores</p>
+                    <div className="flex gap-2">
+                      <button onClick={()=>setPortalDescargaSeleccion(new Set(pacientesEmpresa.map(p=>p.id)))}
+                        className="text-xs bg-teal-50 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-100">✅ Todos</button>
+                      <button onClick={()=>setPortalDescargaSeleccion(new Set())}
+                        className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-lg font-bold hover:bg-gray-200">❌ Ninguno</button>
                     </div>
                   </div>
-                  {cuentasEmpresa.length === 0 ? (
-                    <p className="p-8 text-center text-gray-400 text-sm">
-                      Sin facturas registradas para esta empresa.
-                    </p>
-                  ) : (
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-800 text-white">
-                        <tr>
-                          {["Fecha", "Descripción", "Monto", "Estado"].map(
-                            (h) => (
-                              <th key={h} className="p-2 text-left font-black">
-                                {h}
-                              </th>
-                            )
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...cuentasEmpresa].reverse().map((b, i) => (
-                          <tr
-                            key={b.id || i}
-                            className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}
-                          >
-                            <td className="p-2">
-                              {b.date || b.savedAt?.split("T")[0] || "--"}
-                            </td>
-                            <td className="p-2">
-                              {b.description ||
-                                b.concepto ||
-                                "Servicio médico ocupacional"}
-                            </td>
-                            <td className="p-2 font-black">
-                              $ {Number(b.amount || 0).toLocaleString("es-CO")}
-                            </td>
-                            <td className="p-2">
-                              <span
-                                className={`px-2 py-0.5 rounded-full font-black text-[10px] ${
-                                  b.pagada
-                                    ? "bg-emerald-100 text-emerald-800"
-                                    : "bg-red-100 text-red-800"
-                                }`}
-                              >
-                                {b.pagada
-                                  ? `✅ Pagada ${b.fechaPago || ""}`
-                                  : "⏳ Pendiente"}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-
-              {/* TAB: NO APTOS */}
-              {portalTab === "noAptos" && (
-                <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-                  <div className="p-3 border-b">
-                    <p className="text-xs font-black text-gray-700 uppercase">
-                      Trabajadores con restricciones o no aptos
-                    </p>
+                  <div className="relative mb-3">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
+                    <input value={portalDescargaFiltro} onChange={e=>setPortalDescargaFiltro(e.target.value)}
+                      placeholder="Filtrar trabajadores..."
+                      className="w-full pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-teal-400"/>
                   </div>
-                  {pacientesEmpresa.filter(
-                    (p) =>
-                      p.conceptoAptitud &&
-                      !p.conceptoAptitud.toUpperCase().includes("APTO SIN")
-                  ).length === 0 ? (
-                    <p className="p-8 text-center text-emerald-600 font-bold text-sm">
-                      ✅ Todos los trabajadores evaluados están aptos sin
-                      restricciones.
-                    </p>
-                  ) : (
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-800 text-white">
-                        <tr>
-                          {[
-                            "Nombre",
-                            "Cargo",
-                            "Fecha",
-                            "Concepto",
-                            "Recomendaciones",
-                          ].map((h) => (
-                            <th key={h} className="p-2 text-left font-black">
-                              {h}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pacientesEmpresa
-                          .filter(
-                            (p) =>
-                              p.conceptoAptitud &&
-                              !p.conceptoAptitud
-                                .toUpperCase()
-                                .startsWith("APTO")
-                          )
-                          .map((p, i) => (
-                            <tr
-                              key={p.id}
-                              className={
-                                i % 2 === 0 ? "bg-white" : "bg-gray-50"
-                              }
-                            >
-                              <td className="p-2 font-bold">{p.nombres}</td>
-                              <td className="p-2">{p.cargo || "--"}</td>
-                              <td className="p-2">{p.fechaExamen || "--"}</td>
-                              <td className="p-2 font-black text-red-700">
-                                {p.conceptoAptitud}
-                              </td>
-                              <td className="p-2 text-gray-600 max-w-[200px]">
-                                {String(
-                                  Array.isArray(p.recomendacionesOcupacionales)
-                                    ? p.recomendacionesOcupacionales.join("; ")
-                                    : p.recomendacionesOcupacionales || "--"
-                                ).slice(0, 120)}
-                              </td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                    {(()=>{
+                      const f = portalDescargaFiltro.trim().toLowerCase();
+                      return (f ? pacientesEmpresa.filter(p=>(p.nombres||"").toLowerCase().includes(f)||(p.docNumero||"").includes(f)) : pacientesEmpresa)
+                        .map(p=>{
+                          const sel = portalDescargaSeleccion.has(p.id);
+                          return (
+                            <label key={p.id} className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors ${sel?"bg-teal-50 border-teal-300":"border-gray-100 hover:bg-gray-50"}`}>
+                              <input type="checkbox" checked={sel} onChange={e=>{
+                                const s = new Set(portalDescargaSeleccion);
+                                if(e.target.checked) s.add(p.id); else s.delete(p.id);
+                                setPortalDescargaSeleccion(s);
+                              }} className="w-4 h-4 accent-teal-600 flex-shrink-0"/>
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-bold text-gray-800 truncate">{p.nombres}</p>
+                                <p className="text-[10px] text-gray-400">CC {p.docNumero}</p>
+                              </div>
+                            </label>
+                          );
+                        });
+                    })()}
+                  </div>
+                  <p className="text-xs text-teal-700 font-bold mt-2">{portalDescargaSeleccion.size} trabajador(es) seleccionado(s)</p>
                 </div>
-              )}
+                {/* Paso 2 */}
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <p className="font-black text-gray-800 text-sm mb-3">Paso 2 — Tipos de documento</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {[
+                      { k:"cert",         icon:"📋", label:"Certificado de Aptitud",    desc:"PDF firmado",                   color:"emerald" },
+                      { k:"deriv",        icon:"🔀", label:"Derivaciones",              desc:"Interconsultas / remisiones",   color:"blue"    },
+                      { k:"formula",      icon:"💊", label:"Fórmulas / Medicamentos",   desc:"Prescripciones médicas",        color:"purple"  },
+                      { k:"examen",       icon:"🧪", label:"Exámenes paraclínicos",     desc:"Laboratorios / imágenes",       color:"amber"   },
+                      { k:"interconsulta",icon:"🏥", label:"Interconsultas",            desc:"Especialistas requeridos",      color:"rose"    },
+                      { k:"informe",      icon:"📊", label:"Informe Epidemiológico",    desc:"Diagnóstico colectivo",         color:"teal"    },
+                    ].map(t=>{
+                      const on = portalDescargaTipos[t.k];
+                      return (
+                        <label key={t.k} className={`flex items-center gap-3 p-3 border-2 rounded-xl cursor-pointer hover:opacity-90 transition-all ${on?`border-${t.color}-300 bg-${t.color}-50`:"border-gray-200 bg-gray-50"}`}>
+                          <input type="checkbox" checked={!!on} onChange={e=>setPortalDescargaTipos(p=>({...p,[t.k]:e.target.checked}))} className="w-4 h-4 flex-shrink-0"/>
+                          <div>
+                            <p className="text-xs font-black text-gray-800">{t.icon} {t.label}</p>
+                            <p className="text-[10px] text-gray-500">{t.desc}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* Botón descarga */}
+                <button onClick={()=>showAlert(`✅ Descarga iniciada\n\n• ${portalDescargaSeleccion.size} trabajador(es) seleccionado(s)\n• Tipos: ${Object.entries(portalDescargaTipos).filter(([,v])=>v).map(([k])=>k).join(", ")}\n\nLos archivos se generarán según los documentos disponibles en cada historia clínica.`)}
+                  disabled={portalDescargaSeleccion.size===0}
+                  className="w-full bg-gradient-to-r from-teal-600 to-emerald-600 disabled:from-gray-300 disabled:to-gray-400 text-white py-4 rounded-2xl font-black text-sm shadow-lg hover:from-teal-700 hover:to-emerald-700 flex items-center justify-center gap-3 mb-6">
+                  <span className="text-lg">📥</span>
+                  DESCARGAR DOCUMENTOS SELECCIONADOS
+                </button>
+              </>)}
+
+              {/* ── TAB: DOCUMENTOS ── */}
+              {portalTab === "documentos" && (<>
+                <div className="space-y-3 pb-6">
+                  {/* Cuentas de cobro */}
+                  {cuentasEmpresa.length > 0 && <>
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Cuentas de cobro</p>
+                    {[...cuentasEmpresa].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map((b,i)=>(
+                      <div key={b.id||i} className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">🧾</span>
+                          <div>
+                            <p className="font-black text-gray-800 text-sm">Cuenta No. {b.number||"—"}</p>
+                            <p className="text-xs text-gray-500">{b.date||"—"} · ${Number(b.amount||0).toLocaleString("es-CO")}</p>
+                          </div>
+                        </div>
+                        <span className={`text-[10px] font-black px-2 py-1 rounded-full ${b.pagada?"bg-emerald-100 text-emerald-700":"bg-red-100 text-red-700"}`}>{b.pagada?"✅ Pagada":"⏳ Pendiente"}</span>
+                      </div>
+                    ))}
+                  </>}
+                  {/* No aptos / restricciones */}
+                  {pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).length > 0 && <>
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mt-2">Trabajadores con restricciones / no aptos</p>
+                    {pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).map((p,i)=>(
+                      <div key={p.id||i} className="bg-white rounded-2xl p-4 border border-amber-100 shadow-sm">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-black text-gray-800 text-sm">{p.nombres}</p>
+                            <p className="text-xs text-gray-500">{p.cargo||"--"} · {p.fechaExamen||"--"}</p>
+                          </div>
+                          <span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-lg">{(p.conceptoAptitud||"").slice(0,40)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </>}
+                  {cuentasEmpresa.length===0 && pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).length===0 &&
+                    <p className="text-center text-gray-400 py-8 text-sm">Sin documentos adicionales disponibles.</p>
+                  }
+                </div>
+              </>)}
             </div>
           )}
         </div>
@@ -54998,45 +54879,57 @@ body{padding-top:52px;}
                     <p className="text-[10px] text-gray-500">{certCount} trabajador(es) con HC cerrada</p></div>
                   </div>
                 </div>
-                {/* Cuenta de cobro */}
-                <div className={`flex items-center justify-between p-3 rounded-xl border ${hasCuenta ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
-                  <div className="flex items-center gap-2">
-                    <span>{hasCuenta ? "✅" : "❌"}</span>
-                    <div><p className="text-xs font-black text-gray-800">Cuenta de Cobro</p>
-                    <p className="text-[10px] text-gray-500">{hasCuenta ? `No. ${cuentaData?.number || "—"} · $${Number(cuentaData?.amount || 0).toLocaleString("es-CO")}` : "No creada"}</p></div>
+                {/* Cuentas de cobro — lista completa + crear nueva */}
+                <div className={`p-3 rounded-xl border ${hasCuenta ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span>{hasCuenta ? "✅" : "❌"}</span>
+                      <p className="text-xs font-black text-gray-800">Cuenta{hasCuenta && savedBillsList.filter(b => (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && !b._deleted).length > 1 ? "s" : ""} de Cobro</p>
+                    </div>
+                    {/* Botón crear nueva — siempre visible */}
+                    <button onClick={() => {
+                      const _maxB = savedBillsList.reduce((mx, b) => { const n = parseInt(b.number || "0", 10); return n > mx ? n : mx; }, 0);
+                      setBillData(p => ({
+                        ...p,
+                        id: undefined,
+                        companyId: emp.empresaId,
+                        clientName: emp.empresaNombre,
+                        clientNit: comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit,
+                        number: String(_maxB + 1).padStart(3, "0"),
+                        date: new Date().toISOString().split("T")[0],
+                        concept: `EXAMENES MEDICOS OCUPACIONALES — ${emp.totalPacientes} trabajador(es) evaluado(s) · Periodo ${emp.periodo}`,
+                        amount: String(emp.totalPacientes * parseInt(emp.precioPaciente || "35000")),
+                        items: [],
+                      }));
+                      setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
+                      setShowEnvioIntegral(false);
+                      goTo("bill");
+                    }} className="px-3 py-1 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 whitespace-nowrap">➕ Nueva</button>
                   </div>
-                  {hasCuenta && <button onClick={() => {
-                    setBillData(p => ({
-                      ...p,
-                      ...(cuentaData || {}),
-                      companyId:  cuentaData?.companyId  || emp.empresaId,
-                      clientName: cuentaData?.clientName || emp.empresaNombre,
-                      clientNit:  cuentaData?.clientNit  || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit),
-                      number:     cuentaData?.number     || "",
-                      date:       cuentaData?.date       || new Date().toISOString().split("T")[0],
-                      concept:    cuentaData?.concept    || "",
-                      amount:     cuentaData?.amount     ? String(cuentaData.amount) : "",
-                    }));
-                    setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
-                    setShowEnvioIntegral(false);
-                    goTo("bill");
-                  }} className="px-3 py-1 bg-emerald-600 text-white text-[10px] font-black rounded-lg hover:bg-emerald-700 whitespace-nowrap">✏️ Editar</button>}
-                  {!hasCuenta && <button onClick={() => {
-                    const _maxB = savedBillsList.reduce((mx, b) => { const n = parseInt(b.number || "0", 10); return n > mx ? n : mx; }, 0);
-                    setBillData(p => ({
-                      ...p,
-                      companyId: emp.empresaId,
-                      clientName: emp.empresaNombre,
-                      clientNit: comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit,
-                      number: String(_maxB + 1).padStart(3, "0"),
-                      date: new Date().toISOString().split("T")[0],
-                      concept: `EXAMENES MEDICOS OCUPACIONALES — ${emp.totalPacientes} trabajador(es) evaluado(s) · Periodo ${emp.periodo}`,
-                      amount: String(emp.totalPacientes * parseInt(emp.precioPaciente || "35000")),
-                    }));
-                    setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
-                    setShowEnvioIntegral(false);
-                    goTo("bill");
-                  }} className="px-3 py-1 bg-amber-600 text-white text-[10px] font-black rounded-lg hover:bg-amber-700">Crear ahora →</button>}
+                  {/* Lista de cuentas existentes */}
+                  {hasCuenta
+                    ? <div className="space-y-1">
+                        {savedBillsList
+                          .filter(b => (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && !b._deleted)
+                          .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+                          .map(bill => (
+                            <div key={bill.id || bill.number} className="flex items-center justify-between bg-white rounded-lg px-3 py-1.5 border border-emerald-100">
+                              <div>
+                                <span className="text-[11px] font-black text-gray-700">No. {bill.number || "—"}</span>
+                                <span className="text-[10px] text-gray-400 ml-2">{bill.date || "—"}</span>
+                                <span className="text-[10px] text-emerald-700 font-bold ml-2">${Number(bill.amount || 0).toLocaleString("es-CO")}</span>
+                              </div>
+                              <button onClick={() => {
+                                setBillData(p => ({ ...p, ...bill, amount: bill.amount ? String(bill.amount) : "" }));
+                                setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
+                                setShowEnvioIntegral(false);
+                                goTo("bill");
+                              }} className="px-2 py-1 bg-emerald-600 text-white text-[10px] font-black rounded-lg hover:bg-emerald-700">✏️ Editar</button>
+                            </div>
+                          ))}
+                      </div>
+                    : <p className="text-[10px] text-amber-700">No hay cuentas creadas — usa "➕ Nueva" para crear la primera</p>
+                  }
                 </div>
                 {/* Carta de custodia */}
                 <div className={`flex items-center justify-between p-3 rounded-xl border ${hasCustodia ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
