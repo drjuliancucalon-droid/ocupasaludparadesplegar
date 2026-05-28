@@ -256,6 +256,51 @@ const sps = (k, fb) => {
 //   <script>window.__SISO_CONFIG={sbUrl:"TU_URL",sbKey:"TU_KEY"};</script>
 const _PROXY_URL =
   (typeof window !== "undefined" && window.__SISO_PROXY_URL) || null;
+// ── Cloudflare Worker D1 (reemplaza Supabase como backend principal) ──────────
+const _WORKER_URL =
+  (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) ||
+  import.meta.env?.VITE_WORKER_URL ||
+  "https://siso-api.dr-juliancucalon.workers.dev";
+const _WORKER_TOKEN =
+  (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) ||
+  import.meta.env?.VITE_WORKER_TOKEN ||
+  "";
+const _workerSet = async (key, value) => {
+  if (!_WORKER_TOKEN) return false;
+  try {
+    const r = await fetch(`${_WORKER_URL}/store`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
+      body: JSON.stringify({ key, value }),
+    });
+    return r.ok;
+  } catch { return false; }
+};
+const _workerGet = async (key) => {
+  if (!_WORKER_TOKEN) return null;
+  try {
+    const r = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
+      headers: { "X-Siso-Token": _WORKER_TOKEN },
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data[0]?.value ?? null;
+  } catch { return null; }
+};
+const _workerGetAll = async (userId) => {
+  if (!_WORKER_TOKEN) return null;
+  try {
+    const suffix = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+    const r = await fetch(`${_WORKER_URL}/store${suffix}`, {
+      headers: { "X-Siso-Token": _WORKER_TOKEN },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const out = {};
+    for (const row of rows) out[row.key] = { value: row.value, updated_at: row.updated_at };
+    return out;
+  } catch { return null; }
+};
 // SEC-12: Validar y sanitizar __SISO_CONFIG antes de usar
 const _cfgRaw = (typeof window !== "undefined" && window.__SISO_CONFIG) || {};
 const _cfgSafeUrl = (v) =>
@@ -360,8 +405,14 @@ const _getSbHeaders = () => {
 };
 // Alias estático: usa service key como Bearer (JWT válido) en lugar de publishable key
 const _SB_HEADERS = { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" };
-// Wrapper de fetch con soporte dual: proxy (futuro) o Supabase directo (actual)
+// Wrapper de fetch: Worker D1 (primario) → Proxy → Supabase (fallback)
 const _securePost = async (key, value) => {
+  // 1. Intentar Worker D1 (Cloudflare, sin cuota de egress)
+  if (_WORKER_TOKEN) {
+    const ok = await _workerSet(key, value);
+    if (ok) return true;
+  }
+  // 2. Fallback: proxy configurado
   if (_PROXY_URL) {
     try {
       const r = await fetch(_PROXY_URL, {
@@ -373,7 +424,7 @@ const _securePost = async (key, value) => {
       return r.ok;
     } catch { return false; }
   }
-  // Modo directo Supabase — usa JWT si está disponible (RLS auth.uid())
+  // 3. Fallback final: Supabase directo (puede fallar si hay cuota agotada)
   try {
     const r = await fetch(`${_SB_URL}/rest/v1/siso_store`, {
       method: "POST",
@@ -718,6 +769,14 @@ const _sbBulkSet = async (rows) => {
   return { ok, fail };
 };
 const _sbGetAll = async (userId) => {
+  // Intentar primero con Worker D1 (sin cuota de egress)
+  if (_WORKER_TOKEN) {
+    try {
+      const data = await _workerGetAll(userId);
+      if (data && Object.keys(data).length > 0) return data;
+    } catch {}
+  }
+  // Fallback: Supabase
   try {
     let url = `${_SB_URL}/rest/v1/siso_store?select=key,value,updated_at`;
 

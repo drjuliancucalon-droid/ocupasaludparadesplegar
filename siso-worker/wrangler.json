@@ -1,0 +1,12 @@
+{
+  "name": "siso-api",
+  "main": "index.js",
+  "compatibility_date": "2024-01-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "siso-db",
+      "database_id": "76da5895-478f-4486-a5d4-05069f9aa45a"
+    }
+  ]
+}
