@@ -18240,8 +18240,11 @@ function AppInner() {
     else setBillData((p) => ({ ...p, amountWords: "" }));
   }, [billData.amount]);
   // ── AUTO-SYNC A SUPABASE CADA 2 MINUTOS ─────────────────────────────────
+  // TEMPORALMENTE DESACTIVADO — reactivar cambiando AUTO_SYNC_DISABLED a false
+  const AUTO_SYNC_DISABLED = true;
   useEffect(() => {
     if (!currentUser) return;
+    if (AUTO_SYNC_DISABLED) return; // ← quitar esto para reactivar
     const AUTO_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
     const doAutoBackup = async () => {
       // GUARD: no sincronizar si los datos aún no han sido inicializados
