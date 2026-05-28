@@ -18281,10 +18281,14 @@ function AppInner() {
         const _compFull   = companies.length > 0 ? companies : null;
         const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
         const tasks = [
-          // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (sin base64) ──
+          // ── ESCRITURA PRIMARIA SOLAMENTE (auto-sync) ──────────────────────────
+          // siso_db_patients_drcucalon es clave de respaldo PROTEGIDA: solo se
+          // actualiza al crear/guardar un paciente explícitamente, nunca en auto-sync.
+          // Esto garantiza que siempre contenga el máximo de registros visto y sirva
+          // como fuente de recuperación cuando siso_patients quede desactualizada.
           ...(_patToSave  ? [
-            _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon   (primaria)
-            _sbSet(_patKey(_u),      _patToSave),   // siso_db_patients_drcucalon (respaldo)
+            _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon (primaria)
+            // siso_db_patients_drcucalon NO se toca en auto-sync → backup protegido
           ] : []),
           ...(_compToSave ? [
             _sbSet(_compKeyCloud(_u), _compToSave), // siso_companies_drcucalon  (primaria)
