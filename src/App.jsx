@@ -28822,7 +28822,20 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         docs.updatedAt = new Date().toISOString();
                         await _sbSet(`siso_portal_empresa_docs_${_nit}`, docs);
                       } else {
-                        await _sbSet(`siso_portal_empresa_docs_${_nit}`, { nit: _nit, nombre: compName, updatedAt: new Date().toISOString(), periodos: [{ periodo: _periodoKey, fecha: _inf.fecha, informe: informePayload, certificados: null, cuenta: null, custodia: null }] });
+                        // Registro nuevo: recuperar código existente de la empresa local, no generar uno nuevo si ya tiene
+                        const _compRec = companies.find(cx => (cx.nit || "").replace(/[^0-9]/g, "") === _nit);
+                        const _charsP = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+                        const _randP = (n) => Array.from({length:n}, () => _charsP[Math.floor(Math.random()*_charsP.length)]).join("");
+                        const _codigoNuevo = _compRec?.portalCode || ("EMP-" + _nit.slice(-4) + "-" + _randP(4));
+                        const newDoc = { nit: _nit, nombre: compName, codigoAcceso: _codigoNuevo, updatedAt: new Date().toISOString(), periodos: [{ periodo: _periodoKey, fecha: _inf.fecha, informe: informePayload, certificados: null, cuenta: null, custodia: null }] };
+                        await _sbSet(`siso_portal_empresa_docs_${_nit}`, newDoc);
+                        // Sincronizar código al registro local si no lo tenía
+                        if (!_compRec?.portalCode) {
+                          const _updC = companies.map(cx => (cx.nit || "").replace(/[^0-9]/g, "") === _nit ? { ...cx, portalCode: _codigoNuevo } : cx);
+                          setCompanies(_updC);
+                          _syncCompanies(_updC);
+                          setEmpresaPortalCodes(prev => ({ ...prev, [_nit]: _codigoNuevo }));
+                        }
                       }
                       btn.textContent = "✅ Publicado en portal";
                       showAlert("✅ Informe publicado en el portal de " + compName + ".\nLa empresa ya puede verlo al ingresar al portal con su NIT.");
@@ -55140,8 +55153,10 @@ body{padding-top:52px;}
                   const docD = activeDoctorData || {};
                   const nitEmp = comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit;
                   const nitClean = (nitEmp || "").replace(/[^0-9]/g, "");
-                  // Generar código de acceso para la empresa
-                  const codigoAcceso = "EMP-" + nitClean.slice(-4) + "-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+                  // Código de acceso: usar el existente en la empresa local, o generar uno nuevo solo si no hay ninguno
+                  const _charsEI = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+                  const _randEI = (n) => Array.from({length:n}, () => _charsEI[Math.floor(Math.random()*_charsEI.length)]).join("");
+                  const codigoAcceso = comp?.portalCode || ("EMP-" + (nitClean ? nitClean.slice(-4) : _randEI(4)) + "-" + _randEI(4));
                   // Guardar documentación completa en Supabase para el portal
                   const mesActual = new Date().toISOString().slice(0, 7);
                   const informeData = savedInformes.find(i => i.empresaId === emp.empresaId && !i.tipo);
@@ -55197,14 +55212,20 @@ body{padding-top:52px;}
                       } : null,
                     }],
                   };
-                  // Merge with existing data (add new periodo, don't overwrite old ones)
+                  // Merge with existing data — NUNCA sobreescribir el codigoAcceso si ya existe
                   try {
                     const existR = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitClean}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
                     const existD = await existR.json();
-                    if (existD[0]?.value?.periodos) {
-                      const oldPeriodos = existD[0].value.periodos.filter(p => p.periodo !== mesActual);
-                      portalDocsData.periodos = [...portalDocsData.periodos, ...oldPeriodos];
-                      portalDocsData.codigoAcceso = existD[0].value.codigoAcceso || codigoAcceso; // mantener código existente
+                    if (existD[0]?.value) {
+                      // Prioridad: 1) código en Supabase, 2) código en registro local empresa, 3) código nuevo
+                      portalDocsData.codigoAcceso = existD[0].value.codigoAcceso || comp?.portalCode || codigoAcceso;
+                      if (existD[0].value.periodos) {
+                        const oldPeriodos = existD[0].value.periodos.filter(p => p.periodo !== mesActual);
+                        portalDocsData.periodos = [...portalDocsData.periodos, ...oldPeriodos];
+                      }
+                    } else {
+                      // Sin registro previo: usar código del registro local si existe
+                      portalDocsData.codigoAcceso = comp?.portalCode || codigoAcceso;
                     }
                   } catch {}
                   await _sbSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData);
