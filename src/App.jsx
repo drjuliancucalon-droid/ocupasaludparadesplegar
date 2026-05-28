@@ -17450,7 +17450,7 @@ function AppInner() {
         : [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
       companies:  [`siso_companies_${userId}`],
       perfilips:  [`siso_companies_${userId}`],
-      reporte:    [`siso_informes_${userId}`, `siso_saved_reports`],
+      reporte:    [`siso_informes_${userId}`, `siso_saved_reports`, `siso_atenciones_cerradas`, `siso_patients_${userId}`, `siso_db_patients_${userId}`],
       bill:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`],
       caja:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`, `siso_caja_movs_${suffix}`],
       agenda:     comingFromHC ? [`siso_atenciones_cerradas`] : [`siso_atenciones_cerradas`, `siso_patients_${userId}`],
@@ -18168,6 +18168,24 @@ function AppInner() {
       _sbQueue.flush();
     });
   }, []);
+  // ── AUTO-MERGE: sincronizar atencionesCerradas → patientsList ───────────────
+  // Cuando atencionesCerradas cambia (carga de login, view-change), verificar si
+  // hay HCs cerradas que NO están en patientsList y agregarlas automáticamente.
+  // Esto garantiza que patientsList siempre tenga todos los pacientes históricos.
+  useEffect(() => {
+    if (!currentUser || atencionesCerradas.length === 0) return;
+    const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
+    const missing = atencionesCerradas.filter(ac =>
+      ac.docNumero && !existingDocs.has(ac.docNumero) && ac.estadoHistoria === "Cerrada"
+    );
+    if (missing.length > 0) {
+      console.log(`[SISO] AUTO-MERGE: agregando ${missing.length} HCs cerradas a patientsList`);
+      const merged = [...patientsList, ...missing];
+      setPatientsList(merged);
+      // Persistir el merge en Supabase y localStorage
+      _syncPatients(merged);
+    }
+  }, [atencionesCerradas, currentUser]);
   // ── AUTO-GUARDADO CADA 2 MINUTOS ─────────────────────────────────────────
   useEffect(() => {
     if (!currentUser || view !== "historia") return;
