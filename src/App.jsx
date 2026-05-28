@@ -20229,15 +20229,34 @@ const handleLogin = (u, p) => {
       : currentUser?.user || "shared";
     const key = _patKey(_suid);
     const cloudKey = _patKeyCloud(_suid);
-    _ls.setItem(key, JSON.stringify(list));
-    setTimeout(() => {
-      if (_syncStatusCallback) _syncStatusCallback("syncing");
-    }, 0);
-    _sbSet(cloudKey, list).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = list;
-      setTimeout(() => {
-        if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
-      }, 0);
+    // MERGE-FIX: antes de escribir, descargar Supabase y hacer merge para nunca
+    // perder registros que están en la nube pero no en el estado local actual.
+    // Esto rompe el ciclo "auto-sync sobreescribe parches de Supabase".
+    setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback("syncing"); }, 0);
+    _sbGetMany([cloudKey]).then((cloudResult) => {
+      const cloudList = cloudResult?.[cloudKey]?.value;
+      let finalList = list;
+      if (Array.isArray(cloudList) && cloudList.length > list.length) {
+        // La nube tiene MÁS registros — hacer merge (unión por id/docNumero)
+        const localIdx = new Map(list.map(p => [p.id || p.docNumero, p]));
+        const extras = cloudList.filter(p => !localIdx.has(p.id || p.docNumero));
+        finalList = [...list, ...extras];
+        console.log(`[SISO] MERGE-FIX: local=${list.length} cloud=${cloudList.length} merged=${finalList.length}`);
+        // Actualizar estado React y localStorage con la lista fusionada
+        setPatientsList(finalList);
+      }
+      _ls.setItem(key, JSON.stringify(finalList));
+      _sbSet(cloudKey, finalList).then((ok) => {
+        if (!ok) _sbQueue.pending[cloudKey] = finalList;
+        setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error"); }, 0);
+      });
+    }).catch(() => {
+      // Si falla la descarga, escribir lo que tenemos sin perder datos
+      _ls.setItem(key, JSON.stringify(list));
+      _sbSet(cloudKey, list).then((ok) => {
+        if (!ok) _sbQueue.pending[cloudKey] = list;
+        setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error"); }, 0);
+      });
     });
   };
   const _syncCompanies = (list) => {
