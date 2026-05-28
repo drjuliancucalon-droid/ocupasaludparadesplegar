@@ -1466,6 +1466,7 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
 
   // ── 5. Guardar índice empresa + reconstruir empresa_docs con periodos ──
   const empresaDocsRows = [];
+  const codigosPorNit = {}; // nit → codigoAcceso generado en esta publicación
   for (const [nitIdx, data] of Object.entries(empresaIdx)) {
     try {
       // Fetch existing para preservar codigo de acceso y periodos previos
@@ -1574,12 +1575,13 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
           periodos: mergedPeriodos,
         },
       });
+      codigosPorNit[nitIdx] = codigoAcceso;
     } catch {}
   }
   if (empresaDocsRows.length > 0) await _sbBulkSet(empresaDocsRows);
 
   const publishedCount = cerradas.length - sinDatos;
-  return { ok: publishedCount, fail: portalResult.fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length };
+  return { ok: publishedCount, fail: portalResult.fail, total: cerradas.length, empresas: Object.keys(empresaIdx).length, codigosPorNit };
 };
 // ══════════════════════════════════════════════════
 // SEGURIDAD: Hash SHA-256 (sin dependencias externas)
@@ -15541,12 +15543,35 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
 
           return (
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            {/* Encabezado */}
-            <div className="bg-blue-700 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
+            {/* ── Stats rapidas ── */}
+            {(() => {
+              const totalApt = resultadosEmpresa.filter(p => { const c = (p.conceptoAptitud||"").toLowerCase(); return c.includes("apto") && !c.includes("no apto"); }).length;
+              const totalRestr = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("restricc")).length;
+              const totalDerivs = resultadosEmpresa.filter(p => (p.derivaciones||[]).length > 0).length;
+              return (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-gradient-to-br from-blue-700 to-blue-900">
+                  {[
+                    { emoji: "👷", valor: trabajadoresUnicos, label: "Trabajadores", color: "text-white" },
+                    { emoji: "✅", valor: totalApt, label: "Aptos", color: "text-emerald-300" },
+                    { emoji: "⚠️", valor: totalRestr, label: "Restricciones", color: "text-yellow-300" },
+                    { emoji: "🔀", valor: totalDerivs, label: "Derivaciones", color: "text-violet-300" },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white/15 rounded-2xl p-3 text-center backdrop-blur-sm">
+                      <div className="text-3xl mb-1">{s.emoji}</div>
+                      <div className={"text-2xl font-black " + s.color}>{s.valor}</div>
+                      <div className="text-white/70 text-[10px] font-bold uppercase tracking-wider">{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
+            {/* ── Encabezado empresa + botones ── */}
+            <div className="bg-blue-800 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
               <div>
-                <p className="text-white font-black text-sm">🏢 Certificados de la Empresa</p>
+                <p className="text-white font-black text-sm">🏢 {empNombre}</p>
                 <p className="text-blue-200 text-[10px]">
-                  {empNombre} · {trabajadoresUnicos} trabajador(es) · {resultadosEmpresa.length} atención(es)
+                  {resultadosEmpresa.length} atención(es)
                   {multiDate && <span className="ml-1 text-yellow-300 font-black">· {fechasDisponibles.length} fechas</span>}
                 </p>
               </div>
@@ -15555,32 +15580,33 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                   const all = {};
                   atencionesVisibles.forEach((_, i) => { all[i] = true; });
                   setCertSeleccionados(Object.keys(certSeleccionados).length === atencionesVisibles.length ? {} : all);
-                }} className="px-3 py-1 bg-white/20 text-white text-[10px] font-black rounded-lg hover:bg-white/30">
+                }} className="px-3 py-1.5 bg-white/20 text-white text-[10px] font-black rounded-xl hover:bg-white/30 transition">
                   {Object.keys(certSeleccionados).length === atencionesVisibles.length ? "☑ Deseleccionar" : "☐ Seleccionar todos"}
                 </button>
                 <button onClick={() => {
                   const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
                   const pacs = sel.length > 0 ? sel : atencionesVisibles;
-                  const w = window.open("","_blank","width=900,height=700");
-                  if (!w) return;
-                  const certs = pacs.map((p, i) => {
+                  const certs = pacs.map((p, idx) => {
                     const certHtml = _generarCertificadoDesdePortal(p);
                     const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
                     const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
-                    return `<div style="${i > 0 ? "page-break-before:always;" : ""}padding-top:${i > 0 ? "10mm" : "0"};">${bodyContent}</div>`;
+                    return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>";
                   }).join("");
                   const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                   const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                   const styles = styleMatch ? styleMatch[1] : "";
-                  w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados - ${empNombre}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles} .np-dl{position:fixed;top:10px;right:10px;z-index:9999;} @media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
-                  w.document.close();
-                }} className="px-3 py-1 bg-emerald-500 text-white text-[10px] font-black rounded-lg hover:bg-emerald-600">
-                  📥 Descargar {Object.keys(certSeleccionados).length > 0 ? `(${Object.keys(certSeleccionados).length})` : `(${atencionesVisibles.length})`}
+                  const htmlContent = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>Certificados - " + empNombre + "</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}" + styles + ".np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class=\"np-dl\"><button onclick=\"window.print()\" style=\"background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);\">📥 Guardar PDF / Imprimir (" + pacs.length + " certificados)</button></div>" + certs + "</body></html>";
+                  const blob = new Blob([htmlContent], {type: "text/html"});
+                  const blobUrl = URL.createObjectURL(blob);
+                  const w = window.open(blobUrl, "_blank");
+                  if (!w) { const a = document.createElement("a"); a.href = blobUrl; a.target = "_blank"; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000); }
+                }} className="px-3 py-1.5 bg-emerald-500 text-white text-[10px] font-black rounded-xl hover:bg-emerald-400 transition shadow-lg">
+                  {"📥 Descargar " + (Object.keys(certSeleccionados).length > 0 ? "(" + Object.keys(certSeleccionados).length + ")" : "(" + atencionesVisibles.length + ")")}
                 </button>
               </div>
             </div>
 
-            {/* ── Filtro por fecha (solo si hay múltiples fechas) ── */}
+            {/* ── Filtro por fecha (solo si hay multiples fechas) ── */}
             {multiDate && (
               <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider flex items-center gap-1">
@@ -15588,11 +15614,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                 </span>
                 <button
                   onClick={() => { setFechaFiltroEmpresa(""); setCertSeleccionados({}); }}
-                  className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition ${
-                    !fechaFiltroEmpresa
-                      ? "bg-blue-700 text-white border-blue-700"
-                      : "bg-white text-blue-700 border-blue-300 hover:border-blue-500"
-                  }`}
+                  className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (!fechaFiltroEmpresa ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-700 border-blue-300 hover:border-blue-500")}
                 >
                   Todas ({resultadosEmpresa.length})
                 </button>
@@ -15602,11 +15624,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                     <button
                       key={f}
                       onClick={() => { setFechaFiltroEmpresa(f); setCertSeleccionados({}); }}
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-black border transition ${
-                        fechaFiltroEmpresa === f
-                          ? "bg-blue-700 text-white border-blue-700"
-                          : "bg-white text-blue-600 border-blue-200 hover:border-blue-500"
-                      }`}
+                      className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (fechaFiltroEmpresa === f ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-600 border-blue-200 hover:border-blue-500")}
                     >
                       {fmtFecha(f)} <span className="opacity-70">({cnt})</span>
                     </button>
@@ -15620,66 +15638,47 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
               </div>
             )}
 
-            {/* ── Tabla de trabajadores ── */}
-            <div className="max-h-[450px] overflow-y-auto overflow-x-auto">
-              <table className="min-w-full text-xs" style={{ minWidth: '620px' }}>
-                <thead className="bg-gray-50 sticky top-0 z-10">
-                  <tr>
-                    <th className="p-2 w-8">☐</th>
-                    <th className="p-2 text-left font-bold text-gray-600">#</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Trabajador</th>
-                    <th className="p-2 text-left font-bold text-gray-600 hidden sm:table-cell">Documento</th>
-                    <th className="p-2 text-left font-bold text-gray-600 hidden md:table-cell">Tipo</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Concepto</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Fecha</th>
-                    <th className="p-2 text-left font-bold text-gray-600">Docs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {atencionesVisibles.map((p, i) => {
-                    const col = colorAptitud(p.conceptoAptitud);
-                    const pMeds = (p.formulaMedicamentos || []).length;
-                    const pDerivs = (p.derivaciones || []).length;
-                    const pExams = (p.solicitudExamenes || []).length;
-                    const pIncap = p.incapacidad?.aplica;
-                    // Detectar si este trabajador tiene más atenciones en otras fechas
-                    const otrasAtenciones = multiDate
-                      ? resultadosEmpresa.filter(a => a.docNumero === p.docNumero && a.fechaExamen !== p.fechaExamen).length
-                      : 0;
-                    return (
-                      <tr key={`${p.docNumero}-${p.fechaExamen}-${i}`} className={`border-b border-gray-50 hover:bg-blue-50 ${certSeleccionados[i] ? "bg-blue-50" : ""}`}>
-                        <td className="p-2 text-center cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><input type="checkbox" checked={!!certSeleccionados[i]} readOnly /></td>
-                        <td className="p-2 text-gray-400 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{i + 1}</td>
-                        <td className="p-2 font-bold text-gray-800 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
-                          <div>{p.nombres || "--"}</div>
-                          {otrasAtenciones > 0 && (
-                            <div className="text-[9px] text-blue-500 font-normal mt-0.5">
-                              +{otrasAtenciones} atención(es) en otras fechas
-                            </div>
-                          )}
-                        </td>
-                        <td className="p-2 font-mono cursor-pointer hidden sm:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.docNumero || "--"}</td>
-                        <td className="p-2 cursor-pointer hidden md:table-cell" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>{p.tipoExamen || "--"}</td>
-                        <td className="p-2 cursor-pointer" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}><span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${col.badge}`}>{col.dot} {p.conceptoAptitud || "--"}</span></td>
-                        <td className="p-2 text-gray-700 font-mono cursor-pointer whitespace-nowrap" onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-black ${fechaFiltroEmpresa === p.fechaExamen ? "bg-blue-100 text-blue-700" : "text-gray-500"}`}>
-                            {fmtFecha(p.fechaExamen) || "--"}
-                          </span>
-                        </td>
-                        <td className="p-2">
-                          <div className="flex gap-1 flex-wrap">
-                            {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} title={`Receta (${pMeds} med.)`} className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-black rounded hover:bg-emerald-200 transition">💊 {pMeds}</button>}
-                            {pDerivs > 0 && <button onClick={() => _portalPrint("derivaciones", p)} title={`Derivaciones (${pDerivs})`} className="px-1.5 py-0.5 bg-violet-100 text-violet-700 text-[9px] font-black rounded hover:bg-violet-200 transition">🏥 {pDerivs}</button>}
-                            {pExams > 0 && <button onClick={() => _portalPrint("examenes", p)} title={`Exámenes (${pExams})`} className="px-1.5 py-0.5 bg-teal-100 text-teal-700 text-[9px] font-black rounded hover:bg-teal-200 transition">🔬 {pExams}</button>}
-                            {pIncap && <button onClick={() => _portalPrint("incapacidad", p)} title="Incapacidad" className="px-1.5 py-0.5 bg-red-100 text-red-700 text-[9px] font-black rounded hover:bg-red-200 transition">🛌</button>}
-                            {!pMeds && !pDerivs && !pExams && !pIncap && <span className="text-[9px] text-gray-300">—</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            {/* ── Cards de trabajadores ── */}
+            <div className="divide-y divide-gray-50 max-h-[520px] overflow-y-auto">
+              {atencionesVisibles.map((p, i) => {
+                const col = colorAptitud(p.conceptoAptitud);
+                const pMeds = (p.formulaMedicamentos || []).length;
+                const pDerivs = (p.derivaciones || []).length;
+                const pExams = (p.solicitudExamenes || []).length;
+                const pIncap = p.incapacidad?.aplica;
+                const initials = (p.nombres || "?").split(" ").slice(0,2).map(n => n[0]).join("").toUpperCase();
+                const otrasAtenciones = multiDate ? resultadosEmpresa.filter(a => a.docNumero === p.docNumero && a.fechaExamen !== p.fechaExamen).length : 0;
+                const isSel = !!certSeleccionados[i];
+                return (
+                  <div key={p.docNumero + "-" + p.fechaExamen + "-" + i} className={"px-4 py-3 flex items-start gap-3 hover:bg-blue-50 transition-colors cursor-pointer " + (isSel ? "bg-blue-50 border-l-4 border-l-blue-500" : "border-l-4 border-l-transparent")} onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
+                    {/* Avatar circular */}
+                    <div className={"w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center font-black text-sm border-2 " + (isSel ? "bg-blue-600 text-white border-blue-400" : "bg-teal-50 text-teal-700 border-teal-200")}>
+                      {isSel ? "✓" : initials}
+                    </div>
+                    {/* Datos */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                        <div className="min-w-0">
+                          <p className="font-black text-sm text-gray-800 leading-tight">{p.nombres || "--"}</p>
+                          <p className="text-[10px] text-gray-400 mt-0.5">{"CC " + (p.docNumero || "--") + (p.cargo ? " · " + p.cargo : "") + " · " + (fmtFecha(p.fechaExamen) || "--")}</p>
+                          {p.tipoExamen && <p className="text-[10px] text-blue-500 font-bold mt-0.5">{p.tipoExamen}</p>}
+                          {otrasAtenciones > 0 && <p className="text-[9px] text-blue-400 mt-0.5">{"+ " + otrasAtenciones + " atención(es) en otras fechas"}</p>}
+                        </div>
+                        <span className={"text-[10px] font-black px-2 py-1 rounded-lg flex-shrink-0 " + col.badge}>{col.dot} {p.conceptoAptitud || "--"}</span>
+                      </div>
+                      {/* Botones de documentos */}
+                      {(pMeds > 0 || pDerivs > 0 || pExams > 0 || pIncap) && (
+                        <div className="flex gap-1.5 flex-wrap mt-2" onClick={e => e.stopPropagation()}>
+                          {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-200 transition">{"💊 Medicamentos (" + pMeds + ")"}</button>}
+                          {pDerivs > 0 && <button onClick={() => _portalPrint("derivaciones", p)} className="px-2 py-1 bg-violet-100 text-violet-700 text-[10px] font-black rounded-lg hover:bg-violet-200 transition">{"🏥 Derivaciones (" + pDerivs + ")"}</button>}
+                          {pExams > 0 && <button onClick={() => _portalPrint("examenes", p)} className="px-2 py-1 bg-teal-100 text-teal-700 text-[10px] font-black rounded-lg hover:bg-teal-200 transition">{"🔬 Exámenes (" + pExams + ")"}</button>}
+                          {pIncap && <button onClick={() => _portalPrint("incapacidad", p)} className="px-2 py-1 bg-red-100 text-red-700 text-[10px] font-black rounded-lg hover:bg-red-200 transition">🛌 Incapacidad</button>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
           );
@@ -17043,6 +17042,7 @@ function AppInner() {
   const [editingCompany, setEditingCompany] = useState(null);
   const [loadingEncuestas, setLoadingEncuestas] = useState(false);
   const [encuestasSyncStatus, setEncuestasSyncStatus] = useState(null); // null|'saving'|'ok'|'error'
+  const [empresaPortalCodes, setEmpresaPortalCodes] = useState({}); // nit → codigoAcceso cargado desde Supabase
   const [importExcelModal, setImportExcelModal] = useState(null); // null | { enc, step, rows, headers, mapping, preview }
   // ── MODAL AGENDAR DESDE ENCUESTA ──
   const [agendarEncModal, setAgendarEncModal] = useState(null); // null | {enc, resps}
@@ -17415,6 +17415,30 @@ function AppInner() {
       _encuestasTabLoadedRef.current = false; // resetear para próxima visita
     }
   }, [companiesTab, _reloadEncuestasFromSupabase]);
+
+  // ── Cargar codigoAcceso desde Supabase al abrir pestaña lista ──
+  const _portalCodesLoadedRef = useRef(false);
+  useEffect(() => {
+    if (companiesTab === "lista" && !_portalCodesLoadedRef.current && companies.length > 0) {
+      _portalCodesLoadedRef.current = true;
+      (async () => {
+        const codes = {};
+        await Promise.all(companies.map(async (c) => {
+          const nitClean = (c.nit || "").replace(/[^0-9]/g, "");
+          if (!nitClean) return;
+          try {
+            const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitClean + "&select=value", { headers: _getSbHeaders() });
+            const d = await r.json();
+            if (d[0]?.value?.codigoAcceso) codes[nitClean] = d[0].value.codigoAcceso;
+          } catch {}
+        }));
+        setEmpresaPortalCodes(codes);
+      })();
+    }
+    if (companiesTab !== "lista") {
+      _portalCodesLoadedRef.current = false; // resetear para próxima visita
+    }
+  }, [companiesTab, companies]);
 
   // ── AUTO-REFRESH: Sincronizar datos desde Supabase al cambiar de vista ──────
   // Cada vista recarga solo sus claves relevantes — no bloquea la UI.
@@ -31173,6 +31197,61 @@ Esta historia clínica debe conservarse mínimo 20 años.
           {/* TAB: LISTA */}
           {companiesTab === "lista" && (
             <div className="space-y-3">
+              {/* Botón activación masiva */}
+              {_visibleCompanies.some(c => {
+                const n = (c.nit || "").replace(/[^0-9]/g, "");
+                return !c.portalCode && !empresaPortalCodes[n];
+              }) && (
+                <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-3 flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <p className="text-xs font-black text-indigo-800">🔑 Empresas sin contraseña de portal detectadas</p>
+                    <p className="text-[10px] text-indigo-600">Genera accesos para todas las empresas que aún no tienen código.</p>
+                  </div>
+                  <button onClick={async (e) => {
+                    const btn = e.currentTarget;
+                    btn.disabled = true;
+                    btn.textContent = "⏳ Generando...";
+                    const sinCodigo = companies.filter(c => {
+                      const n = (c.nit || "").replace(/[^0-9]/g, "");
+                      return !!n && !c.portalCode && !empresaPortalCodes[n];
+                    });
+                    if (sinCodigo.length === 0) { showAlert("✅ Todas las empresas ya tienen código."); btn.disabled = false; btn.textContent = "🔑 Activar todas"; return; }
+                    const nuevosCodigos = {};
+                    const updatedCompanies = companies.map(c => {
+                      const n = (c.nit || "").replace(/[^0-9]/g, "");
+                      if (!n || c.portalCode || empresaPortalCodes[n]) return c;
+                      const code = "EMP-" + n.slice(-4) + "-" + Math.random().toString(36).substring(2, 6).toUpperCase();
+                      nuevosCodigos[n] = code;
+                      return { ...c, portalCode: code };
+                    });
+                    // Guardar en Supabase en paralelo
+                    await Promise.all(Object.entries(nuevosCodigos).map(async ([nit, code]) => {
+                      try {
+                        const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nit + "&select=value", { headers: _getSbHeaders() });
+                        const d = await r.json();
+                        const existing = d[0]?.value || null;
+                        const comp = companies.find(c => (c.nit || "").replace(/[^0-9]/g, "") === nit);
+                        const docsData = {
+                          nit,
+                          nombre: existing?.nombre || comp?.nombre || "",
+                          codigoAcceso: code,
+                          updatedAt: new Date().toISOString(),
+                          periodos: existing?.periodos || [],
+                        };
+                        await _sbSet("siso_portal_empresa_docs_" + nit, docsData);
+                      } catch {}
+                    }));
+                    setCompanies(updatedCompanies);
+                    _syncCompanies(updatedCompanies);
+                    setEmpresaPortalCodes(prev => ({ ...prev, ...nuevosCodigos }));
+                    showAlert("✅ " + Object.keys(nuevosCodigos).length + " empresa(s) activadas con código de portal.");
+                    btn.disabled = false;
+                    btn.textContent = "🔑 Activar todas";
+                  }} className="px-4 py-2 bg-indigo-700 text-white text-xs font-black rounded-xl hover:bg-indigo-800 transition whitespace-nowrap">
+                    🔑 Activar todas
+                  </button>
+                </div>
+              )}
               {companies.length === 0 && (
                 <div className="bg-white rounded-2xl p-8 text-center text-gray-400 text-sm">
                   Sin empresas registradas. Use ➕ Nueva Empresa.
@@ -31322,49 +31401,45 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         )}
                       </div>
                     )}
-                    {/* Portal status */}
-                    <div className="mt-2 flex items-center gap-2 flex-wrap">
-                      {c.portalActivo && c.portalCode ? (
-                        <>
-                          <span className="text-[10px] bg-indigo-100 border border-indigo-300 text-indigo-700 px-2 py-0.5 rounded-full font-black">
-                            🌐 Portal ACTIVO
-                          </span>
-                          <span className="text-[10px] font-mono font-black text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
-                            {c.portalCode}
-                          </span>
-                          <button
-                            onClick={() => {
-                              if (navigator.clipboard) {
-                                navigator.clipboard
-                                  .writeText(c.portalCode)
-                                  .then(() =>
-                                    showAlert(
-                                      "✅ Código " + c.portalCode + " copiado."
-                                    )
-                                  );
-                              } else showAlert("Código: " + c.portalCode);
-                            }}
-                            className="text-[10px] bg-white border border-indigo-200 text-indigo-600 px-2 py-0.5 rounded-full font-bold hover:bg-indigo-50"
-                          >
-                            📋 Copiar código
-                          </button>
-                          <button
-                            onClick={() => setPortalActivadoInfo(c)}
-                            className="text-[10px] bg-white border border-indigo-200 text-indigo-600 px-2 py-0.5 rounded-full font-bold hover:bg-indigo-50"
-                          >
-                            📨 Ver instrucciones
-                          </button>
-                        </>
-                      ) : c.portalActivo ? (
-                        <span className="text-[10px] bg-amber-100 border border-amber-300 text-amber-700 px-2 py-0.5 rounded-full font-black">
-                          🔑 Portal activo - sin código (editar para generar)
-                        </span>
-                      ) : (
-                        <span className="text-[10px] bg-gray-100 border border-gray-200 text-gray-500 px-2 py-0.5 rounded-full font-bold">
-                          🔒 Portal desactivado
-                        </span>
-                      )}
-                    </div>
+                    {/* Portal status — contraseña de acceso */}
+                    {(() => {
+                      const nitClean = (c.nit || "").replace(/[^0-9]/g, "");
+                      const codigo = c.portalCode || empresaPortalCodes[nitClean] || null;
+                      return (
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          {codigo ? (
+                            <>
+                              <span className="text-[10px] bg-indigo-100 border border-indigo-300 text-indigo-700 px-2 py-0.5 rounded-full font-black">
+                                🔑 Portal
+                              </span>
+                              <span className="text-[10px] text-gray-500 font-bold">NIT:</span>
+                              <span className="text-[10px] font-mono font-black text-gray-700 bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-full">
+                                {nitClean || c.nit}
+                              </span>
+                              <span className="text-[10px] text-gray-500 font-bold">Contraseña:</span>
+                              <span className="text-[10px] font-mono font-black text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
+                                {codigo}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  const txt = "NIT: " + (nitClean || c.nit) + "\nContraseña: " + codigo;
+                                  if (navigator.clipboard) {
+                                    navigator.clipboard.writeText(txt).then(() => showAlert("✅ Copiado:\n" + txt));
+                                  } else showAlert(txt);
+                                }}
+                                className="text-[10px] bg-white border border-indigo-200 text-indigo-600 px-2 py-0.5 rounded-full font-bold hover:bg-indigo-50 transition"
+                              >
+                                📋 Copiar
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-[10px] bg-gray-100 border border-gray-200 text-gray-400 px-2 py-0.5 rounded-full font-bold">
+                              🔒 Sin contraseña — se genera al emitir documentos
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -31821,27 +31896,29 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     );
                     delete finalComp.portalAdminPassPlain;
                   }
-                  if (finalComp.portalActivo && !finalComp.portalCode) {
+                  // Siempre generar código de portal al crear empresa
+                  if (!finalComp.portalCode) {
+                    const nitNew = (finalComp.nit || "").replace(/[^0-9]/g, "");
                     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-                    const rand = (n) =>
-                      Array.from(
-                        { length: n },
-                        () => chars[Math.floor(Math.random() * chars.length)]
-                      ).join("");
-                    finalComp.portalCode = `EMP-${rand(4)}-${rand(4)}`;
+                    const rand = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+                    finalComp.portalCode = "EMP-" + (nitNew ? nitNew.slice(-4) : rand(4)) + "-" + rand(4);
                   }
                   const upd = [...companies, finalComp];
                   setCompanies(upd);
                   _syncCompanies(upd);
+                  // Guardar en Supabase para que funcione el portal de certificados
+                  try {
+                    const nitNew = (finalComp.nit || "").replace(/[^0-9]/g, "");
+                    if (nitNew) {
+                      const docsData = { nit: nitNew, nombre: finalComp.nombre || "", codigoAcceso: finalComp.portalCode, updatedAt: new Date().toISOString(), periodos: [] };
+                      await _sbSet("siso_portal_empresa_docs_" + nitNew, docsData);
+                      setEmpresaPortalCodes(prev => ({ ...prev, [nitNew]: finalComp.portalCode }));
+                    }
+                  } catch {}
                   setNewComp(initialCompanyState);
                   setSedeForm({ nombre: "", ciudad: "", direccion: "" });
-                  if (finalComp.portalActivo) {
-                    setPortalActivadoInfo(finalComp);
-                    setCompaniesTab("lista");
-                  } else {
-                    showAlert("✅ Empresa registrada.");
-                    setCompaniesTab("lista");
-                  }
+                  setPortalActivadoInfo(finalComp);
+                  setCompaniesTab("lista");
                 }}
                 className="w-full mt-4 bg-purple-700 hover:bg-purple-800 text-white py-2.5 rounded-xl text-sm font-black"
               >
@@ -32914,16 +32991,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         );
                         delete saved.portalAdminPassPlain;
                       }
-                      // Auto-generar código si portal activo y no tiene código
-                      if (saved.portalActivo && !saved.portalCode) {
+                      // Auto-generar código si no tiene (siempre, no solo si portalActivo)
+                      if (!saved.portalCode) {
+                        const nitEd = (saved.nit || "").replace(/[^0-9]/g, "");
                         const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-                        const rand = (n) =>
-                          Array.from(
-                            { length: n },
-                            () =>
-                              chars[Math.floor(Math.random() * chars.length)]
-                          ).join("");
-                        saved.portalCode = `EMP-${rand(4)}-${rand(4)}`;
+                        const rand = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+                        saved.portalCode = "EMP-" + (nitEd ? nitEd.slice(-4) : rand(4)) + "-" + rand(4);
                       }
                       const upd = companies.map((c) =>
                         c.id === saved.id ? saved : c
@@ -32932,16 +33005,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       // localStorage inmediato
                       const _suidSave = currentUser?.user || "shared";
                       _ls.setItem(_compKey(_suidSave), JSON.stringify(upd));
-                      // Supabase explícito con confirmación
+                      // Supabase: guardar empresa + guardar portal docs si no existe
                       const sbOk = await _sbSet(_compKeyCloud(_suidSave), upd);
+                      try {
+                        const nitEd = (saved.nit || "").replace(/[^0-9]/g, "");
+                        if (nitEd) {
+                          const rEx = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitEd + "&select=value", { headers: _getSbHeaders() });
+                          const dEx = await rEx.json();
+                          const existing = dEx[0]?.value || null;
+                          // Preservar periodos y solo actualizar nombre/código
+                          const docsData = { nit: nitEd, nombre: saved.nombre || "", codigoAcceso: existing?.codigoAcceso || saved.portalCode, updatedAt: new Date().toISOString(), periodos: existing?.periodos || [] };
+                          await _sbSet("siso_portal_empresa_docs_" + nitEd, docsData);
+                          setEmpresaPortalCodes(prev => ({ ...prev, [nitEd]: docsData.codigoAcceso }));
+                        }
+                      } catch {}
                       setEditingCompany(null);
-                      if (saved.portalActivo) {
-                        setPortalActivadoInfo(saved);
-                      } else {
-                        showAlert(sbOk
-                          ? "✅ Empresa actualizada y sincronizada en Supabase."
-                          : "⚠️ Empresa guardada localmente. La sincronización con Supabase fallará — se reintentará en el próximo auto-sync.");
-                      }
+                      showAlert(sbOk
+                        ? "✅ Empresa actualizada y sincronizada en Supabase."
+                        : "⚠️ Empresa guardada localmente. La sincronización con Supabase fallará — se reintentará en el próximo auto-sync.");
                     }}
                     className="w-full mt-4 bg-purple-700 hover:bg-purple-800 text-white py-2.5 rounded-xl text-sm font-black"
                   >
@@ -55127,8 +55208,18 @@ body{padding-top:52px;}
                     }
                   } catch {}
                   await _sbSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData);
-                  // Enviar email
+                  // Guardar código en el registro local de la empresa para que aparezca en la lista
                   const codAccFinal = portalDocsData.codigoAcceso;
+                  try {
+                    const updComp = companies.map(cx => {
+                      const cxNit = (cx.nit || "").replace(/[^0-9]/g, "");
+                      return cxNit === nitClean ? { ...cx, portalCode: codAccFinal } : cx;
+                    });
+                    setCompanies(updComp);
+                    _syncCompanies(updComp);
+                    setEmpresaPortalCodes(prev => ({ ...prev, [nitClean]: codAccFinal }));
+                  } catch {}
+                  // Enviar email
                   const subject = `Documentación Médica Ocupacional — ${emp.empresaNombre}`;
                   const _sep = "─".repeat(52);
                   const body = [
@@ -56069,6 +56160,18 @@ body{padding-top:52px;}
                     } catch {}
                     if (!window.confirm(`¿Publicar ${totalCerradas} HCs cerradas al portal?\n\nEsto incluye pacientes de TODOS los médicos e instituciones almacenados en este dispositivo.\n\nDespués de esto, cualquier paciente podrá buscar su certificado por cédula o código.`)) return;
                     const r = await _rePublicarPortalTodos(patientsList, activeDoctorData, activeSignature);
+                    // Guardar códigos generados en los registros locales de empresa
+                    if (r.codigosPorNit && Object.keys(r.codigosPorNit).length > 0) {
+                      try {
+                        const updComp = companies.map(cx => {
+                          const cxNit = (cx.nit || "").replace(/[^0-9]/g, "");
+                          return r.codigosPorNit[cxNit] ? { ...cx, portalCode: r.codigosPorNit[cxNit] } : cx;
+                        });
+                        setCompanies(updComp);
+                        _syncCompanies(updComp);
+                        setEmpresaPortalCodes(prev => ({ ...prev, ...r.codigosPorNit }));
+                      } catch {}
+                    }
                     alert(`✅ Portal actualizado:\n• ${r.ok} pacientes publicados\n• ${r.empresas} empresas indexadas\n• ${r.fail} fallidos de ${r.total} total\n\nAhora los pacientes pueden buscar por cédula o código de verificación.`);
                   }}
                   className="w-full mt-2 px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-bold hover:bg-emerald-700"
