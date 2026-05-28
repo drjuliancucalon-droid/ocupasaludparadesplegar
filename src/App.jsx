@@ -28443,8 +28443,21 @@ Esta historia clínica debe conservarse mínimo 20 años.
       const asig = secU?.medicosAsignados || [];
       return asig.length > 0 ? asig : null;
     })();
+    // MERGE-RADICAL: usar unión de patientsList + atencionesCerradas para el reporte.
+    // atencionesCerradas tiene TODOS los pacientes históricos con empresaId correcto.
+    const _reportAllPatients = (() => {
+      const combined = [...patientsList];
+      const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
+      for (const ac of atencionesCerradas) {
+        if (ac.docNumero && !existingDocs.has(ac.docNumero)) {
+          combined.push(ac);
+          existingDocs.add(ac.docNumero);
+        }
+      }
+      return combined;
+    })();
     const filtered = _reportEmpId
-      ? patientsList.filter(
+      ? _reportAllPatients.filter(
           (p) =>
             p.empresaId === _reportEmpId &&
             p.fechaExamen &&
@@ -30703,8 +30716,22 @@ Esta historia clínica debe conservarse mínimo 20 años.
     return { nivel: "vigente", label: `✅ Vigente`, color: "green" };
   };
   const renderPatients = () => {
+    // MERGE-RADICAL: combinar patientsList + atencionesCerradas para nunca perder pacientes.
+    // atencionesCerradas es la fuente autoritativa (mantenida con doble-escritura).
+    // Cualquier HC cerrada que falte en patientsList se agrega aquí automáticamente.
+    const _allSources = (() => {
+      const combined = [...patientsList];
+      const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
+      for (const ac of atencionesCerradas) {
+        if (ac.docNumero && !existingDocs.has(ac.docNumero)) {
+          combined.push(ac);
+          existingDocs.add(ac.docNumero);
+        }
+      }
+      return combined;
+    })();
     const unique = new Map();
-    patientsList.forEach((p) => {
+    _allSources.forEach((p) => {
       if (!p.docNumero) return;
       const ex = unique.get(p.docNumero);
       const hc = !!p.fechaExamen;
