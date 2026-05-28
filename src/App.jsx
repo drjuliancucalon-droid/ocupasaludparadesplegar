@@ -18240,11 +18240,8 @@ function AppInner() {
     else setBillData((p) => ({ ...p, amountWords: "" }));
   }, [billData.amount]);
   // ── AUTO-SYNC A SUPABASE CADA 2 MINUTOS ─────────────────────────────────
-  // TEMPORALMENTE DESACTIVADO — reactivar cambiando AUTO_SYNC_DISABLED a false
-  const AUTO_SYNC_DISABLED = true;
   useEffect(() => {
     if (!currentUser) return;
-    if (AUTO_SYNC_DISABLED) return; // ← quitar esto para reactivar
     const AUTO_INTERVAL_MS = 2 * 60 * 1000; // 2 minutos
     const doAutoBackup = async () => {
       // GUARD: no sincronizar si los datos aún no han sido inicializados
@@ -18263,35 +18260,17 @@ function AppInner() {
         // GUARD: solo guardar pacientes/empresas si tenemos datos reales
         // Pacientes: versión slim para Supabase (sin base64, sin binarios)
         // Los datos completos permanecen en localStorage
-        const _u           = currentUser?.user  || "shared";
-        // PROTECCIÓN ANTI-REGRESIÓN: si localStorage tiene más pacientes que la
-        // lista en memoria (puede ocurrir si otra pestaña o sesión añadió registros),
-        // fusionar para nunca reducir el total guardado en Supabase.
-        const _patFull = (() => {
-          if (patientsList.length === 0) return null;
-          try {
-            const stored = JSON.parse(_ls.getItem(_patKey(_u)) || "[]");
-            if (Array.isArray(stored) && stored.length > patientsList.length) {
-              const ids = new Set(patientsList.map(p => p.id));
-              const extras = stored.filter(p => !ids.has(p.id));
-              if (extras.length > 0) return [...patientsList, ...extras];
-            }
-          } catch { /* usar patientsList tal cual */ }
-          return patientsList;
-        })();
+        const _patFull   = patientsList.length > 0 ? patientsList : null;
         const _patToSave = _patFull ? _patFull.map(_slimPatient) : null;
         // Empresas: sin logos base64
         const _compFull   = companies.length > 0 ? companies : null;
         const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
+        const _u           = currentUser?.user  || "shared";
         const tasks = [
-          // ── ESCRITURA PRIMARIA SOLAMENTE (auto-sync) ──────────────────────────
-          // siso_db_patients_drcucalon es clave de respaldo PROTEGIDA: solo se
-          // actualiza al crear/guardar un paciente explícitamente, nunca en auto-sync.
-          // Esto garantiza que siempre contenga el máximo de registros visto y sirva
-          // como fuente de recuperación cuando siso_patients quede desactualizada.
+          // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (sin base64) ──
           ...(_patToSave  ? [
-            _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon (primaria)
-            // siso_db_patients_drcucalon NO se toca en auto-sync → backup protegido
+            _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon   (primaria)
+            _sbSet(_patKey(_u),      _patToSave),   // siso_db_patients_drcucalon (respaldo)
           ] : []),
           ...(_compToSave ? [
             _sbSet(_compKeyCloud(_u), _compToSave), // siso_companies_drcucalon  (primaria)
@@ -20250,24 +20229,12 @@ const handleLogin = (u, p) => {
       : currentUser?.user || "shared";
     const key = _patKey(_suid);
     const cloudKey = _patKeyCloud(_suid);
-    // PROTECCIÓN ANTI-REGRESIÓN: nunca reducir el total de pacientes guardados.
-    // Si localStorage ya tiene MÁS registros que la lista entrante, fusionar ambos
-    // para no perder pacientes añadidos por otra sesión o pestaña.
-    let finalList = list;
-    try {
-      const stored = JSON.parse(_ls.getItem(key) || "[]");
-      if (Array.isArray(stored) && stored.length > list.length) {
-        const listIds = new Set(list.map(p => p.id));
-        const extras = stored.filter(p => !listIds.has(p.id));
-        finalList = extras.length > 0 ? [...list, ...extras] : list;
-      }
-    } catch { /* si falla, usar list tal cual */ }
-    _ls.setItem(key, JSON.stringify(finalList));
+    _ls.setItem(key, JSON.stringify(list));
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
-    _sbSet(cloudKey, finalList).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = finalList;
+    _sbSet(cloudKey, list).then((ok) => {
+      if (!ok) _sbQueue.pending[cloudKey] = list;
       setTimeout(() => {
         if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
       }, 0);
