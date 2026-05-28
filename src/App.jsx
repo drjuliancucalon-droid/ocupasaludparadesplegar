@@ -55005,6 +55005,22 @@ body{padding-top:52px;}
                     <div><p className="text-xs font-black text-gray-800">Cuenta de Cobro</p>
                     <p className="text-[10px] text-gray-500">{hasCuenta ? `No. ${cuentaData?.number || "—"} · $${Number(cuentaData?.amount || 0).toLocaleString("es-CO")}` : "No creada"}</p></div>
                   </div>
+                  {hasCuenta && <button onClick={() => {
+                    setBillData(p => ({
+                      ...p,
+                      ...(cuentaData || {}),
+                      companyId:  cuentaData?.companyId  || emp.empresaId,
+                      clientName: cuentaData?.clientName || emp.empresaNombre,
+                      clientNit:  cuentaData?.clientNit  || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit),
+                      number:     cuentaData?.number     || "",
+                      date:       cuentaData?.date       || new Date().toISOString().split("T")[0],
+                      concept:    cuentaData?.concept    || "",
+                      amount:     cuentaData?.amount     ? String(cuentaData.amount) : "",
+                    }));
+                    setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
+                    setShowEnvioIntegral(false);
+                    goTo("bill");
+                  }} className="px-3 py-1 bg-emerald-600 text-white text-[10px] font-black rounded-lg hover:bg-emerald-700 whitespace-nowrap">✏️ Editar</button>}
                   {!hasCuenta && <button onClick={() => {
                     const _maxB = savedBillsList.reduce((mx, b) => { const n = parseInt(b.number || "0", 10); return n > mx ? n : mx; }, 0);
                     setBillData(p => ({
