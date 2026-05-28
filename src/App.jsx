@@ -17450,7 +17450,7 @@ function AppInner() {
         : [`siso_patients_${userId}`, `siso_companies_${userId}`, `siso_atenciones_cerradas`],
       companies:  [`siso_companies_${userId}`],
       perfilips:  [`siso_companies_${userId}`],
-      reporte:    [`siso_informes_${userId}`, `siso_saved_reports`, `siso_atenciones_cerradas`, `siso_patients_${userId}`, `siso_db_patients_${userId}`],
+      reporte:    [`siso_informes_${userId}`, `siso_saved_reports`, `siso_patients_${userId}`, `siso_db_patients_${userId}`],
       bill:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`],
       caja:       [`siso_saved_bills`, `siso_saved_bills_${suffix}`, `siso_caja_movs_${suffix}`],
       agenda:     comingFromHC ? [`siso_atenciones_cerradas`] : [`siso_atenciones_cerradas`, `siso_patients_${userId}`],
@@ -18168,24 +18168,6 @@ function AppInner() {
       _sbQueue.flush();
     });
   }, []);
-  // ── AUTO-MERGE: sincronizar atencionesCerradas → patientsList ───────────────
-  // Cuando atencionesCerradas cambia (carga de login, view-change), verificar si
-  // hay HCs cerradas que NO están en patientsList y agregarlas automáticamente.
-  // Esto garantiza que patientsList siempre tenga todos los pacientes históricos.
-  useEffect(() => {
-    if (!currentUser || atencionesCerradas.length === 0) return;
-    const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
-    const missing = atencionesCerradas.filter(ac =>
-      ac.docNumero && !existingDocs.has(ac.docNumero) && ac.estadoHistoria === "Cerrada"
-    );
-    if (missing.length > 0) {
-      console.log(`[SISO] AUTO-MERGE: agregando ${missing.length} HCs cerradas a patientsList`);
-      const merged = [...patientsList, ...missing];
-      setPatientsList(merged);
-      // Persistir el merge en Supabase y localStorage
-      _syncPatients(merged);
-    }
-  }, [atencionesCerradas, currentUser]);
   // ── AUTO-GUARDADO CADA 2 MINUTOS ─────────────────────────────────────────
   useEffect(() => {
     if (!currentUser || view !== "historia") return;
@@ -20247,34 +20229,15 @@ const handleLogin = (u, p) => {
       : currentUser?.user || "shared";
     const key = _patKey(_suid);
     const cloudKey = _patKeyCloud(_suid);
-    // MERGE-FIX: antes de escribir, descargar Supabase y hacer merge para nunca
-    // perder registros que están en la nube pero no en el estado local actual.
-    // Esto rompe el ciclo "auto-sync sobreescribe parches de Supabase".
-    setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback("syncing"); }, 0);
-    _sbGetMany([cloudKey]).then((cloudResult) => {
-      const cloudList = cloudResult?.[cloudKey]?.value;
-      let finalList = list;
-      if (Array.isArray(cloudList) && cloudList.length > list.length) {
-        // La nube tiene MÁS registros — hacer merge (unión por id/docNumero)
-        const localIdx = new Map(list.map(p => [p.id || p.docNumero, p]));
-        const extras = cloudList.filter(p => !localIdx.has(p.id || p.docNumero));
-        finalList = [...list, ...extras];
-        console.log(`[SISO] MERGE-FIX: local=${list.length} cloud=${cloudList.length} merged=${finalList.length}`);
-        // Actualizar estado React y localStorage con la lista fusionada
-        setPatientsList(finalList);
-      }
-      _ls.setItem(key, JSON.stringify(finalList));
-      _sbSet(cloudKey, finalList).then((ok) => {
-        if (!ok) _sbQueue.pending[cloudKey] = finalList;
-        setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error"); }, 0);
-      });
-    }).catch(() => {
-      // Si falla la descarga, escribir lo que tenemos sin perder datos
-      _ls.setItem(key, JSON.stringify(list));
-      _sbSet(cloudKey, list).then((ok) => {
-        if (!ok) _sbQueue.pending[cloudKey] = list;
-        setTimeout(() => { if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error"); }, 0);
-      });
+    _ls.setItem(key, JSON.stringify(list));
+    setTimeout(() => {
+      if (_syncStatusCallback) _syncStatusCallback("syncing");
+    }, 0);
+    _sbSet(cloudKey, list).then((ok) => {
+      if (!ok) _sbQueue.pending[cloudKey] = list;
+      setTimeout(() => {
+        if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
+      }, 0);
     });
   };
   const _syncCompanies = (list) => {
@@ -28461,21 +28424,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
       const asig = secU?.medicosAsignados || [];
       return asig.length > 0 ? asig : null;
     })();
-    // MERGE-RADICAL: usar unión de patientsList + atencionesCerradas para el reporte.
-    // atencionesCerradas tiene TODOS los pacientes históricos con empresaId correcto.
-    const _reportAllPatients = (() => {
-      const combined = [...patientsList];
-      const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
-      for (const ac of atencionesCerradas) {
-        if (ac.docNumero && !existingDocs.has(ac.docNumero)) {
-          combined.push(ac);
-          existingDocs.add(ac.docNumero);
-        }
-      }
-      return combined;
-    })();
     const filtered = _reportEmpId
-      ? _reportAllPatients.filter(
+      ? patientsList.filter(
           (p) =>
             p.empresaId === _reportEmpId &&
             p.fechaExamen &&
@@ -30734,22 +30684,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
     return { nivel: "vigente", label: `✅ Vigente`, color: "green" };
   };
   const renderPatients = () => {
-    // MERGE-RADICAL: combinar patientsList + atencionesCerradas para nunca perder pacientes.
-    // atencionesCerradas es la fuente autoritativa (mantenida con doble-escritura).
-    // Cualquier HC cerrada que falte en patientsList se agrega aquí automáticamente.
-    const _allSources = (() => {
-      const combined = [...patientsList];
-      const existingDocs = new Set(patientsList.map(p => p.docNumero).filter(Boolean));
-      for (const ac of atencionesCerradas) {
-        if (ac.docNumero && !existingDocs.has(ac.docNumero)) {
-          combined.push(ac);
-          existingDocs.add(ac.docNumero);
-        }
-      }
-      return combined;
-    })();
     const unique = new Map();
-    _allSources.forEach((p) => {
+    patientsList.forEach((p) => {
       if (!p.docNumero) return;
       const ex = unique.get(p.docNumero);
       const hc = !!p.fechaExamen;
