@@ -20229,12 +20229,24 @@ const handleLogin = (u, p) => {
       : currentUser?.user || "shared";
     const key = _patKey(_suid);
     const cloudKey = _patKeyCloud(_suid);
-    _ls.setItem(key, JSON.stringify(list));
+    // PROTECCIÓN ANTI-REGRESIÓN: nunca reducir el total de pacientes guardados.
+    // Si localStorage ya tiene MÁS registros que la lista entrante, fusionar ambos
+    // para no perder pacientes añadidos por otra sesión o pestaña.
+    let finalList = list;
+    try {
+      const stored = JSON.parse(_ls.getItem(key) || "[]");
+      if (Array.isArray(stored) && stored.length > list.length) {
+        const listIds = new Set(list.map(p => p.id));
+        const extras = stored.filter(p => !listIds.has(p.id));
+        finalList = extras.length > 0 ? [...list, ...extras] : list;
+      }
+    } catch { /* si falla, usar list tal cual */ }
+    _ls.setItem(key, JSON.stringify(finalList));
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
-    _sbSet(cloudKey, list).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = list;
+    _sbSet(cloudKey, finalList).then((ok) => {
+      if (!ok) _sbQueue.pending[cloudKey] = finalList;
       setTimeout(() => {
         if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
       }, 0);
