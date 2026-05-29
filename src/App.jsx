@@ -19797,51 +19797,96 @@ JSON REQUERIDO (estructura exacta):
     try {
       const cloud = await _sbGetAll();
       if (!cloud) {
-        setDiagnosticoData({ error: "No se pudo conectar a Supabase. Verifique su conexión." });
+        setDiagnosticoData({ error: "No se pudo conectar a D1 ni a Supabase. Verifique su conexión." });
         return;
       }
       const uid = currentUser?.user || "drcucalon";
+      const bkSuf = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : uid;
       const allKeys = Object.keys(cloud);
-      // Buscar todas las claves que contengan datos de pacientes o empresas
-      const patKeys = allKeys.filter(k => k.includes("patient") || k.includes("pacient"));
-      const compKeys = allKeys.filter(k => k.includes("compan") || k.includes("empresa") || k.includes("siso_companies"));
-      const userKeys = allKeys.filter(k => k === "siso_users");
-      // Detalles de claves clave del usuario actual
+      const RECIENTE_MS = 7 * 24 * 60 * 60 * 1000;
+      const ahora = Date.now();
+
+      // Fuente: si tiene _source lo usa, si no fue D1 (porque _sbGetAll prefiere D1)
+      const fuente = cloud._source || (_WORKER_TOKEN ? "D1" : "Supabase");
+
+      // Colecciones principales a escanear
       const keyVariants = [
-        `siso_patients_${uid}`,
-        `siso_db_patients_${uid}`,
-        `siso_companies_${uid}`,
-        `siso_companies`,
-        `siso_users`,
+        { key: `siso_db_patients_${uid}`, label: "Pacientes / Lista HC" },
+        { key: `siso_atenciones_cerradas`,  label: "HC Cerradas (autoritativo)" },
+        { key: `siso_companies_${uid}`,     label: "Empresas" },
+        { key: `siso_users`,                label: "Usuarios y perfiles" },
+        { key: `siso_saved_bills_${bkSuf}`, label: "Facturas / Cuentas de cobro" },
+        { key: `siso_saved_reports`,        label: "Informes guardados" },
+        { key: `siso_doctor_signature`,     label: "Firma médica" },
+        { key: `siso_audit_log`,            label: "Log de auditoría" },
+        { key: `siso_agendados_${bkSuf}`,   label: "Agenda / Citas" },
+        { key: `siso_ai_config_provider`,   label: "Config IA" },
       ];
+
       const details = {};
-      for (const k of keyVariants) {
-        const val = cloud[k]?.value;
-        details[k] = {
+      for (const { key, label } of keyVariants) {
+        const entry = cloud[key];
+        const val = entry?.value;
+        const updatedAt = entry?.updated_at || entry?.updatedAt || null;
+        const sizeBytes = val ? JSON.stringify(val).length : 0;
+        details[key] = {
+          label,
           found: !!val,
           count: Array.isArray(val) ? val.length : (val ? 1 : 0),
-          updatedAt: cloud[k]?.updatedAt || null,
-          sample: Array.isArray(val) && val.length > 0 ? val[0]?.nombre || val[0]?.name || val[0]?.razonSocial || "(item)" : null,
+          updatedAt,
+          reciente: updatedAt ? (ahora - new Date(updatedAt).getTime()) < RECIENTE_MS : false,
+          sample: Array.isArray(val) && val.length > 0
+            ? val[0]?.nombre || val[0]?.name || val[0]?.razonSocial || val[0]?.user || "(item)"
+            : (val && typeof val === "object" ? Object.keys(val)[0] : null),
+          sizeKB: Math.round(sizeBytes / 1024),
+          sizeWarning: sizeBytes > 900 * 1024,
         };
       }
-      // Buscar claves adicionales que podrían tener datos
-      const extraPatKeys = patKeys.filter(k => !keyVariants.includes(k));
-      const extraCompKeys = compKeys.filter(k => !keyVariants.includes(k));
+
+      // Claves adicionales con pacientes/empresas no contempladas arriba
+      const knownKeys = new Set(keyVariants.map(k => k.key));
+      const extraKeys = allKeys
+        .filter(k => !knownKeys.has(k) && (k.includes("patient") || k.includes("pacient") || k.includes("compan") || k.includes("empresa") || k.includes("siso_companies")))
+        .map(k => {
+          const val = cloud[k]?.value;
+          const updatedAt = cloud[k]?.updated_at || cloud[k]?.updatedAt || null;
+          return {
+            key: k,
+            count: Array.isArray(val) ? val.length : 0,
+            updatedAt,
+            reciente: updatedAt ? (ahora - new Date(updatedAt).getTime()) < RECIENTE_MS : false,
+          };
+        });
+
+      // Sugerencias de posibles errores
+      const advertencias = [];
+      const cerradasD1 = details["siso_atenciones_cerradas"]?.count || 0;
+      const cerradasPantalla = atencionesCerradas?.length || 0;
+      const pacientesD1 = details[`siso_db_patients_${uid}`]?.count || 0;
+      const pacientesPantalla = patientsList?.length || 0;
+
+      if (cerradasD1 === 0 && cerradasPantalla > 0)
+        advertencias.push(`⚠️ siso_atenciones_cerradas está vacío en nube pero hay ${cerradasPantalla} HC cerradas en pantalla — presiona "Guardar en Nube" para sincronizar.`);
+      if (cerradasD1 > 0 && cerradasPantalla > 0 && Math.abs(cerradasD1 - cerradasPantalla) > 5)
+        advertencias.push(`⚠️ HC cerradas: ${cerradasPantalla} en pantalla vs ${cerradasD1} en nube — posible desincronización.`);
+      if (pacientesD1 === 0 && pacientesPantalla > 0)
+        advertencias.push(`⚠️ Lista de pacientes no encontrada en nube para el usuario "${uid}" — presiona "Guardar en Nube".`);
+      if (pacientesD1 > 0 && pacientesPantalla > 0 && Math.abs(pacientesD1 - pacientesPantalla) > 10)
+        advertencias.push(`⚠️ Pacientes: ${pacientesPantalla} en pantalla vs ${pacientesD1} en nube — diferencia de ${Math.abs(pacientesD1 - pacientesPantalla)} registros.`);
+      for (const [k, d] of Object.entries(details)) {
+        if (d.sizeWarning) advertencias.push(`⚠️ "${k}" pesa ${d.sizeKB} KB — cerca del límite D1 (1024 KB). Riesgo de fallo al guardar.`);
+      }
+      if (!details["siso_doctor_signature"]?.found)
+        advertencias.push(`💡 Firma médica no encontrada en nube — guárdala desde "Guardar en Nube" para tenerla como respaldo.`);
+
       setDiagnosticoData({
         totalKeys: allKeys.length,
         uid,
+        fuente,
         details,
-        extraPatKeys: extraPatKeys.map(k => ({
-          key: k,
-          count: Array.isArray(cloud[k]?.value) ? cloud[k].value.length : 0,
-          updatedAt: cloud[k]?.updatedAt,
-        })),
-        extraCompKeys: extraCompKeys.map(k => ({
-          key: k,
-          count: Array.isArray(cloud[k]?.value) ? cloud[k].value.length : 0,
-          updatedAt: cloud[k]?.updatedAt,
-        })),
-        cloudRef: cloud, // referencia para restauración
+        extraKeys,
+        advertencias,
+        cloudRef: cloud,
       });
     } catch (err) {
       setDiagnosticoData({ error: err.message });
@@ -56652,7 +56697,7 @@ body{padding-top:52px;}
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="font-black text-gray-900 text-base">🔍 Diagnóstico de Nube</h2>
-                <p className="text-[11px] text-gray-400">Escaneo de datos en Supabase</p>
+                <p className="text-[11px] text-gray-400">D1 Worker (primario) · Supabase (respaldo)</p>
               </div>
               <button onClick={() => setShowDiagnostico(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
             </div>
@@ -56674,7 +56719,7 @@ body{padding-top:52px;}
             {diagnosticoCargando && (
               <div className="flex items-center gap-2 text-amber-700 bg-amber-50 rounded-xl p-4">
                 <Loader2 className="w-5 h-5 animate-spin" />
-                <span className="text-sm font-semibold">Escaneando Supabase...</span>
+                <span className="text-sm font-semibold">Escaneando D1 / Nube...</span>
               </div>
             )}
             {diagnosticoData?.error && (
@@ -56684,37 +56729,74 @@ body{padding-top:52px;}
             )}
             {diagnosticoData && !diagnosticoData.error && !diagnosticoCargando && (
               <>
-                <div className="bg-gray-50 rounded-xl p-3 mb-4 text-xs text-gray-600">
-                  <span className="font-bold">Total de claves en Supabase:</span> {diagnosticoData.totalKeys} | <span className="font-bold">Usuario:</span> {diagnosticoData.uid}
+                {/* Resumen general */}
+                <div className="bg-gray-50 rounded-xl p-3 mb-3 text-xs text-gray-600 flex flex-wrap gap-x-4 gap-y-1">
+                  <span><span className="font-bold">Fuente:</span> {diagnosticoData.fuente === "D1" ? "✅ Worker D1 (primario)" : "⚠️ Supabase (fallback)"}</span>
+                  <span><span className="font-bold">Claves totales:</span> {diagnosticoData.totalKeys}</span>
+                  <span><span className="font-bold">Usuario:</span> {diagnosticoData.uid}</span>
                 </div>
-                <p className="text-xs font-black text-gray-700 uppercase tracking-wider mb-2">Claves principales</p>
+
+                {/* Advertencias / sugerencias de error */}
+                {diagnosticoData.advertencias?.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3 space-y-1">
+                    <p className="text-xs font-black text-amber-800 uppercase tracking-wider mb-1">⚠️ Sugerencias</p>
+                    {diagnosticoData.advertencias.map((a, i) => (
+                      <p key={i} className="text-xs text-amber-800">{a}</p>
+                    ))}
+                  </div>
+                )}
+
+                {/* Colecciones principales */}
+                <p className="text-xs font-black text-gray-700 uppercase tracking-wider mb-2">Colecciones escaneadas</p>
                 <div className="space-y-1.5 mb-4">
                   {Object.entries(diagnosticoData.details).map(([key, info]) => (
-                    <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold border ${info.found && info.count > 0 ? "bg-emerald-50 border-emerald-200 text-emerald-800" : "bg-red-50 border-red-200 text-red-700"}`}>
-                      <div>
-                        <span className="font-mono">{key}</span>
-                        {info.sample && <span className="ml-2 text-[10px] opacity-70">→ "{info.sample}"</span>}
+                    <div key={key} className={`px-3 py-2 rounded-lg text-xs font-semibold border ${
+                      info.sizeWarning ? "bg-orange-50 border-orange-300 text-orange-800"
+                      : info.found && info.count > 0 ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                      : "bg-red-50 border-red-200 text-red-700"
+                    }`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold">{info.label}</span>
+                          {info.reciente && <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px] font-black">RECIENTE</span>}
+                          {info.sizeWarning && <span className="bg-orange-200 text-orange-800 px-1.5 py-0.5 rounded text-[10px] font-black">⚠️ {info.sizeKB}KB</span>}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span>{info.found ? `✅ ${info.count} reg.` : "❌ Vacío"}</span>
+                          {info.found && info.count > 0 && (key.includes("patient") || key.includes("compan") || key.includes("atenciones")) && (
+                            <button onClick={() => handleRestaurarDesdeKey(key)} className="bg-emerald-600 text-white px-2 py-0.5 rounded-md text-[10px] font-bold hover:bg-emerald-700">
+                              Restaurar
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span>{info.found ? `✅ ${info.count} registros` : "❌ Vacío / No existe"}</span>
-                        {info.found && info.count > 0 && (key.includes("patient") || key.includes("compan")) && (
-                          <button onClick={() => handleRestaurarDesdeKey(key)} className="bg-emerald-600 text-white px-2 py-0.5 rounded-md text-[10px] font-bold hover:bg-emerald-700">
-                            Restaurar
-                          </button>
-                        )}
+                      <div className="flex items-center gap-3 mt-0.5 opacity-70 font-mono font-normal">
+                        <span>{key}</span>
+                        {info.sample && <span>→ "{info.sample}"</span>}
                       </div>
+                      {info.updatedAt && (
+                        <div className="mt-0.5 text-[10px] opacity-60">
+                          Actualizado: {new Date(info.updatedAt).toLocaleString("es-CO")}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
-                {(diagnosticoData.extraPatKeys.length > 0 || diagnosticoData.extraCompKeys.length > 0) && (
+
+                {/* Claves adicionales */}
+                {diagnosticoData.extraKeys?.length > 0 && (
                   <>
                     <p className="text-xs font-black text-amber-700 uppercase tracking-wider mb-2">Claves adicionales encontradas</p>
                     <div className="space-y-1.5 mb-4">
-                      {[...diagnosticoData.extraPatKeys, ...diagnosticoData.extraCompKeys].map(info => (
+                      {diagnosticoData.extraKeys.map(info => (
                         <div key={info.key} className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold border ${info.count > 0 ? "bg-blue-50 border-blue-200 text-blue-800" : "bg-gray-50 border-gray-200 text-gray-500"}`}>
-                          <span className="font-mono">{info.key}</span>
+                          <div>
+                            <span className="font-mono">{info.key}</span>
+                            {info.reciente && <span className="ml-1.5 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px] font-black">RECIENTE</span>}
+                            {info.updatedAt && <div className="text-[10px] opacity-60">{new Date(info.updatedAt).toLocaleString("es-CO")}</div>}
+                          </div>
                           <div className="flex items-center gap-2">
-                            <span>{info.count > 0 ? `✅ ${info.count} registros` : "vacío"}</span>
+                            <span>{info.count > 0 ? `✅ ${info.count} reg.` : "vacío"}</span>
                             {info.count > 0 && (
                               <button onClick={() => handleRestaurarDesdeKey(info.key)} className="bg-blue-600 text-white px-2 py-0.5 rounded-md text-[10px] font-bold hover:bg-blue-700">
                                 Restaurar
@@ -56726,10 +56808,11 @@ body{padding-top:52px;}
                     </div>
                   </>
                 )}
-                {Object.values(diagnosticoData.details).every(d => !d.found || d.count === 0) && diagnosticoData.extraPatKeys.filter(k => k.count > 0).length === 0 && (
+
+                {Object.values(diagnosticoData.details).every(d => !d.found || d.count === 0) && (diagnosticoData.extraKeys?.filter(k => k.count > 0).length || 0) === 0 && (
                   <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 mb-4">
-                    <p className="font-black mb-1">⚠️ No se encontraron datos en Supabase</p>
-                    <p className="text-xs">Los datos pueden haberse perdido si se guardó una lista vacía anteriormente. Si tiene un archivo de respaldo (BACKUP_*.json), puede importarlo usando el botón "Importar Backup" en Configuración.</p>
+                    <p className="font-black mb-1">⚠️ No se encontraron datos en la nube</p>
+                    <p className="text-xs">Presiona "Guardar en Nube" para subir todos los datos. Si tienes un archivo de respaldo (BACKUP_*.json) puedes importarlo desde el botón "Importar".</p>
                   </div>
                 )}
                 <button
