@@ -24303,6 +24303,92 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   </button>
                 </div>
               </div>
+
+              {/* Exportar Backup Completo — Res. 2346/2007 (conservación 20 años) */}
+              <div className="bg-white border border-emerald-100 rounded-xl p-3 mt-2">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-gray-800">📦 Exportar Backup Completo</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Descarga todo en un archivo JSON: pacientes, HCs, empresas, facturas, atenciones. Cumplimiento Res. 2346/2007 (conservación 20 años).</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      try {
+                        const uid = currentUser?.user || "shared";
+                        const suf = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : uid;
+                        const lsKeys = [
+                          `siso_db_patients_${uid}`, `siso_patients_${uid}`,
+                          `siso_companies_${uid}`, "siso_companies_shared",
+                          "siso_atenciones_cerradas", `siso_atenciones_${uid}`,
+                          `siso_saved_bills_${suf}`, "siso_saved_bills",
+                          `siso_caja_movs_${suf}`, `siso_informes_${uid}`,
+                          "siso_encuestas", `siso_encuestas_${uid}`,
+                          `siso_cartas_custodia_${uid}`, "siso_cartas_custodia",
+                          `siso_agendados_${uid}`, "siso_audit_log",
+                        ];
+                        const backup = {
+                          version: "SISO-backup-v1",
+                          exportadoEn: new Date().toISOString(),
+                          exportadoPor: currentUser?.user || "desconocido",
+                          normativa: "Res. 2346/2007 — conservar 20 años",
+                          datos: {},
+                        };
+                        let totalReg = 0;
+                        for (const k of lsKeys) {
+                          try {
+                            const raw = localStorage.getItem(k);
+                            if (raw) {
+                              const parsed = JSON.parse(raw);
+                              backup.datos[k] = parsed;
+                              if (Array.isArray(parsed)) totalReg += parsed.length;
+                            }
+                          } catch {}
+                        }
+                        // Quitar base64 de firma para reducir tamaño
+                        if (backup.datos[`siso_db_patients_${uid}`]) {
+                          backup.datos[`siso_db_patients_${uid}`] = backup.datos[`siso_db_patients_${uid}`].map(p => {
+                            const { firma, ...rest } = p;
+                            return rest;
+                          });
+                        }
+                        const json = JSON.stringify(backup, null, 2);
+                        const blob = new Blob([json], { type: "application/json" });
+                        const url  = URL.createObjectURL(blob);
+                        const a    = document.createElement("a");
+                        a.href     = url;
+                        a.download = `SISO_backup_${uid}_${new Date().toISOString().split("T")[0]}.json`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        showAlert(`✅ Backup exportado\n\n${Object.keys(backup.datos).length} colecciones · ~${totalReg} registros\n\nGuarde el archivo en un lugar seguro (disco externo, Google Drive, etc.).\nCumple Res. 2346/2007 — conservar 20 años.`);
+                      } catch(err) {
+                        showAlert("⚠️ Error al exportar: " + err.message);
+                      }
+                    }}
+                    className="flex-shrink-0 px-3 py-2 bg-emerald-600 text-white text-[10px] font-black rounded-lg hover:bg-emerald-700 transition whitespace-nowrap"
+                  >
+                    📦 Exportar Backup
+                  </button>
+                </div>
+              </div>
+
+              {/* Estado Cloudinary */}
+              <div className={`border rounded-xl p-3 mt-2 ${_CLOUDINARY_ENABLED ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div>
+                    <p className="text-xs font-black text-gray-800">
+                      {_CLOUDINARY_ENABLED ? "✅ Cloudinary activo — PDFs/imágenes en la nube" : "⚠️ Cloudinary no configurado — adjuntos en base64"}
+                    </p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">
+                      {_CLOUDINARY_ENABLED
+                        ? "Adjuntos se suben a Cloudinary (25 GB gratis, URL permanente)."
+                        : "Para habilitar: agregar CLOUDINARY_CLOUD y CLOUDINARY_PRESET en Cloudflare Pages → Settings → Environment Variables."}
+                    </p>
+                  </div>
+                  {_CLOUDINARY_ENABLED && (
+                    <span className="text-[9px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-black">ACTIVO</span>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
