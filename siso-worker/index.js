@@ -1,12 +1,29 @@
 // SISO API Worker — Cloudflare D1 backend
 // Reemplaza Supabase siso_store como almacenamiento en nube
 
-const ALLOWED_ORIGIN = "https://ocupasaludparadesplegar.pages.dev";
+// Lista explícita de orígenes permitidos. Incluye el proyecto git-connected
+// (-f4q) Y el alias antiguo sin sufijo, por compatibilidad histórica.
+const ALLOWED_ORIGINS = [
+  "https://ocupasaludparadesplegar.pages.dev",
+  "https://ocupasaludparadesplegar-f4q.pages.dev",
+  "http://localhost:5173",
+  "http://localhost:4173",
+];
+// Fallback usado en respuestas cuando el Origin no fue reconocido (preserva
+// retro-compatibilidad: si alguien llama sin Origin válido, igual recibe CORS
+// dirigido al alias original).
+const DEFAULT_ORIGIN = ALLOWED_ORIGINS[0];
 
 function corsHeaders(origin) {
-  const allowed = origin === ALLOWED_ORIGIN || (origin && origin.endsWith(".ocupasaludparadesplegar.pages.dev"));
+  // Match exacto contra la lista O cualquier subdomio bajo
+  // *.ocupasaludparadesplegar.pages.dev y *.ocupasaludparadesplegar-f4q.pages.dev
+  // (preview deploys de Cloudflare Pages usan hash.proyecto.pages.dev).
+  const allowed =
+    ALLOWED_ORIGINS.includes(origin) ||
+    (origin && origin.endsWith(".ocupasaludparadesplegar.pages.dev")) ||
+    (origin && origin.endsWith(".ocupasaludparadesplegar-f4q.pages.dev"));
   return {
-    "Access-Control-Allow-Origin": allowed ? origin : ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": allowed ? origin : DEFAULT_ORIGIN,
     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type,X-Siso-Token",
     "Access-Control-Max-Age": "86400",
@@ -98,10 +115,150 @@ export default {
         return new Response(JSON.stringify({ ok: true }), { headers });
       }
 
+      // ── POST /snapshot — disparar snapshot manualmente ───────────────
+      if (request.method === "POST" && path === "/snapshot") {
+        const result = await runDailySnapshot(env);
+        return new Response(JSON.stringify(result), { headers });
+      }
+
+      // ── GET /snapshot/list — listar snapshots disponibles ────────────
+      if (request.method === "GET" && path === "/snapshot/list") {
+        const rows = await env.DB.prepare(
+          "SELECT key, updated_at FROM siso_store WHERE key LIKE 'siso_snapshot_%__manifest' ORDER BY key DESC"
+        ).all();
+        return new Response(JSON.stringify(rows.results || []), { headers });
+      }
+
       return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
 
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
     }
   },
+
+  // ─────────────────────────────────────────────────────────────────────
+  // CRON TRIGGER — corre automáticamente según cron expression definido en wrangler.json
+  // Genera snapshot diario + rota viejos (>7 días).
+  // ─────────────────────────────────────────────────────────────────────
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runDailySnapshot(env).catch(err => {
+      console.error("[CRON snapshot] error:", err?.message);
+    }));
+  },
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// runDailySnapshot — reconstruye estado completo y lo guarda como snapshot
+// Estrategia:
+//   1) Lee TODAS las claves operacionales (excluye snapshots/legacy)
+//   2) Reconstruye claves chunked en memoria (concatena __cN)
+//   3) Serializa el estado completo y lo trocea en piezas de 500KB
+//   4) Guarda como siso_snapshot_YYYY-MM-DD__c0..cN + __meta + __manifest
+//   5) Rota: borra snapshots con fecha > 7 días atrás
+// ─────────────────────────────────────────────────────────────────────────
+async function runDailySnapshot(env) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const snapPrefix = `siso_snapshot_${today}`;
+  const t0 = Date.now();
+  const log = [];
+
+  // 1) Leer todas las claves (excluir snapshots y legacy — no respaldar respaldos)
+  const allRows = await env.DB.prepare(
+    "SELECT key, value FROM siso_store WHERE key NOT LIKE 'siso_snapshot_%' AND key NOT LIKE 'siso_legacy_%'"
+  ).all();
+  const rows = allRows.results || [];
+  log.push(`leídas ${rows.length} claves operacionales`);
+
+  // 2) Indexar y reconstruir chunks
+  const metas = {};         // baseKey → meta value
+  const chunkBags = {};     // baseKey → { idx → string }
+  const direct = {};
+  const chunkRe = /__c(\d+)$/;
+  for (const row of rows) {
+    if (row.key.endsWith("__meta")) {
+      try { metas[row.key.slice(0, -6)] = JSON.parse(row.value); } catch {}
+      continue;
+    }
+    const m = chunkRe.exec(row.key);
+    if (m) {
+      const base = row.key.slice(0, -m[0].length);
+      (chunkBags[base] ||= {})[Number(m[1])] = JSON.parse(row.value);
+      continue;
+    }
+    try { direct[row.key] = JSON.parse(row.value); } catch { direct[row.key] = row.value; }
+  }
+
+  const reconstructed = { ...direct };
+  let reconstructedCount = 0;
+  for (const [base, meta] of Object.entries(metas)) {
+    if (!meta?.chunked || !Number.isFinite(meta.count)) continue;
+    const bag = chunkBags[base] || {};
+    const parts = [];
+    let ok = true;
+    for (let i = 0; i < meta.count; i++) {
+      if (typeof bag[i] !== "string") { ok = false; break; }
+      parts.push(bag[i]);
+    }
+    if (!ok) continue;
+    try { reconstructed[base] = JSON.parse(parts.join("")); reconstructedCount++; } catch {}
+  }
+  log.push(`reconstruidas ${reconstructedCount} claves chunked`);
+
+  // 3) Serializar y trocear el snapshot
+  const serialized = JSON.stringify({
+    snapshotVersion: "v1",
+    createdAt: new Date().toISOString(),
+    totalKeys: Object.keys(reconstructed).length,
+    data: reconstructed,
+  });
+  const totalBytes = serialized.length;
+  const CHUNK = 500 * 1024;
+  const pieceCount = Math.ceil(totalBytes / CHUNK);
+  log.push(`serializado ${(totalBytes/1024).toFixed(0)} KB → ${pieceCount} piezas`);
+
+  // 4) Escribir piezas + meta + manifest
+  const insertStmt = env.DB.prepare(
+    "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+  );
+  // Batch para piezas (max 50 por batch para no exceder D1 binds)
+  const writeBatch = [];
+  for (let i = 0; i < pieceCount; i++) {
+    const piece = serialized.slice(i * CHUNK, (i + 1) * CHUNK);
+    writeBatch.push(insertStmt.bind(`${snapPrefix}__c${i}`, JSON.stringify(piece)));
+  }
+  // Meta y manifest
+  const meta = {
+    chunked: true,
+    count: pieceCount,
+    totalBytes,
+    ts: Date.now(),
+  };
+  const manifest = {
+    snapshotVersion: "v1",
+    createdAt: new Date().toISOString(),
+    totalKeys: Object.keys(reconstructed).length,
+    totalBytes,
+    pieceCount,
+    reconstructedCount,
+    durationMs: Date.now() - t0,
+    log,
+  };
+  writeBatch.push(insertStmt.bind(`${snapPrefix}__meta`, JSON.stringify(meta)));
+  writeBatch.push(insertStmt.bind(`${snapPrefix}__manifest`, JSON.stringify(manifest)));
+
+  // Ejecutar en batches de 50
+  for (let i = 0; i < writeBatch.length; i += 50) {
+    await env.DB.batch(writeBatch.slice(i, i + 50));
+  }
+  log.push(`escritas ${writeBatch.length} claves del snapshot`);
+
+  // 5) Rotación: borrar snapshots cuya fecha (extraída de la clave) sea > 7 días atrás
+  const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  // siso_snapshot_YYYY-MM-DD__... → substr(15, 10) = "YYYY-MM-DD"
+  const delRes = await env.DB.prepare(
+    "DELETE FROM siso_store WHERE key LIKE 'siso_snapshot_%' AND substr(key, 15, 10) < ?"
+  ).bind(cutoff).run();
+  log.push(`rotación: borradas ${delRes.meta?.changes ?? 0} claves anteriores a ${cutoff}`);
+
+  return { ok: true, snapshotKey: snapPrefix, manifest, log };
+}

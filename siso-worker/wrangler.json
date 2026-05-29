@@ -8,5 +8,8 @@
       "database_name": "siso-db",
       "database_id": "76da5895-478f-4486-a5d4-05069f9aa45a"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["0 6 * * *"]
+  }
 }
