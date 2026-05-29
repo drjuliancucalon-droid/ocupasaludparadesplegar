@@ -14583,9 +14583,15 @@ function PortalInformeViewer({ informe, empresaNombre, sbUrl, sbKey }) {
     if (fullData || !informe.statsKey) return;
     setLoading(true);
     try {
-      const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.${informe.statsKey}&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
-      const d = await r.json();
-      if (d[0]?.value) setFullData(d[0].value);
+      // D1 primero (statsKey almacenado en Worker)
+      let val = null;
+      if (_WORKER_TOKEN) { try { val = await _workerGet(informe.statsKey); } catch {} }
+      if (!val) {
+        const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.${informe.statsKey}&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+        const d = await r.json();
+        val = d[0]?.value || null;
+      }
+      if (val) setFullData(val);
     } catch {}
     setLoading(false);
   };
@@ -14851,11 +14857,17 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
     (async () => {
       for (const n of tryNits) {
         try {
-          const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${n}&select=value`, {
-            headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
-          });
-          const d = await r.json();
-          if (d[0]?.value) { setPortalDocs(d[0].value); break; }
+          // D1 primero, Supabase fallback
+          let val = null;
+          if (_WORKER_TOKEN) { try { val = await _workerGet(`siso_portal_empresa_docs_${n}`); } catch {} }
+          if (!val) {
+            const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${n}&select=value`, {
+              headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
+            });
+            const d = await r.json();
+            val = d[0]?.value || null;
+          }
+          if (val) { setPortalDocs(val); break; }
         } catch {}
       }
       setDocsLoaded(true);
@@ -15198,17 +15210,35 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
           }
           // 2) Si no encontró por NIT, buscar por nombre en los índices
           if (!empresaIdx && qLower.length >= 3) {
-            try {
-              const rAll = await fetchConTimeout(`${sbUrl}/rest/v1/siso_store?select=key,value&key=like.siso_portal_empresa_%`, { headers }, 12000);
-              if (rAll.ok) {
-                const rows = await rAll.json();
-                const match = rows.find(r => {
-                  const v = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
-                  return v && (v.nombre || "").toLowerCase().includes(qLower);
-                });
-                if (match) empresaIdx = typeof match.value === "string" ? JSON.parse(match.value) : match.value;
-              }
-            } catch {}
+            // D1 prefix primero (filtra client-side), Supabase LIKE como fallback
+            let matched = false;
+            if (_WORKER_TOKEN) {
+              try {
+                const dRows = await Promise.race([
+                  fetch(`${_WORKER_URL}/store/prefix/siso_portal_empresa_`, {
+                    headers: { "X-Siso-Token": _WORKER_TOKEN },
+                  }).then(r => r.ok ? r.json() : []),
+                  new Promise((_, rej) => setTimeout(() => rej(), 8000)),
+                ]);
+                if (Array.isArray(dRows) && dRows.length > 0) {
+                  const m = dRows.find(r => r.value && (r.value.nombre || "").toLowerCase().includes(qLower));
+                  if (m) { empresaIdx = m.value; matched = true; }
+                }
+              } catch {}
+            }
+            if (!matched) {
+              try {
+                const rAll = await fetchConTimeout(`${sbUrl}/rest/v1/siso_store?select=key,value&key=like.siso_portal_empresa_%`, { headers }, 12000);
+                if (rAll.ok) {
+                  const rows = await rAll.json();
+                  const match = rows.find(r => {
+                    const v = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
+                    return v && (v.nombre || "").toLowerCase().includes(qLower);
+                  });
+                  if (match) empresaIdx = typeof match.value === "string" ? JSON.parse(match.value) : match.value;
+                }
+              } catch {}
+            }
           }
           if (empresaIdx && empresaIdx.documentos && empresaIdx.documentos.length > 0) {
             // ── Intentar cargar índice multi-fecha primero ─────────────────────
@@ -17723,14 +17753,25 @@ function AppInner() {
 
     (async () => {
       try {
-        const fetchKey = (key) =>
-          Promise.race([
+        // D1 primero en paralelo, Supabase fallback solo para claves no encontradas en Worker
+        const fetchKey = async (key) => {
+          if (_WORKER_TOKEN) {
+            try {
+              const val = await Promise.race([
+                _workerGet(key),
+                new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000)),
+              ]);
+              if (val !== null && val !== undefined) return { key, value: val };
+            } catch {}
+          }
+          return Promise.race([
             fetch(
               `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(key)}&select=key,value`,
               { headers: hdrs }
             ).then(r => r.ok ? r.json() : []).then(d => ({ key, value: d[0]?.value ?? null })),
             new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 6000)),
           ]).catch(() => ({ key, value: null }));
+        };
 
         const results = await Promise.all(keys.map(fetchKey));
 
@@ -29000,13 +29041,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       tipoExamen: p.tipoExamen,
                     })),
                   };
-                  try {
-                    await fetch(`${_SB_URL}/rest/v1/siso_store`, {
-                      method: "POST",
-                      headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
-                      body: JSON.stringify({ key: statsKey, value: fullData }),
-                    });
-                  } catch {}
+                  // Guardar stats en D1 primero, Supabase fallback (via _sbSet = _securePost)
+                  try { await _sbSet(statsKey, fullData); } catch {}
                   const informe = {
                     id: "inf_" + Date.now(),
                     empresaId: selectedCompanyReport,
@@ -31484,10 +31520,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     const codigosFinales = { ...nuevosCodigos };
                     await Promise.all(Object.entries(nuevosCodigos).map(async ([nit, code]) => {
                       try {
-                        const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nit + "&select=value", { headers: _getSbHeaders() });
-                        const d = await r.json();
-                        const existing = d[0]?.value || null;
-                        // Prioridad: 1) código ya en Supabase, 2) código nuevo generado
+                        // D1 primero, Supabase fallback — preservar codigoAcceso existente
+                        let existing = null;
+                        if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_docs_${nit}`); } catch {} }
+                        if (!existing) { try { const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nit + "&select=value", { headers: _getSbHeaders() }); const d = await r.json(); existing = d[0]?.value || null; } catch {} }
+                        // Prioridad: 1) código ya en nube, 2) código nuevo generado
                         const codigoFinal = existing?.codigoAcceso || code;
                         codigosFinales[nit] = codigoFinal;
                         const comp = companies.find(c => (c.nit || "").replace(/[^0-9]/g, "") === nit);
@@ -32414,9 +32451,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           <button onClick={() => { const url = window.location.origin + window.location.pathname + "#encuesta?token=" + enc.token; navigator.clipboard?.writeText(url); showAlert("📋 Link copiado al portapapeles:\n\n" + url + "\n\nEnvíelo por WhatsApp o email al encargado de la empresa."); }} className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-black rounded-lg hover:bg-blue-100">📋 Copiar Link</button>
                           <button onClick={async () => {
                             try {
-                              const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                              const d = await r.json();
-                              const resps = d[0]?.value || [];
+                              // D1 primero, Supabase fallback
+                              let resps = null;
+                              if (_WORKER_TOKEN) { try { resps = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
+                              if (!resps) { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); resps = d[0]?.value || null; }
+                              resps = resps || [];
                               if (resps.length === 0) { showAlert("Sin respuestas aún. Comparta el link con los trabajadores."); return; }
                               // Guardar en estado temporal para mostrar tabla
                               const updEnc2 = encuestas.map(e => e.id === enc.id ? {...e, _respuestas: resps, _showResps: !e._showResps} : {...e, _showResps: false});
@@ -32425,9 +32464,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           }} className="px-3 py-1.5 bg-purple-50 text-purple-700 text-[10px] font-black rounded-lg hover:bg-purple-100">👁️ Ver Respuestas</button>
                           <button onClick={async () => {
                             try {
-                              const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                              const d = await r.json();
-                              const resps = (d[0]?.value || []).filter(r2 => !r2.importado);
+                              // D1 primero, Supabase fallback — guardar raw para allResps posterior
+                              let _rawVal = null;
+                              if (_WORKER_TOKEN) { try { _rawVal = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
+                              if (!_rawVal) { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); _rawVal = d[0]?.value || null; }
+                              _rawVal = _rawVal || [];
+                              const resps = _rawVal.filter(r2 => !r2.importado);
                               if (resps.length === 0) { showAlert("No hay respuestas pendientes de importar."); return; }
                               showConfirm(`¿Importar ${resps.length} trabajador(es) como pacientes de "${enc.empresaNombre}"?\n\nDespués será redirigido a la lista de pacientes.`, () => {
                                 const comp = companies.find(c => c.id === enc.empresaId);
@@ -32456,7 +32498,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                 const patSuf = currentUser?.user || "shared";
                                 _sync(`siso_db_patients_${patSuf}`, JSON.stringify(updatedPats));
                                 _sync(`siso_patients_${patSuf}`, JSON.stringify(updatedPats));
-                                const allResps = (d[0]?.value || []).map(r2 => ({...r2, importado: true}));
+                                const allResps = (_rawVal || []).map(r2 => ({...r2, importado: true}));
                                 _sbSet(`siso_encuesta_resp_${enc.token}`, allResps);
                                 const updEnc3 = encuestas.map(e => e.id === enc.id ? {...e, estado: "importada"} : e);
                                 setEncuestas(updEnc3);
@@ -32470,9 +32512,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           {/* BOTÓN PDF */}
                           <button onClick={async () => {
                             try {
-                              const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                              const d = await r.json();
-                              const resps = d[0]?.value || [];
+                              // D1 primero, Supabase fallback
+                              let resps = null;
+                              if (_WORKER_TOKEN) { try { resps = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
+                              if (!resps) { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); resps = d[0]?.value || null; }
+                              resps = resps || [];
                               if (resps.length === 0) { showAlert("Sin respuestas para exportar."); return; }
                               const filas = resps.map((r2, i) => `<tr class="${i%2===0?'':'bg-gray-50'}"><td>${i+1}</td><td><b>${r2.nombres||''}</b></td><td>${r2.docTipo||'CC'} ${r2.docNumero||''}</td><td>${r2.fechaNacimiento||'--'}</td><td>${r2.edad||'--'}</td><td>${r2.genero||'--'}</td><td>${r2.estadoCivil||'--'}</td><td>${r2.escolaridad||'--'}</td><td>${r2.grupoEtnico||'--'}</td><td>${r2.lateralidad||'--'}</td><td>${r2.celular||'--'}</td><td>${r2.email||'--'}</td><td>${r2.direccion||'--'}</td><td>${r2.ciudad||'--'}</td><td>${r2.zonaResidencia||'--'}</td><td>${r2.estrato||'--'}</td><td>${r2.eps||'--'}</td><td>${r2.arl||'--'}</td><td>${r2.afp||'--'}</td><td>${r2.cargo||'--'}</td><td>${r2.area||'--'}</td><td>${r2.antiguedad||'--'}</td><td>${r2.tipoContrato||'--'}</td><td>${r2.turnoTrabajo||'--'}</td><td>${r2.contactoEmergencia||'--'}</td><td>${r2.telEmergencia||'--'}</td></tr>`).join('');
                               const w = window.open('','_blank');
@@ -32483,9 +32527,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           }} className="px-3 py-1.5 bg-slate-50 text-slate-700 text-[10px] font-black rounded-lg hover:bg-slate-100">📄 Descargar PDF</button>
                           <button onClick={async () => {
                             try {
-                              const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                              const d = await r.json();
-                              const resps = d[0]?.value || [];
+                              // D1 primero, Supabase fallback
+                              let resps = null;
+                              if (_WORKER_TOKEN) { try { resps = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
+                              if (!resps) { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); resps = d[0]?.value || null; }
+                              resps = resps || [];
                               if (resps.length === 0) { showAlert("Sin respuestas para agendar.\n\nAsegúrese de que los trabajadores hayan completado la encuesta."); return; }
                               // Abrir modal con todos los campos necesarios
                               setAgendarEncForm(prev => ({
@@ -32724,11 +32770,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           onClick={async () => {
                             const { enc, rows, mapping } = importExcelModal;
                             try {
-                              // Cargar respuestas existentes
-                              const existing = await fetch(
-                                `${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`,
-                                { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
-                              ).then(r => r.json()).then(d => d[0]?.value || []).catch(() => []);
+                              // Cargar respuestas existentes — D1 primero, Supabase fallback
+                              let existing = null;
+                              if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
+                              if (!existing) { existing = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }).then(r => r.json()).then(d => d[0]?.value || []).catch(() => []); }
+                              existing = existing || [];
 
                               // Convertir filas Excel al formato de respuesta de encuesta
                               const newResps = rows.map((row, i) => ({
@@ -37781,17 +37827,21 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
       let dataUrl = null;
       try { dataUrl = localStorage.getItem(adj.sbKey); } catch {}
       if (!dataUrl) {
-        try {
-          const r = await fetch(
-            `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(adj.sbKey)}&select=value`,
-            { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
-          );
-          if (r.ok) {
-            const rows = await r.json();
-            dataUrl = rows?.[0]?.value || null;
-            if (dataUrl) { try { localStorage.setItem(adj.sbKey, dataUrl); } catch {} }
-          }
-        } catch {}
+        // D1 primero, Supabase fallback para adjuntos base64
+        if (_WORKER_TOKEN) { try { dataUrl = await _workerGet(adj.sbKey); } catch {} }
+        if (!dataUrl) {
+          try {
+            const r = await fetch(
+              `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(adj.sbKey)}&select=value`,
+              { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }
+            );
+            if (r.ok) {
+              const rows = await r.json();
+              dataUrl = rows?.[0]?.value || null;
+            }
+          } catch {}
+        }
+        if (dataUrl) { try { localStorage.setItem(adj.sbKey, dataUrl); } catch {} }
       }
       if (dataUrl) {
         const w = window.open("", "_blank");
