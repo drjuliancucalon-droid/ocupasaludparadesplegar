@@ -19704,12 +19704,16 @@ JSON REQUERIDO (estructura exacta):
     // GUARD: solo guardar pacientes/empresas si hay datos reales
     const _patToSaveManual = patientsList.length > 0 ? patientsList : null;
     const _compToSaveManual = companies.length > 0 ? companies : null;
+    // Slim antes de enviar: evita exceder 1MB/fila en D1 con base64 de estudios/imágenes
+    const _patSlim = _patToSaveManual ? _patToSaveManual.map(_slimPatient) : null;
+    const _atencionesCerradasSlim = atencionesCerradas.map(_slimPatient);
+    const _compStripped = _compToSaveManual ? _stripBase64Deep(_compToSaveManual) : null;
     const tasks = {
-      ...(_patToSaveManual ? {[`Pacientes / HC (${currentUser?.user})`]: _sbSet(
+      ...(_patSlim ? {[`Pacientes / HC (${currentUser?.user})`]: _sbSet(
         _patKeyCloud(currentUser?.user || "shared"),
-        _patToSaveManual
+        _patSlim
       )} : {}),
-      ...(_compToSaveManual ? {Empresas: _sbSet(_compKeyCloud(currentUser?.user || "shared"), _compToSaveManual)} : {}),
+      ...(_compStripped ? {Empresas: _sbSet(_compKeyCloud(currentUser?.user || "shared"), _compStripped)} : {}),
       "Usuarios y perfiles": _sbSet("siso_users", usersList),
       "Facturas / Cuentas de cobro": _sbSet(`siso_saved_bills_${_bkSuf}`, savedBillsList),
       "Informes guardados": _sbSet("siso_saved_reports", savedReports),
@@ -19720,8 +19724,8 @@ JSON REQUERIDO (estructura exacta):
       // siso_atenciones_cerradas = fuente autoritativa (leída en login)
       // siso_atenciones_${_bkSuf} = clave por usuario (también leída en algunos flujos)
       "Atenciones cerradas": Promise.all([
-        _sbSet("siso_atenciones_cerradas", atencionesCerradas),
-        _sbSet(`siso_atenciones_${_bkSuf}`, atencionesCerradas),
+        _sbSet("siso_atenciones_cerradas", _atencionesCerradasSlim),
+        _sbSet(`siso_atenciones_${_bkSuf}`, _atencionesCerradasSlim),
       ]).then(([r1, r2]) => r1 && r2),
       "Configuración IA (proveedor)": _sbSet("siso_ai_config_provider", {
         activeProvider: aiConfig.activeProvider,
