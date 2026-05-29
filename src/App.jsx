@@ -15039,7 +15039,7 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
+const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
   const { useState, useCallback, useRef } = React;
   const [busqueda, setBusqueda] = React.useState("");
   const [tipoBusqueda, setTipoBusqueda] = React.useState("codigo");
@@ -15057,6 +15057,18 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
   const [fechaFiltroEmpresa, setFechaFiltroEmpresa] = React.useState(""); // "" = todas las fechas
   const [tabEmpresa, setTabEmpresa] = React.useState("certificados"); // certificados|documentos|estadisticas
   const tabPrincipal = tipoBusqueda === "empresa" ? "empresa" : "trabajador";
+
+  // Auto-login desde la lista de empresas: recibe {nit, codigo} y lanza búsqueda directamente
+  React.useEffect(() => {
+    if (autoLogin?.nit && autoLogin?.codigo) {
+      setTipoBusqueda("empresa");
+      setBusqueda(autoLogin.nit);
+      setCodigoPortal(autoLogin.codigo);
+      buscar(autoLogin.nit, autoLogin.codigo, "empresa");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const MAX_INTENTOS = 6;
   const BLOQUEO_MS = 5 * 60 * 1000; // 5 minutos
 
@@ -15069,7 +15081,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
     );
   };
 
-  const buscar = async () => {
+  const buscar = async (_qOverride, _codigoOverride, _tipoOverride) => {
     const ahora = Date.now();
     if (ahora < bloqueadoHasta) {
       const restMin = Math.ceil((bloqueadoHasta - ahora) / 60000);
@@ -15078,7 +15090,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
       );
       return;
     }
-    const q = busqueda.trim();
+    const q = (_qOverride !== undefined ? _qOverride : busqueda).trim();
+    const _tipo = _tipoOverride !== undefined ? _tipoOverride : tipoBusqueda;
     if (!q) {
       setError("Ingrese su código de verificación o número de cédula.");
       return;
@@ -15133,7 +15146,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
       // Intentar todas las variantes de clave posibles
       let pac = null;
       let firstError = null;
-      if (tipoBusqueda === "codigo") {
+      if (_tipo === "codigo") {
         const qUp = q.toUpperCase();
         // 1) Clave exacta tal como viene
         const r1 = await fetchKey("siso_portal_" + qUp);
@@ -15163,11 +15176,11 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
           const r5 = await fetchKey("siso_portal_" + codeNoDash);
           if (r5.ok && r5.data) pac = r5.data;
         }
-      } else if (tipoBusqueda === "empresa") {
+      } else if (_tipo === "empresa") {
         // Búsqueda por NIT de empresa: usar índice siso_portal_empresa_{nit}
         const nitClean = q.replace(/[^0-9]/g, "");
         const qLower = q.trim().toLowerCase();
-        const codIngresado = (codigoPortal || "").trim().toUpperCase();
+        const codIngresado = (_codigoOverride !== undefined ? _codigoOverride : codigoPortal || "").trim().toUpperCase();
 
         // ── Validar código de acceso contra siso_portal_empresa_docs_{nit} ──
         // Probar NIT exacto y variantes con DV
@@ -15302,7 +15315,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
       });
       if (!pac) {
         setError(
-          tipoBusqueda === "codigo"
+          _tipo === "codigo"
             ? "❌ Código no encontrado. Aceptamos formatos CV-XXXXXXX y SISO-FECHA-ID-HASH. Verifique mayúsculas y que la HC esté cerrada."
             : "❌ Número de cédula no encontrado. Solo aparecen evaluaciones con historia cerrada."
         );
@@ -16990,6 +17003,7 @@ function AppInner() {
   });
   // Portal Público (acceso sin login)
   const [showPortalPublico, setShowPortalPublico] = useState(false);
+  const [portalAutoLogin, setPortalAutoLogin] = useState(null); // {nit, codigo} para acceso directo desde lista empresas
   // ═══ MÓDULO ENCUESTAS SOCIODEMOGRÁFICAS ═══
   const [showEncuestaPublica, setShowEncuestaPublica] = useState(false);
   const [encuestaToken, setEncuestaToken] = useState("");
@@ -31897,6 +31911,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                 className="text-[10px] bg-white border border-indigo-200 text-indigo-600 px-2 py-0.5 rounded-full font-bold hover:bg-indigo-50 transition"
                               >
                                 📋 Copiar
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setPortalAutoLogin({ nit: nitClean || c.nit, codigo });
+                                  setShowPortalPublico(true);
+                                  window.location.hash = "#portaltrabajador";
+                                }}
+                                className="text-[10px] bg-blue-600 border border-blue-600 text-white px-2 py-0.5 rounded-full font-bold hover:bg-blue-700 transition"
+                              >
+                                🏢 Abrir Portal
                               </button>
                             </>
                           ) : (
@@ -55477,7 +55501,8 @@ body{padding-top:52px;}
         <PortalPublicoTrabajador
           sbUrl={_SB_URL}
           sbKey={_SB_KEY}
-          onVolver={currentUser ? () => { setShowPortalPublico(false); history.replaceState(null, "", window.location.pathname); } : null}
+          autoLogin={portalAutoLogin}
+          onVolver={currentUser ? () => { setShowPortalPublico(false); setPortalAutoLogin(null); history.replaceState(null, "", window.location.pathname); } : null}
         />
       ) : (
         renderCurrentView()
