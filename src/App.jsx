@@ -265,7 +265,9 @@ const _WORKER_TOKEN =
   (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) ||
   import.meta.env?.VITE_WORKER_TOKEN ||
   "";
-const _workerSet = async (key, value) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Acceso bajo nivel al Worker D1 (sin chunking) — NO usar fuera de este módulo.
+const _workerSetRaw = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
   try {
     const r = await fetch(`${_WORKER_URL}/store`, {
@@ -276,7 +278,7 @@ const _workerSet = async (key, value) => {
     return r.ok;
   } catch { return false; }
 };
-const _workerGet = async (key) => {
+const _workerGetRaw = async (key) => {
   if (!_WORKER_TOKEN) return null;
   try {
     const r = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
@@ -286,6 +288,85 @@ const _workerGet = async (key) => {
     const data = await r.json();
     return data[0]?.value ?? null;
   } catch { return null; }
+};
+const _workerDeleteRaw = async (key) => {
+  if (!_WORKER_TOKEN) return false;
+  try {
+    const r = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+      headers: { "X-Siso-Token": _WORKER_TOKEN },
+    });
+    return r.ok;
+  } catch { return false; }
+};
+
+// Umbrales de auto-chunking — el bind de D1 ronda 1 MB; dejamos margen.
+const _CHUNK_THRESHOLD = 600 * 1024;   // si JSON > 600KB chars → chunked
+const _CHUNK_SIZE      = 500 * 1024;   // 500KB chars por pieza
+const _CHUNK_SUF_META  = "__meta";
+const _CHUNK_SUF_PIECE = "__c";
+
+// _workerSet con auto-chunking transparente.
+// • value pequeño (≤ threshold) → escritura directa, idéntica al comportamiento previo.
+// • value grande → se serializa, se trocea en piezas {key}__c0,c1,… y se escribe
+//   un sentinel {key}__meta = {chunked:true, count, totalBytes, ts}. La clave directa
+//   se borra al final para evitar lecturas obsoletas.
+// • si previamente fue chunked y ahora cabe directo → se borra meta y chunks viejos.
+const _workerSet = async (key, value) => {
+  if (!_WORKER_TOKEN) return false;
+  let serialized;
+  try { serialized = JSON.stringify(value); }
+  catch { return false; }
+
+  if (serialized.length <= _CHUNK_THRESHOLD) {
+    const ok = await _workerSetRaw(key, value);
+    if (ok) {
+      // Limpieza diferida de posibles chunks previos
+      (async () => {
+        const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
+        if (meta && meta.chunked && Number.isFinite(meta.count)) {
+          for (let i = 0; i < meta.count; i++) await _workerDeleteRaw(key + _CHUNK_SUF_PIECE + i);
+          await _workerDeleteRaw(key + _CHUNK_SUF_META);
+        }
+      })().catch(() => {});
+    }
+    return ok;
+  }
+
+  // Path chunked
+  const pieces = [];
+  for (let i = 0; i < serialized.length; i += _CHUNK_SIZE) {
+    pieces.push(serialized.slice(i, i + _CHUNK_SIZE));
+  }
+  for (let i = 0; i < pieces.length; i++) {
+    const ok = await _workerSetRaw(key + _CHUNK_SUF_PIECE + i, pieces[i]);
+    if (!ok) { console.warn(`[_workerSet] chunk ${i}/${pieces.length} falló para ${key}`); return false; }
+  }
+  const meta = { chunked: true, count: pieces.length, totalBytes: serialized.length, ts: Date.now() };
+  const okMeta = await _workerSetRaw(key + _CHUNK_SUF_META, meta);
+  if (!okMeta) return false;
+  // Borrar versión directa antigua (si existía) en background
+  _workerDeleteRaw(key).catch(() => {});
+  return true;
+};
+
+// _workerGet con auto-reconstrucción de chunks.
+// Estrategia: intenta lectura directa primero (caso común, O(1)); si retorna null,
+// busca {key}__meta — si existe y declara chunked, concatena {key}__c0..cN y parsea.
+const _workerGet = async (key) => {
+  if (!_WORKER_TOKEN) return null;
+  const direct = await _workerGetRaw(key);
+  if (direct !== null) return direct;
+  const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
+  if (!meta || !meta.chunked || !Number.isFinite(meta.count)) return null;
+  const parts = [];
+  for (let i = 0; i < meta.count; i++) {
+    const p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+    if (p === null) { console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key}`); return null; }
+    parts.push(p);
+  }
+  try { return JSON.parse(parts.join("")); }
+  catch (e) { console.warn(`[_workerGet] reconstrucción inválida para ${key}:`, e?.message); return null; }
 };
 const _workerGetAll = async (userId) => {
   if (!_WORKER_TOKEN) return null;
@@ -297,7 +378,39 @@ const _workerGetAll = async (userId) => {
     if (!r.ok) return null;
     const rows = await r.json();
     const out = {};
-    for (const row of rows) out[row.key] = { value: row.value, updated_at: row.updated_at };
+    // Recolectar metas/chunks aparte para reconstruir y NO exponer claves __meta/__cN
+    const metas = {};               // baseKey → meta value
+    const pieces = {};              // baseKey → { [idx]: piece string }
+    const chunkRe = /__c(\d+)$/;
+    for (const row of rows) {
+      const k = row.key;
+      if (k.endsWith(_CHUNK_SUF_META)) {
+        metas[k.slice(0, -_CHUNK_SUF_META.length)] = { value: row.value, updated_at: row.updated_at };
+        continue;
+      }
+      const m = chunkRe.exec(k);
+      if (m) {
+        const base = k.slice(0, m.index);
+        (pieces[base] ||= {})[Number(m[1])] = row.value;
+        continue;
+      }
+      out[k] = { value: row.value, updated_at: row.updated_at };
+    }
+    // Reconstruir cualquier clave chunked si TODOS los pedazos están en este batch
+    for (const [base, metaEntry] of Object.entries(metas)) {
+      const meta = metaEntry.value;
+      if (!meta || !meta.chunked || !Number.isFinite(meta.count)) continue;
+      const bag = pieces[base] || {};
+      let okAll = true;
+      const parts = [];
+      for (let i = 0; i < meta.count; i++) {
+        if (typeof bag[i] !== "string") { okAll = false; break; }
+        parts.push(bag[i]);
+      }
+      if (!okAll) continue;
+      try { out[base] = { value: JSON.parse(parts.join("")), updated_at: metaEntry.updated_at }; }
+      catch {}
+    }
     return out;
   } catch { return null; }
 };
@@ -15257,6 +15370,15 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                 }
               } catch {}
             }
+          }
+          // Diagnóstico: si la empresa existe pero aún no tiene HC cerradas, dar mensaje específico
+          if (empresaIdx && (!empresaIdx.documentos || empresaIdx.documentos.length === 0)) {
+            setError(
+              "ℹ️ Empresa encontrada (" + (empresaIdx.nombre || empresaIdx.nit || "sin nombre") + "), pero aún no tiene certificados disponibles.\n\n" +
+              "El portal solo muestra historias clínicas CERRADAS. Si ya atendió a sus trabajadores, verifique que la consulta esté finalizada y firmada en el sistema."
+            );
+            setCargando(false);
+            return;
           }
           if (empresaIdx && empresaIdx.documentos && empresaIdx.documentos.length > 0) {
             // ── Intentar cargar índice multi-fecha primero ─────────────────────
