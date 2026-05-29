@@ -18285,6 +18285,81 @@ function AppInner() {
       }
     }
 
+    // ── AUTO-PUSH D1: firma del médico ────────────────────────────────────────────────────
+    // La firma se excluye del sync masivo por tamaño, pero se protege aquí con una sola
+    // escritura a D1. Sin flag: se reintenta en cada login para mantener la firma fresca.
+    if (_WORKER_TOKEN && _loginUid) {
+      const _sig = _ls.getItem("siso_doctor_signature");
+      if (_sig && _sig.length > 50) {
+        (async () => {
+          try {
+            const existing = await _workerGet("siso_doctor_signature");
+            if (!existing) {
+              await _workerSet("siso_doctor_signature", _sig);
+              console.log("[SISO] ✅ Firma médica subida a D1 como respaldo");
+            }
+          } catch (e) {
+            console.warn("[SISO] Auto-push firma D1 falló:", e.message);
+          }
+        })();
+      }
+    }
+
+    // ── AUTO-PUSH D1: HCs cerradas (siso_portal_doc_* + siso_hc_completa_*) ─────────────
+    // Las HCs históricas fueron guardadas solo en Supabase. Se re-publican a D1 una vez
+    // por login (flag con timestamp de 7 días para refrescar periódicamente).
+    if (_WORKER_TOKEN && _loginUid) {
+      const _hcPushFlagKey = `siso_hc_d1_push_ts_${_loginUid}`;
+      const _hcPushTs = parseInt(localStorage.getItem(_hcPushFlagKey) || "0");
+      const _hcPushAge = Date.now() - _hcPushTs;
+      const _HC_PUSH_TTL = 7 * 24 * 60 * 60 * 1000; // 7 días
+      if (_hcPushAge > _HC_PUSH_TTL) {
+        (async () => {
+          try {
+            const _allPatsRaw = JSON.parse(_ls.getItem(`siso_db_patients_${_loginUid}`) || "[]");
+            const _cerradas = Array.isArray(_allPatsRaw)
+              ? _allPatsRaw.filter(p => p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion)
+              : [];
+            if (_cerradas.length === 0) return;
+            const _portalRows = [];
+            const _hcRows = [];
+            for (const p of _cerradas) {
+              const ced = (p.docNumero || "").replace(/\s/g, "");
+              const code = (p.codigoVerificacion || p.firmaDigital?.codigoQR || "").trim().toUpperCase();
+              const docData = p._doctorData || {};
+              const portalVal = {
+                nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
+                empresaNombre: p.empresaNombre || "", empresaNit: p.empresaNit || "",
+                cargo: p.cargo, tipoExamen: p.tipoExamen,
+                fechaExamen: p.fechaExamen, conceptoAptitud: p.conceptoAptitud,
+                codigoVerificacion: code, estadoHistoria: "Cerrada",
+                fechaCierre: p.fechaCierre || "",
+                _doctorData: docData, _firma: p._firma || "",
+              };
+              // Slim HC: strip raw study data + adj binarios pero conservar firma
+              const hcVal = { ..._slimPatient(p), _doctorData: docData, _firma: p._firma || "" };
+              if (ced) {
+                _portalRows.push({ key: "siso_portal_doc_" + ced, value: portalVal });
+                _hcRows.push({ key: "siso_hc_completa_" + ced, value: hcVal });
+              }
+              if (code) {
+                _portalRows.push({ key: "siso_portal_" + code, value: portalVal });
+                _hcRows.push({ key: "siso_hc_completa_codigo_" + code, value: hcVal });
+              }
+            }
+            const allRows = [..._portalRows, ..._hcRows];
+            if (allRows.length > 0) {
+              const res = await _sbBulkSet(allRows);
+              console.log(`[SISO] ✅ HCs cerradas → D1: ${res.ok} ok, ${res.fail} fail (${_cerradas.length} pacientes)`);
+            }
+            localStorage.setItem(_hcPushFlagKey, String(Date.now()));
+          } catch (e) {
+            console.warn("[SISO] Auto-push HCs D1 falló:", e.message);
+          }
+        })();
+      }
+    }
+
     // DATA-FIX-v2: si hay atenciones locales con empresaId vacío pero empresaNit conocido,
     // invalidar el caché para forzar re-descarga desde Supabase (datos corregidos).
     const _needsDataFix = (() => {
@@ -20585,8 +20660,10 @@ const handleLogin = (u, p) => {
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
-    _sbSet(cloudKey, list).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = list;
+    // Slim antes de enviar a D1/Supabase: evita exceder límite 1 MB/fila con imágenes base64
+    const slimList = list.map(_slimPatient);
+    _sbSet(cloudKey, slimList).then((ok) => {
+      if (!ok) _sbQueue.pending[cloudKey] = slimList;
       setTimeout(() => {
         if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
       }, 0);
