@@ -18251,6 +18251,40 @@ function AppInner() {
       } catch { return false; }
     })();
 
+    // ── AUTO-PUSH D1: si pacientes están en localStorage pero NO en D1 → subirlos ──────
+    // Ejecuta una sola vez en background sin bloquear UI. Garantiza que D1 tenga los datos
+    // aunque Supabase esté caído. Se marca con flag para no repetir en cada login.
+    if (_WORKER_TOKEN && _hasLocalData && _loginUid) {
+      const _d1PushFlag = `siso_d1_push_done_${_loginUid}`;
+      if (!localStorage.getItem(_d1PushFlag)) {
+        (async () => {
+          try {
+            // Verificar si D1 ya tiene los pacientes
+            const _d1Check = await _workerGet(`siso_db_patients_${_loginUid}`);
+            if (!_d1Check || (Array.isArray(_d1Check) && _d1Check.length === 0)) {
+              console.log("[SISO] 🔄 D1 sin pacientes — subiendo desde localStorage...");
+              const _patsRaw = JSON.parse(localStorage.getItem(`siso_db_patients_${_loginUid}`) || "[]");
+              if (Array.isArray(_patsRaw) && _patsRaw.length > 0) {
+                // Usar _sbSetSafe: strip base64 + guarda en D1 primero
+                const ok1 = await _sbSetSafe(`siso_db_patients_${_loginUid}`, _patsRaw);
+                const ok2 = await _sbSetSafe(`siso_patients_${_loginUid}`, _patsRaw);
+                if (ok1 || ok2) {
+                  localStorage.setItem(_d1PushFlag, "1");
+                  console.log(`[SISO] ✅ ${_patsRaw.length} pacientes subidos a D1 desde localStorage`);
+                }
+              }
+            } else {
+              // D1 ya tiene pacientes — marcar como hecho
+              localStorage.setItem(_d1PushFlag, "1");
+              console.log("[SISO] ✅ Pacientes ya están en D1 (" + (Array.isArray(_d1Check) ? _d1Check.length : "?") + " registros)");
+            }
+          } catch (e) {
+            console.warn("[SISO] Auto-push D1 falló:", e.message);
+          }
+        })();
+      }
+    }
+
     // DATA-FIX-v2: si hay atenciones locales con empresaId vacío pero empresaNit conocido,
     // invalidar el caché para forzar re-descarga desde Supabase (datos corregidos).
     const _needsDataFix = (() => {
@@ -24207,6 +24241,70 @@ Esta historia clínica debe conservarse mínimo 20 años.
               </button>
             </div>
           </div>
+
+          {/* ── Datos & Sincronización D1 ──────────────────────────────────── */}
+          {_isAdminOrEmpresa(currentUser?.role) && _WORKER_TOKEN && (
+            <div>
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">
+                🔄 Datos & Sincronización
+              </p>
+              <div className="bg-white border border-blue-100 rounded-xl p-3">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-gray-800">☁️ Cloudflare D1 — Respaldo en la nube</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Sube todos los datos del dispositivo a D1 ahora mismo. Recomendado si Supabase está caído o si cambió de dispositivo.</p>
+                  </div>
+                  <button
+                    onClick={async (e) => {
+                      const btn = e.currentTarget;
+                      btn.disabled = true;
+                      btn.textContent = "⏳ Sincronizando...";
+                      const uid = currentUser?.user || "shared";
+                      const suf = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : uid;
+                      let ok = 0, fail = 0;
+                      const push = async (key, val) => {
+                        if (!val) return;
+                        const r = await _sbSetSafe(key, val).catch(() => false);
+                        r ? ok++ : fail++;
+                      };
+                      try {
+                        // Pacientes (dato más crítico)
+                        const pats = JSON.parse(localStorage.getItem(`siso_db_patients_${uid}`) || "[]");
+                        if (pats.length > 0) {
+                          await push(`siso_db_patients_${uid}`, pats);
+                          await push(`siso_patients_${uid}`, pats);
+                        }
+                        // Empresas
+                        const comps = JSON.parse(localStorage.getItem(`siso_companies_${uid}`) || localStorage.getItem("siso_companies_shared") || "[]");
+                        if (comps.length > 0) await push(`siso_companies_${uid}`, comps);
+                        // Atenciones cerradas
+                        const aten = JSON.parse(localStorage.getItem("siso_atenciones_cerradas") || "[]");
+                        if (aten.length > 0) await push("siso_atenciones_cerradas", aten);
+                        // Facturas, caja, informes
+                        await push(`siso_saved_bills_${suf}`, JSON.parse(localStorage.getItem(`siso_saved_bills_${suf}`) || "null"));
+                        await push(`siso_caja_movs_${suf}`, JSON.parse(localStorage.getItem(`siso_caja_movs_${suf}`) || "null"));
+                        await push(`siso_informes_${uid}`, JSON.parse(localStorage.getItem(`siso_informes_${uid}`) || "null"));
+                        // Usuarios y encuestas
+                        await push("siso_users", JSON.parse(localStorage.getItem("siso_users") || "null"));
+                        await push("siso_encuestas", JSON.parse(localStorage.getItem("siso_encuestas") || "null"));
+                        // Limpiar flags de push para que auto-push también se vuelva a ejecutar
+                        localStorage.removeItem(`siso_d1_push_done_${uid}`);
+                        showAlert(`✅ Sincronización completada\n\n• ${ok} conjunto(s) de datos subidos a D1\n${fail > 0 ? "• " + fail + " fallos (revisar conexión)" : "• Sin errores"}\n\nSus datos están seguros en Cloudflare D1.`);
+                      } catch(err) {
+                        showAlert("⚠️ Error durante sincronización:\n" + err.message);
+                      } finally {
+                        btn.disabled = false;
+                        btn.textContent = "🔄 Sincronizar a D1";
+                      }
+                    }}
+                    className="flex-shrink-0 px-3 py-2 bg-blue-600 text-white text-[10px] font-black rounded-lg hover:bg-blue-700 transition whitespace-nowrap"
+                  >
+                    🔄 Sincronizar a D1
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Portales y Acceso Externo */}
           <div>
