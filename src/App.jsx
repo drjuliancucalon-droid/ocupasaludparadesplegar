@@ -14306,8 +14306,9 @@ function CargaMasivaExamenes({ patients, currentUser, onClose }) {
     };
     if(!upRes.ok){
       try{
-        if(arch.file.size>1.5*1024*1024) return {...arch,estado:"error",err:"PDF >1.5MB, usa Cloudinary"};
+        if(arch.file.size>750*1024) return {...arch,estado:"error",err:"Archivo >750KB, usa Cloudinary"};
         const dUrl=await new Promise(r=>{const fr=new FileReader();fr.onload=e=>r(e.target.result);fr.readAsDataURL(arch.file);});
+        if(dUrl.length>900*1024) return {...arch,estado:"error",err:"Archivo excede límite D1 tras codificación, usa Cloudinary"};
         await _sbSet(adjNuevo.sbKey,dUrl);
       }catch(e){return {...arch,estado:"error",err:e.message};}
     }
@@ -20676,7 +20677,8 @@ const handleLogin = (u, p) => {
     const key = _compKey(_suid2);
     const cloudKey = _compKeyCloud(_suid2);
     _ls.setItem(key, JSON.stringify(list));
-    _sbSet(cloudKey, list).then((ok) => {
+    // _sbSetSafe: strip logos base64 antes de enviar a D1 (evita exceder 1MB/fila)
+    _sbSetSafe(cloudKey, list).then((ok) => {
       if (!ok) _sbQueue.pending[cloudKey] = list;
     });
   };
@@ -21142,8 +21144,7 @@ const handleLogin = (u, p) => {
                         : p
                     );
                     setPatientsList(updPats);
-                    const _suid = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user;
-                    _sync(_patKey(_suid), JSON.stringify(updPats));
+                    _syncPatients(updPats);
                   }, 0);
                   logAccess("NotaAclaratoria", data.id, dataType);
                   setTimeout(() => showAlert(`✅ Nota aclaratoria registrada.\nAutor: ${notaObj.autor}\nFecha: ${new Date(notaObj.fecha).toLocaleString("es-CO")}`), 100);
@@ -21263,8 +21264,7 @@ const handleLogin = (u, p) => {
                                               pt.id === data.id ? { ...pt, tipoExamen: nuevoValor.trim().toUpperCase(), _cambiosPostCierre: [...(pt._cambiosPostCierre || []), cambio] } : pt
                                             );
                                             setPatientsList(updPats);
-                                            const _suid = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user;
-                                            _sync(_patKey(_suid), JSON.stringify(updPats));
+                                            _syncPatients(updPats);
                                           }, 0);
                                           logAccess("EditCampoHCCerrada", data.id, `tipoExamen: ${data.tipoExamen} → ${nuevoValor.trim().toUpperCase()} | Motivo: ${motivo}`);
                                           setTimeout(() => showAlert(`✅ Tipo de evaluación cambiado.\n\n${data.tipoExamen} → ${nuevoValor.trim().toUpperCase()}\nMotivo: ${motivo}\n\nRegistrado en auditoría.`), 100);
@@ -21316,8 +21316,7 @@ const handleLogin = (u, p) => {
                                               pt.id === data.id ? { ...pt, empresaNombre: nuevoValor.trim(), _cambiosPostCierre: [...(pt._cambiosPostCierre || []), cambio] } : pt
                                             );
                                             setPatientsList(updPats);
-                                            const _suid = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user;
-                                            _sync(_patKey(_suid), JSON.stringify(updPats));
+                                            _syncPatients(updPats);
                                           }, 0);
                                           logAccess("EditCampoHCCerrada", data.id, `empresaNombre: ${data.empresaNombre} → ${nuevoValor.trim()} | Motivo: ${motivo}`);
                                           setTimeout(() => showAlert(`✅ Empresa cambiada.\n\n${data.empresaNombre} → ${nuevoValor.trim()}\nMotivo: ${motivo}\n\nRegistrado en auditoría.`), 100);
@@ -21369,8 +21368,7 @@ const handleLogin = (u, p) => {
                                               pt.id === data.id ? { ...pt, enfasisExamen: nuevoValor.trim().toUpperCase(), _cambiosPostCierre: [...(pt._cambiosPostCierre || []), cambio] } : pt
                                             );
                                             setPatientsList(updPats);
-                                            const _suid = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user;
-                                            _sync(_patKey(_suid), JSON.stringify(updPats));
+                                            _syncPatients(updPats);
                                           }, 0);
                                           logAccess("EditCampoHCCerrada", data.id, `enfasisExamen: ${data.enfasisExamen} → ${nuevoValor.trim().toUpperCase()} | Motivo: ${motivo}`);
                                           setTimeout(() => showAlert(`✅ Énfasis cambiado.\n\n${data.enfasisExamen} → ${nuevoValor.trim().toUpperCase()}\nMotivo: ${motivo}\n\nRegistrado en auditoría.`), 100);
@@ -38006,9 +38004,9 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
         if (file.type.startsWith("image/")) {
           dataUrl = await _compressImage(file);
         } else {
-          const PDF_MAX = 1.5 * 1024 * 1024;
+          const PDF_MAX = 750 * 1024;
           if (file.size > PDF_MAX) {
-            showAlert(`⚠️ El PDF supera 1.5 MB. Configura Cloudinary para subir archivos grandes.`);
+            showAlert(`⚠️ El archivo supera 750 KB. Configura Cloudinary para subir archivos grandes.`);
             e.target.value = "";
             return;
           }
@@ -38017,6 +38015,11 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
             r.onload = (ev) => res(ev.target.result);
             r.readAsDataURL(file);
           });
+          if (dataUrl.length > 900 * 1024) {
+            showAlert(`⚠️ El archivo excede el límite tras codificación. Configura Cloudinary para subir archivos grandes.`);
+            e.target.value = "";
+            return;
+          }
         }
       } catch (err) {
         showAlert(`❌ Error al procesar el archivo: ${err.message}`);
