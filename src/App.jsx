@@ -746,10 +746,28 @@ const _sbSet = async (key, value) => {
   if (!_rlCheck()) return false;
   return await _securePost(key, value);
 };
-// _sbBulkSet: upsert masivo sin rate limiter — envía todos los rows en chunks de 200
-// Supabase soporta array body: POST /rest/v1/siso_store con [{key,value,updated_at}, ...]
+// _sbBulkSet: upsert masivo — Worker D1 primario (sin egress), Supabase fallback
 const _sbBulkSet = async (rows) => {
   if (!rows || rows.length === 0) return { ok: 0, fail: 0 };
+  // 1. Worker D1 primario (acepta array nativo, chunks de 50)
+  if (_WORKER_TOKEN) {
+    try {
+      const WCHUNK = 50;
+      let wOk = 0, wFail = 0;
+      for (let i = 0; i < rows.length; i += WCHUNK) {
+        const chunk = rows.slice(i, i + WCHUNK).map(r => ({ key: r.key, value: r.value }));
+        const r = await fetch(`${_WORKER_URL}/store`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
+          body: JSON.stringify(chunk),
+        });
+        if (r.ok) wOk += chunk.length;
+        else wFail += chunk.length;
+      }
+      if (wFail === 0) return { ok: wOk, fail: 0 };
+    } catch {}
+  }
+  // 2. Supabase fallback
   const now = new Date().toISOString();
   const body = rows.map(r => ({ key: r.key, value: r.value, updated_at: now }));
   const CHUNK = 200;
@@ -840,13 +858,28 @@ const _sbGetAll = async (userId) => {
   }
 };
 
-// ── _sbGetMany: fetch dirigido de claves específicas (evita descargar toda la tabla)
-// Usa filtro PostgREST in.() — descarga SOLO las filas necesarias.
-// Reduce egress hasta un 95 % respecto a _sbGetAll().
+// ── _sbGetMany: fetch dirigido de claves específicas — D1 primario, Supabase fallback
 const _sbGetMany = async (keys) => {
   if (!keys || keys.length === 0) return {};
+  // Worker D1: lecturas paralelas por clave
+  if (_WORKER_TOKEN) {
+    try {
+      const entries = await Promise.all(
+        keys.map(async k => [k, await _workerGet(k)])
+      );
+      const result = {};
+      let hasData = false;
+      for (const [k, v] of entries) {
+        if (v !== null && v !== undefined) {
+          result[k] = { value: v };
+          hasData = true;
+        }
+      }
+      if (hasData) return result;
+    } catch {}
+  }
+  // Supabase fallback
   try {
-    // PostgREST acepta: ?key=in.(clave1,clave2,clave3)
     const keyList = keys.join(",");
     const r = await fetch(
       `${_SB_URL}/rest/v1/siso_store?key=in.(${encodeURIComponent(keyList)})&select=key,value,updated_at`,
@@ -901,11 +934,37 @@ const _slimPatient = (p) => {
   };
 };
 
+// _saveRawStudies: guarda datos raw de estudios en D1 con clave separada
+// Cumple Res.2346/2007 Art.8 — historia clínica completa (20 años retención)
+// No va a Supabase (son datos pesados), solo a D1 y localStorage
+const _saveRawStudies = async (patient) => {
+  if (!_WORKER_TOKEN || !patient?.id) return;
+  const rawFields = ["audiometriaRaw", "espirometriaRaw", "visionRaw"];
+  for (const field of rawFields) {
+    if (patient[field] && typeof patient[field] !== "undefined") {
+      const rawKey = `siso_raw_${field}_${patient.id}`;
+      try {
+        await _workerSet(rawKey, {
+          patientId: patient.id,
+          docNumero: patient.docNumero || "",
+          field,
+          data: patient[field],
+          savedAt: new Date().toISOString(),
+        });
+      } catch {}
+    }
+  }
+};
+
 // _sbSetSafe: igual que _sbSet pero strip de base64 y logos antes de enviar.
 // Usar para claves que pueden contener imágenes embebidas.
 const _sbSetSafe = async (key, value) => {
   // La firma del médico NO va a Supabase — es muy grande y está en localStorage
   if (key === "siso_doctor_signature") return true;
+  // Guardar datos raw de estudios en D1 antes de hacer slim (solo para pacientes)
+  if (key.startsWith("siso_db_patients_") || key.startsWith("siso_patients_")) {
+    _saveRawStudies(value).catch(() => {});
+  }
   const safe = _stripBase64Deep(value);
   return _sbSet(key, safe);
 };
@@ -944,15 +1003,25 @@ const _sbRecuperarPacientesDesdeHC = async () => {
   }
 };
 const _sbDelete = async (key) => {
+  // Borrar de D1 Y Supabase (Habeas Data Art.8 Ley 1581/2012 — borrado real)
+  let d1Ok = false, sbOk = false;
+  if (_WORKER_TOKEN) {
+    try {
+      const r = await fetch(
+        `${_WORKER_URL}/store/${encodeURIComponent(key)}`,
+        { method: "DELETE", headers: { "X-Siso-Token": _WORKER_TOKEN } }
+      );
+      d1Ok = r.ok;
+    } catch {}
+  }
   try {
     const r = await fetch(
       `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(key)}`,
       { method: "DELETE", headers: _getSbHeaders() }
     );
-    return r.ok;
-  } catch {
-    return false;
-  }
+    sbOk = r.ok;
+  } catch {}
+  return d1Ok || sbOk;
 };
 const _sbQueue = {
   pending: {},
@@ -1529,9 +1598,19 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
   for (const [nitIdx, data] of Object.entries(empresaIdx)) {
     try {
       // Fetch existing para preservar codigo de acceso y periodos previos
-      const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, { headers: _getSbHeaders() });
-      const d = await r.json();
-      const existing = d[0]?.value || { nit: nitIdx, nombre: data.nombre, documentos: [] };
+      // D1 primero, Supabase fallback
+      let existingVal = null;
+      if (_WORKER_TOKEN) {
+        try { existingVal = await _workerGet(`siso_portal_empresa_${nitIdx}`); } catch {}
+      }
+      if (!existingVal) {
+        try {
+          const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${nitIdx}&select=value`, { headers: _getSbHeaders() });
+          const d = await r.json();
+          existingVal = d[0]?.value || null;
+        } catch {}
+      }
+      const existing = existingVal || { nit: nitIdx, nombre: data.nombre, documentos: [] };
       const docsSet = new Set([...(existing.documentos || []), ...data.documentos]);
       existing.documentos = [...docsSet];
       existing.updatedAt = new Date().toISOString();
@@ -1557,10 +1636,18 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
 
       if (empInformes.length === 0 && empBills.length === 0 && empCustodias.length === 0) continue;
 
-      // Fetch existing empresa_docs para preservar codigoAcceso
-      const rdExist = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitIdx}&select=value`, { headers: _getSbHeaders() });
-      const rdData = await rdExist.json();
-      const existDocs = rdData[0]?.value || null;
+      // Fetch existing empresa_docs para preservar codigoAcceso — D1 primero, Supabase fallback
+      let existDocs = null;
+      if (_WORKER_TOKEN) {
+        try { existDocs = await _workerGet(`siso_portal_empresa_docs_${nitIdx}`); } catch {}
+      }
+      if (!existDocs) {
+        try {
+          const rdExist = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitIdx}&select=value`, { headers: _getSbHeaders() });
+          const rdData = await rdExist.json();
+          existDocs = rdData[0]?.value || null;
+        } catch {}
+      }
       const codigoAcceso = existDocs?.codigoAcceso || ("EMP-" + nitIdx.slice(-4) + "-" + Math.random().toString(36).substring(2, 6).toUpperCase());
 
       // Agrupar por periodo
@@ -13681,9 +13768,18 @@ function PortalCustodiaViewer({ custodia, empresaNombre, periodo, sbUrl, sbKey }
     setSaving(true);
     try {
       const doc = { id: "cust_p_" + Date.now(), empresaNombre, periodo, docNombre, docTitulo, docLicencia, docCC, docCel, docEmail, docCiudad, firmaSrc, fechaTexto, mesTexto, anioVal, savedAt: new Date().toISOString() };
-      const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_cartas_custodia&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
-      const existing = await r.json();
-      const arr = Array.isArray(existing[0]?.value) ? existing[0].value : [];
+      // Leer existentes: D1 primero, Supabase fallback
+      let arr = [];
+      if (_WORKER_TOKEN) {
+        try { const v = await _workerGet("siso_cartas_custodia"); if (Array.isArray(v)) arr = v; } catch {}
+      }
+      if (!arr.length) {
+        try {
+          const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_cartas_custodia&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+          const existing = await r.json();
+          if (Array.isArray(existing[0]?.value)) arr = existing[0].value;
+        } catch {}
+      }
       arr.push(doc);
       await _sbPortalSave(sbUrl, sbKey, "siso_cartas_custodia", arr);
       setSaved(true);
@@ -13696,9 +13792,17 @@ function PortalCustodiaViewer({ custodia, empresaNombre, periodo, sbUrl, sbKey }
     setLoadingSaved(true);
     setViewSavedIdx(null);
     try {
-      const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_cartas_custodia&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
-      const d = await r.json();
-      setSavedList((d[0]?.value || []).filter(c => c.empresaNombre === empresaNombre));
+      // D1 primero, Supabase fallback
+      let val = null;
+      if (_WORKER_TOKEN) {
+        try { val = await _workerGet("siso_cartas_custodia"); } catch {}
+      }
+      if (!val) {
+        const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_cartas_custodia&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+        const d = await r.json();
+        val = d[0]?.value || [];
+      }
+      setSavedList((Array.isArray(val) ? val : []).filter(c => c.empresaNombre === empresaNombre));
     } catch {}
     setLoadingSaved(false);
     setShowSaved(true);
@@ -17352,32 +17456,38 @@ function AppInner() {
         // Estrategia 1: clave dedicada de permisos (más ligera, solo para secretaria)
         if (currentUser.role === "secretaria") {
           const permKey = `siso_permisos_${currentUser.user}`;
-          const r = await fetch(
-            `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(permKey)}&select=value,updated_at`,
-            { headers: _SB_HEADERS }
-          );
-          if (r.ok) {
-            const rows = await r.json();
-            if (rows && rows.length > 0 && rows[0].value) {
-              const permData = rows[0].value;
-              const localRaw = _ls.getItem(permKey);
-              const localData = localRaw ? JSON.parse(localRaw) : null;
-              // Solo actualizar si hay cambios nuevos
-              if (!localData || permData.updatedAt !== localData.updatedAt) {
-                _ls.setItem(permKey, JSON.stringify(permData));
-                // Actualizar usersList en memoria con los nuevos permisos
-                setUsersList(prev => prev.map(u =>
-                  u.user === currentUser.user
-                    ? { ...u, secretariaPermisos: permData.secretariaPermisos, medicosAsignados: permData.medicosAsignados }
-                    : u
-                ));
-                // Actualizar currentUser para que _secretariaPuede lo refleje inmediatamente
-                setCurrentUser(prev => ({
-                  ...prev,
-                  secretariaPermisos: permData.secretariaPermisos,
-                  medicosAsignados: permData.medicosAsignados,
-                }));
+          // D1 primero, Supabase fallback
+          let permData = null;
+          if (_WORKER_TOKEN) {
+            try { permData = await _workerGet(permKey); } catch {}
+          }
+          if (!permData) {
+            try {
+              const r = await fetch(
+                `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(permKey)}&select=value,updated_at`,
+                { headers: _SB_HEADERS }
+              );
+              if (r.ok) {
+                const rows = await r.json();
+                permData = rows?.[0]?.value || null;
               }
+            } catch {}
+          }
+          if (permData) {
+            const localRaw = _ls.getItem(permKey);
+            const localData = localRaw ? JSON.parse(localRaw) : null;
+            if (!localData || permData.updatedAt !== localData.updatedAt) {
+              _ls.setItem(permKey, JSON.stringify(permData));
+              setUsersList(prev => prev.map(u =>
+                u.user === currentUser.user
+                  ? { ...u, secretariaPermisos: permData.secretariaPermisos, medicosAsignados: permData.medicosAsignados }
+                  : u
+              ));
+              setCurrentUser(prev => ({
+                ...prev,
+                secretariaPermisos: permData.secretariaPermisos,
+                medicosAsignados: permData.medicosAsignados,
+              }));
             }
           }
           return; // para secretaria, la clave dedicada es suficiente
@@ -17423,38 +17533,11 @@ function AppInner() {
       document.head.appendChild(pp);
     }
   }, []);
-  // ── ENCUESTAS: carga directa desde Supabase (no esperar _sbGetAll batch) ─────
-  // Busca siso_encuestas (clave compartida) + clave por usuario + rango de claves antiguas
+  // ── ENCUESTAS: D1 primario, Supabase fallback ────────────────────────────────
   const _reloadEncuestasFromSupabase = useCallback(async () => {
     setLoadingEncuestas(true);
     try {
       const uid = currentUser?.user || "drcucalon";
-      const hdrs = _getSbHeaders();
-
-      // 1. Clave compartida principal
-      const r1 = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuestas&select=value`,
-        { headers: hdrs }
-      );
-      const sharedEncs = r1.ok ? ((await r1.json())?.[0]?.value || []) : [];
-
-      // 2. Clave específica del usuario actual (evita el bug de %)
-      const r2 = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(`siso_encuestas_${uid}`)}&select=value`,
-        { headers: hdrs }
-      );
-      const userEncs = r2.ok ? ((await r2.json())?.[0]?.value || []) : [];
-
-      // 3. Rango de claves adicionales: gte "siso_encuestas_" lt "siso_encuestas`" (evita %)
-      const P = "siso_encuestas_";
-      const PN = P.slice(0, -1) + "`";
-      const r3 = await fetch(
-        `${_SB_URL}/rest/v1/siso_store?key=gte.${encodeURIComponent(P)}&key=lt.${encodeURIComponent(PN)}&select=key,value&limit=200`,
-        { headers: hdrs }
-      );
-      const rangeRows = r3.ok ? (await r3.json()) : [];
-
-      // 4. Fusionar todo — dedup por id
       const merged = [];
       const seen = new Set();
       const addAll = (arr) => {
@@ -17464,14 +17547,41 @@ function AppInner() {
           if (!seen.has(uid2)) { seen.add(uid2); merged.push(e); }
         });
       };
-      addAll(sharedEncs);
-      addAll(userEncs);
+
+      // 1. Worker D1: buscar por prefijo siso_encuestas (incluye todas las variantes)
+      if (_WORKER_TOKEN) {
+        try {
+          const r = await fetch(
+            `${_WORKER_URL}/store/prefix/siso_encuestas`,
+            { headers: { "X-Siso-Token": _WORKER_TOKEN } }
+          );
+          if (r.ok) {
+            const rows = await r.json();
+            rows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
+            if (merged.length > 0) {
+              setEncuestas(merged);
+              try { localStorage.setItem("siso_encuestas", JSON.stringify(merged)); } catch {}
+              return; // D1 tiene datos — no consultar Supabase
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Supabase fallback
+      const hdrs = _getSbHeaders();
+      const r1 = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuestas&select=value`, { headers: hdrs });
+      const sharedEncs = r1.ok ? ((await r1.json())?.[0]?.value || []) : [];
+      const r2 = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(`siso_encuestas_${uid}`)}&select=value`, { headers: hdrs });
+      const userEncs = r2.ok ? ((await r2.json())?.[0]?.value || []) : [];
+      const P = "siso_encuestas_"; const PN = P.slice(0, -1) + "`";
+      const r3 = await fetch(`${_SB_URL}/rest/v1/siso_store?key=gte.${encodeURIComponent(P)}&key=lt.${encodeURIComponent(PN)}&select=key,value&limit=200`, { headers: hdrs });
+      const rangeRows = r3.ok ? (await r3.json()) : [];
+      addAll(sharedEncs); addAll(userEncs);
       rangeRows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
 
       if (merged.length > 0) {
         setEncuestas(merged);
         try { localStorage.setItem("siso_encuestas", JSON.stringify(merged)); } catch {}
-        // Unificar siempre en la clave compartida Y en la clave de usuario
         _sbSet("siso_encuestas", merged);
         _sbSet(`siso_encuestas_${uid}`, merged);
       }
