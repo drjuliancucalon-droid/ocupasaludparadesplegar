@@ -15343,6 +15343,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
 
   const colorAptitud = (c = "") => {
     const cl = (c || "").toLowerCase();
+    // 🔴 No apto (cualquier forma)
     if (cl.includes("no apto"))
       return {
         bg: "bg-red-50",
@@ -15351,10 +15352,12 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         border: "border-l-red-400",
         dot: "🔴",
       };
+    // 🟡 Con restricciones / recomendaciones / condiciones (Res. 1843/2025)
     if (
+      cl.includes("restricc") ||
+      cl.includes("recomendac") ||
       cl.includes("condicion") ||
-      cl.includes("condición") ||
-      cl.includes("restricc")
+      cl.includes("condición")
     )
       return {
         bg: "bg-amber-50",
@@ -15363,7 +15366,12 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         border: "border-l-amber-400",
         dot: "🟡",
       };
-    if (cl.includes("apto"))
+    // 🟢 Apto / Hallazgos que no interfieren (Res. 1843/2025)
+    if (
+      cl.includes("apto") ||
+      cl.includes("no interfier") ||
+      (cl.includes("hallazgo") && !cl.includes("interfier"))
+    )
       return {
         bg: "bg-emerald-50",
         text: "text-emerald-800",
@@ -15740,9 +15748,9 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           const multiDate = fechasDisponibles.length > 1;
           const atencionesVisibles = fechaFiltroEmpresa ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa) : resultadosEmpresa;
           const trabajadoresUnicos = new Set(resultadosEmpresa.map(p => p.docNumero)).size;
-          const totalApt = resultadosEmpresa.filter(p => { const c = (p.conceptoAptitud||"").toLowerCase(); return c.includes("apto") && !c.includes("no apto"); }).length;
-          const totalRestr = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("restricc")).length;
-          const totalNoApto = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("no apto")).length;
+          const totalFav    = resultadosEmpresa.filter(p => colorAptitud(p.conceptoAptitud).dot === "🟢").length;
+          const totalAmb    = resultadosEmpresa.filter(p => colorAptitud(p.conceptoAptitud).dot === "🟡").length;
+          const totalNoApto = resultadosEmpresa.filter(p => colorAptitud(p.conceptoAptitud).dot === "🔴").length;
           const totalDerivs = resultadosEmpresa.filter(p => (p.derivaciones||[]).length > 0).length;
 
           return (
@@ -15766,8 +15774,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {[
                   { emoji: "👷", valor: trabajadoresUnicos, label: "Trabajadores", bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-100" },
-                  { emoji: "✅", valor: totalApt, label: "Aptos", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-100" },
-                  { emoji: "⚠️", valor: totalRestr, label: "Restricciones", bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-100" },
+                  { emoji: "🟢", valor: totalFav, label: "Favorables", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-100" },
+                  { emoji: "🟡", valor: totalAmb, label: "Obs./Restricc.", bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-100" },
                   { emoji: "🔀", valor: totalDerivs, label: "Derivaciones", bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-100" },
                 ].map(s => (
                   <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-3 text-center`}>
@@ -15781,21 +15789,34 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               {/* Pestañas internas: Certificados / Documentos / Estadísticas */}
               <div className="flex gap-1 p-1 bg-white rounded-2xl shadow-sm border border-gray-100">
                 {[
-                  { id: "certificados", icon: "📋", label: "Certificados" },
-                  { id: "documentos",   icon: "📁", label: "Documentos" },
-                  { id: "estadisticas", icon: "📊", label: "Estadísticas" },
+                  { id: "certificados", icon: "📋", label: "Certificados", dot: false },
+                  { id: "documentos",   icon: "📁", label: "Documentos",   dot: tabEmpresa !== "documentos" },
+                  { id: "estadisticas", icon: "📊", label: "Estadísticas", dot: false },
                 ].map(t => (
                   <button key={t.id}
                     onClick={() => setTabEmpresa(t.id)}
-                    className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-xs font-black rounded-xl transition-all duration-200 ${tabEmpresa === t.id ? "bg-blue-700 text-white shadow-md" : "text-gray-400 hover:text-gray-700 hover:bg-gray-50"}`}
+                    className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-xs font-black rounded-xl transition-all duration-200 relative ${tabEmpresa === t.id ? "bg-blue-700 text-white shadow-md" : "text-gray-400 hover:text-gray-700 hover:bg-gray-50"}`}
                   >
                     <span>{t.icon}</span> {t.label}
+                    {t.dot && (
+                      <span className="absolute top-1.5 right-2 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                    )}
                   </button>
                 ))}
               </div>
 
               {/* ── Pestaña: CERTIFICADOS ──────────────────────────────────── */}
               {tabEmpresa === "certificados" && (
+                <div className="space-y-3">
+                {/* Aviso de documentos adicionales */}
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-2.5 flex items-center gap-3 cursor-pointer hover:bg-emerald-100 transition" onClick={() => setTabEmpresa("documentos")}>
+                  <span className="text-xl">📁</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-black text-emerald-800">Informes, Custodia y Cuentas de cobro</p>
+                    <p className="text-[10px] text-emerald-600 leading-tight">Informes sociodemográficos · Cartas de custodia · Cuentas de cobro disponibles en la pestaña Documentos</p>
+                  </div>
+                  <span className="text-emerald-600 font-black text-xs flex-shrink-0">Ver →</span>
+                </div>
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                   {/* Toolbar */}
                   <div className="bg-blue-800 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
@@ -15883,6 +15904,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                     })}
                   </div>
                 </div>
+                </div>
               )}
 
               {/* ── Pestaña: DOCUMENTOS ───────────────────────────────────── */}
@@ -15919,7 +15941,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                                   <span className="text-xs font-black text-gray-500">{cnt} ({pct}%)</span>
                                 </div>
                                 <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                                  <div className="h-full rounded-full bg-gradient-to-r from-teal-500 to-blue-500 transition-all duration-500" style={{ width: pct + "%" }} />
+                                  <div className={`h-full rounded-full transition-all duration-500 ${col.dot === "🟢" ? "bg-emerald-400" : col.dot === "🟡" ? "bg-amber-400" : col.dot === "🔴" ? "bg-red-400" : "bg-gray-300"}`} style={{ width: pct + "%" }} />
                                 </div>
                               </div>
                             );
