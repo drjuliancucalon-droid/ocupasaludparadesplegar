@@ -1526,6 +1526,7 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
       solicitudExamenesDiag: p.solicitudExamenesDiag || "",
       solicitudExamenesJust: p.solicitudExamenesJust || "",
       incapacidad: p.incapacidad || {},
+      examenAlturas: p.examenAlturas || {},
       medicoNombre: docData.nombre,
       _doctorData: docData,
       _firma: p._firma || activeSignature || "",
@@ -13177,6 +13178,7 @@ const _generarCertificadoDesdePortal = (portalData) => {
     eps: portalData.eps || "",
     arl: portalData.arl || "",
     estadoHistoria: portalData.estadoHistoria || "Cerrada",
+    examenAlturas: portalData.examenAlturas || {},
   };
   const doctorData = portalData._doctorData || { nombre: portalData.medicoNombre || "MÉDICO OCUPACIONAL" };
   const signature = portalData._firma || "";
@@ -20880,6 +20882,8 @@ const handleLogin = (u, p) => {
           solicitudExamenesDiag: closed.solicitudExamenesDiag || "",
           solicitudExamenesJust: closed.solicitudExamenesJust || "",
           incapacidad: closed.incapacidad || {},
+          // ── Énfasis especiales (necesarios para sección Alturas en certificado) ──
+          examenAlturas: closed.examenAlturas || {},
           // ── Datos completos del médico (para generar PDF en portal) ─────────
           medicoNombre: activeDoctorData?.nombre || currentUser?.name || "",
           _doctorData: {
