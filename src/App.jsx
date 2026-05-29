@@ -13532,13 +13532,23 @@ const PORTAL_URL = (typeof window !== "undefined" ? window.location.origin + win
 // FIX React Error #310: hooks extraídos del IIFE ilegal al propio componente
 // ══════════════════════════════════════════════════════════════════════════
 
-// ── Helper: Guardar en Supabase desde el portal ─────────────────────────────
+// ── Helper: Guardar en Worker D1 (primario) o Supabase (fallback) ───────────
 const _sbPortalSave = async (sbUrl, sbKey, key, value) => {
-  await fetch(`${sbUrl}/rest/v1/siso_store`, {
-    method: "POST",
-    headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
-    body: JSON.stringify({ key, value }),
-  });
+  // Worker D1 primario
+  if (_WORKER_TOKEN) {
+    try {
+      const ok = await _workerSet(key, value);
+      if (ok) return;
+    } catch {}
+  }
+  // Supabase fallback
+  try {
+    await fetch(`${sbUrl}/rest/v1/siso_store`, {
+      method: "POST",
+      headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ key, value }),
+    });
+  } catch {}
 };
 
 // ── Helper: Verificar comprobante de pago con Gemini Vision ─────────────────
@@ -13853,10 +13863,19 @@ function PortalCuentaCobroCard({ cuenta, empresaNombre, periodo, sbUrl, sbKey, n
       for (let dv = 0; dv <= 9; dv++) tryNits.push(nitBusq + dv);
       if (nitBusq.length > 6) tryNits.push(nitBusq.slice(0, -1));
       for (const nit of tryNits) {
-        const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nit}&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
-        const d = await r.json();
-        if (d[0]?.value) {
-          const docs = d[0].value;
+        // Leer desde Worker D1 primero, Supabase como fallback
+        let docs = null;
+        if (_WORKER_TOKEN) {
+          try { docs = await _workerGet(`siso_portal_empresa_docs_${nit}`); } catch {}
+        }
+        if (!docs) {
+          try {
+            const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nit}&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
+            const d = await r.json();
+            docs = d[0]?.value || null;
+          } catch {}
+        }
+        if (docs) {
           docs.periodos = (docs.periodos || []).map(p =>
             p.periodo !== periodo ? p : { ...p, cuenta: { ...p.cuenta, comprobante: newComp, pagado: confirmed } }
           );
@@ -14967,16 +14986,26 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
         Accept: "application/json",
       };
       const fetchKey = async (key) => {
+        // Worker D1 primario
+        if (_WORKER_TOKEN) {
+          try {
+            const val = await _workerGet(key);
+            if (val !== null && val !== undefined) {
+              return { ok: true, data: val };
+            }
+          } catch {}
+        }
+        // Supabase fallback
         const url = `${sbUrl}/rest/v1/siso_store?key=eq.${encodeURIComponent(
           key
         )}&select=value`;
         const r = await fetchConTimeout(url, { headers }, 12000);
         if (!r.ok) return { ok: false, status: r.status, text: r.statusText };
         const rows = await r.json();
-        const val = rows && rows.length > 0 ? rows[0].value : null;
+        const val2 = rows && rows.length > 0 ? rows[0].value : null;
         return {
           ok: true,
-          data: val ? (typeof val === "string" ? JSON.parse(val) : val) : null,
+          data: val2 ? (typeof val2 === "string" ? JSON.parse(val2) : val2) : null,
         };
       };
 
@@ -17486,9 +17515,21 @@ function AppInner() {
           const nitClean = (c.nit || "").replace(/[^0-9]/g, "");
           if (!nitClean) return;
           try {
-            const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitClean + "&select=value", { headers: _getSbHeaders() });
-            const d = await r.json();
-            if (d[0]?.value?.codigoAcceso) codes[nitClean] = d[0].value.codigoAcceso;
+            let codigoAcceso = null;
+            // Worker D1 primario
+            if (_WORKER_TOKEN) {
+              try {
+                const val = await _workerGet(`siso_portal_empresa_docs_${nitClean}`);
+                if (val?.codigoAcceso) codigoAcceso = val.codigoAcceso;
+              } catch {}
+            }
+            // Supabase fallback
+            if (!codigoAcceso) {
+              const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitClean + "&select=value", { headers: _getSbHeaders() });
+              const d = await r.json();
+              if (d[0]?.value?.codigoAcceso) codigoAcceso = d[0].value.codigoAcceso;
+            }
+            if (codigoAcceso) codes[nitClean] = codigoAcceso;
           } catch {}
         }));
         setEmpresaPortalCodes(codes);
