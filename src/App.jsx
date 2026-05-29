@@ -19933,28 +19933,35 @@ const handleLogin = (u, p) => {
           if (baseSesion.role === "secretaria") {
             try {
               const permKey = `siso_permisos_${baseSesion.user}`;
-              const r = await fetch(
-                `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(permKey)}&select=value`,
-                { headers: _SB_HEADERS }
-              );
-              if (r.ok) {
-                const rows = await r.json();
-                if (rows && rows.length > 0 && rows[0].value) {
-                  const permData = rows[0].value;
-                  _ls.setItem(permKey, JSON.stringify(permData));
-                  // Fusionar permisos frescos de Supabase con el objeto de sesión
-                  const sesionConPermisos = {
-                    ...baseSesion,
-                    secretariaPermisos: permData.secretariaPermisos || baseSesion.secretariaPermisos,
-                    medicosAsignados: permData.medicosAsignados || baseSesion.medicosAsignados || [],
-                  };
-                  setCurrentUser(sesionConPermisos);
-                  // También actualizar usersList local
-                  setUsersList(prev => prev.map(u =>
-                    u.user === baseSesion.user ? { ...u, ...sesionConPermisos } : u
-                  ));
-                  return;
-                }
+              // D1 primero, Supabase fallback
+              let permData = null;
+              if (_WORKER_TOKEN) {
+                try { permData = await _workerGet(permKey); } catch {}
+              }
+              if (!permData) {
+                try {
+                  const r = await fetch(
+                    `${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(permKey)}&select=value`,
+                    { headers: _SB_HEADERS }
+                  );
+                  if (r.ok) {
+                    const rows = await r.json();
+                    permData = rows?.[0]?.value || null;
+                  }
+                } catch {}
+              }
+              if (permData) {
+                _ls.setItem(permKey, JSON.stringify(permData));
+                const sesionConPermisos = {
+                  ...baseSesion,
+                  secretariaPermisos: permData.secretariaPermisos || baseSesion.secretariaPermisos,
+                  medicosAsignados: permData.medicosAsignados || baseSesion.medicosAsignados || [],
+                };
+                setCurrentUser(sesionConPermisos);
+                setUsersList(prev => prev.map(u =>
+                  u.user === baseSesion.user ? { ...u, ...sesionConPermisos } : u
+                ));
+                return;
               }
             } catch (_) { /* silencioso, usar permisos locales */ }
           }
@@ -20713,16 +20720,24 @@ const handleLogin = (u, p) => {
         if (closed.empresaNit && closed.empresaId && closed.empresaId !== "particular") {
           const _nitIdx = (closed.empresaNit || "").replace(/[^0-9]/g, "");
           if (_nitIdx.length >= 3) {
-            fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${_nitIdx}&select=value`, {
-              headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` }
-            }).then(r => r.json()).then(d => {
-              const existing = d[0]?.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
+            // D1 primero, Supabase fallback — async fire-and-forget
+            (async () => {
+              let existing = null;
+              if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_${_nitIdx}`); } catch {} }
+              if (!existing) {
+                try {
+                  const _r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${_nitIdx}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` } });
+                  const _d = await _r.json();
+                  existing = _d[0]?.value || null;
+                } catch {}
+              }
+              if (!existing) existing = { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
               const docNum = (closed.docNumero || "").replace(/\s/g, "");
               if (docNum && !existing.documentos.includes(docNum)) existing.documentos.push(docNum);
               existing.updatedAt = new Date().toISOString();
               existing.nombre = closed.empresaNombre || existing.nombre;
               _sbSet(`siso_portal_empresa_${_nitIdx}`, existing);
-            }).catch(() => {});
+            })();
           }
         }
         // ── Auto-marcar paciente agendado como "Visto" (tiempo real) ──────────
@@ -29033,11 +29048,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     btn.textContent = "⏳ Publicando...";
                     try {
                       if (!_nit) { showAlert("⚠️ La empresa no tiene NIT registrado."); btn.disabled=false; btn.textContent="📤 Publicar en portal"; return; }
-                      const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nit}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                      const d = await r.json();
+                      // D1 primero, Supabase fallback
+                      let _docsExist = null;
+                      if (_WORKER_TOKEN) { try { _docsExist = await _workerGet(`siso_portal_empresa_docs_${_nit}`); } catch {} }
+                      if (!_docsExist) { try { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nit}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); _docsExist = d[0]?.value || null; } catch {} }
                       const informePayload = { totalPacientes: _inf.totalPacientes, resumen: _inf.resumen || "", fecha: _inf.fecha, statsKey: _inf.statsKey || null };
-                      if (d[0]?.value) {
-                        const docs = d[0].value;
+                      if (_docsExist) {
+                        const docs = _docsExist;
                         let found = false;
                         docs.periodos = (docs.periodos || []).map(p => {
                           const pKey = (p.periodo || "").match(/(\d{4}-\d{2})/)?.[1] || p.periodo;
@@ -33258,9 +33275,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       try {
                         const nitEd = (saved.nit || "").replace(/[^0-9]/g, "");
                         if (nitEd) {
-                          const rEx = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitEd + "&select=value", { headers: _getSbHeaders() });
-                          const dEx = await rEx.json();
-                          const existing = dEx[0]?.value || null;
+                          // D1 primero, Supabase fallback
+                          let existing = null;
+                          if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_docs_${nitEd}`); } catch {} }
+                          if (!existing) { try { const rEx = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitEd + "&select=value", { headers: _getSbHeaders() }); const dEx = await rEx.json(); existing = dEx[0]?.value || null; } catch {} }
                           // Preservar periodos y solo actualizar nombre/código
                           const docsData = { nit: nitEd, nombre: saved.nombre || "", codigoAcceso: existing?.codigoAcceso || saved.portalCode, updatedAt: new Date().toISOString(), periodos: existing?.periodos || [] };
                           await _sbSet("siso_portal_empresa_docs_" + nitEd, docsData);
@@ -33269,8 +33287,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       } catch {}
                       setEditingCompany(null);
                       showAlert(sbOk
-                        ? "✅ Empresa actualizada y sincronizada en Supabase."
-                        : "⚠️ Empresa guardada localmente. La sincronización con Supabase fallará — se reintentará en el próximo auto-sync.");
+                        ? "✅ Empresa actualizada y sincronizada en la nube."
+                        : "⚠️ Empresa guardada localmente. La sincronización en la nube se reintentará en el próximo auto-sync.");
                     }}
                     className="w-full mt-4 bg-purple-700 hover:bg-purple-800 text-white py-2.5 rounded-xl text-sm font-black"
                   >
@@ -34427,15 +34445,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                   if (_compEmp) {
                                     const _nitP = (_compEmp.nit || "").replace(/[^0-9]/g, "");
                                     if (_nitP) {
-                                      const _pr = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nitP}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                                      const _pd = await _pr.json();
-                                      if (_pd[0]?.value) {
-                                        const _docs = _pd[0].value;
-                                        _docs.periodos = (_docs.periodos || []).map(p => p.cuenta
+                                      // D1 primero, Supabase fallback
+                                      let _docsVal = null;
+                                      if (_WORKER_TOKEN) { try { _docsVal = await _workerGet(`siso_portal_empresa_docs_${_nitP}`); } catch {} }
+                                      if (!_docsVal) { try { const _pr = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nitP}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const _pd = await _pr.json(); _docsVal = _pd[0]?.value || null; } catch {} }
+                                      if (_docsVal) {
+                                        _docsVal.periodos = (_docsVal.periodos || []).map(p => p.cuenta
                                           ? { ...p, cuenta: { ...p.cuenta, pagado: true, fechaPago } }
                                           : p
                                         );
-                                        await _sbSet(`siso_portal_empresa_docs_${_nitP}`, _docs);
+                                        await _sbSet(`siso_portal_empresa_docs_${_nitP}`, _docsVal);
                                       }
                                     }
                                   }
@@ -55448,14 +55467,16 @@ body{padding-top:52px;}
                     }],
                   };
                   // Merge with existing data — NUNCA sobreescribir el codigoAcceso si ya existe
+                  // D1 primero, Supabase fallback
                   try {
-                    const existR = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitClean}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } });
-                    const existD = await existR.json();
-                    if (existD[0]?.value) {
-                      // Prioridad: 1) código en Supabase, 2) código en registro local empresa, 3) código nuevo
-                      portalDocsData.codigoAcceso = existD[0].value.codigoAcceso || comp?.portalCode || codigoAcceso;
-                      if (existD[0].value.periodos) {
-                        const oldPeriodos = existD[0].value.periodos.filter(p => p.periodo !== mesActual);
+                    let _existVal = null;
+                    if (_WORKER_TOKEN) { try { _existVal = await _workerGet(`siso_portal_empresa_docs_${nitClean}`); } catch {} }
+                    if (!_existVal) { try { const existR = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitClean}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const existD = await existR.json(); _existVal = existD[0]?.value || null; } catch {} }
+                    if (_existVal) {
+                      // Prioridad: 1) código en D1/Supabase, 2) código en registro local empresa, 3) código nuevo
+                      portalDocsData.codigoAcceso = _existVal.codigoAcceso || comp?.portalCode || codigoAcceso;
+                      if (_existVal.periodos) {
+                        const oldPeriodos = _existVal.periodos.filter(p => p.periodo !== mesActual);
                         portalDocsData.periodos = [...portalDocsData.periodos, ...oldPeriodos];
                       }
                     } else {
