@@ -15055,6 +15055,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
   const [codigoPortal, setCodigoPortal] = React.useState(""); // código de acceso empresa
   const [empresaAtenciones, setEmpresaAtenciones] = React.useState(null); // {nit,nombre,fechas,atenciones[]}
   const [fechaFiltroEmpresa, setFechaFiltroEmpresa] = React.useState(""); // "" = todas las fechas
+  const [tabEmpresa, setTabEmpresa] = React.useState("certificados"); // certificados|documentos|estadisticas
+  const tabPrincipal = tipoBusqueda === "empresa" ? "empresa" : "trabajador";
   const MAX_INTENTOS = 6;
   const BLOQUEO_MS = 5 * 60 * 1000; // 5 minutos
 
@@ -15333,6 +15335,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
         bg: "bg-red-50",
         text: "text-red-800",
         badge: "bg-red-100 text-red-800 border-red-300",
+        border: "border-l-red-400",
         dot: "🔴",
       };
     if (
@@ -15344,6 +15347,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
         bg: "bg-amber-50",
         text: "text-amber-800",
         badge: "bg-amber-100 text-amber-800 border-amber-300",
+        border: "border-l-amber-400",
         dot: "🟡",
       };
     if (cl.includes("apto"))
@@ -15351,12 +15355,14 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
         bg: "bg-emerald-50",
         text: "text-emerald-800",
         badge: "bg-emerald-100 text-emerald-800 border-emerald-300",
+        border: "border-l-emerald-400",
         dot: "🟢",
       };
     return {
       bg: "bg-gray-50",
       text: "text-gray-700",
       badge: "bg-gray-100 text-gray-700 border-gray-300",
+      border: "border-l-gray-300",
       dot: "⚪",
     };
   };
@@ -15423,197 +15429,126 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
     setTimeout(() => URL.revokeObjectURL(burl), 60000);
   };
 
+  // ── helpers locales de UI ──────────────────────────────────────────────
+  const fmtFechaCorta = (f) => { if (!f) return ""; const [y,m,d] = f.split("-"); return `${d}/${m}/${y}`; };
+  const empNombreActual = empresaAtenciones?.nombre || resultadosEmpresa[0]?.empresaNombre || "Empresa";
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-teal-50 via-white to-cyan-50 font-sans flex flex-col">
-      {/* ── Barra superior ── */}
-      <div className="bg-gradient-to-r from-teal-700 to-blue-700 px-5 py-4 flex items-center justify-between shadow-lg" style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))' }}>
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-teal-50 font-sans flex flex-col">
+
+      {/* ══ BARRA SUPERIOR ══════════════════════════════════════════════════ */}
+      <div className="bg-gradient-to-r from-teal-800 via-teal-700 to-blue-800 px-5 shadow-xl flex items-center justify-between" style={{ paddingTop:'max(0.85rem,env(safe-area-inset-top))', paddingBottom:'0.85rem' }}>
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-xl">
-            🧑‍💼
-          </div>
+          <div className="w-11 h-11 bg-white/15 rounded-2xl flex items-center justify-center text-2xl shadow-inner ring-1 ring-white/20">🏥</div>
           <div>
-            <h1 className="text-white font-black text-sm tracking-tight">
-              Portal de Certificados
-            </h1>
-            <p className="text-teal-200 text-[10px]">
-              Servicio Médico Ocupacional · SISO OcupaSalud
-            </p>
+            <h1 className="text-white font-black text-sm tracking-tight leading-tight">Portal de Certificados</h1>
+            <p className="text-teal-300 text-[10px] font-medium">SISO OcupaSalud · Servicio Médico Ocupacional</p>
           </div>
         </div>
         {onVolver && (
-          <button
-            onClick={onVolver}
-            className="text-white/80 text-xs hover:text-white font-bold flex items-center gap-1 bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition"
-          >
-            ← Volver al sistema
+          <button onClick={onVolver} className="text-white/70 hover:text-white text-xs font-bold bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-xl transition flex items-center gap-1">
+            ✕ Salir
           </button>
         )}
       </div>
 
-      <div className={`flex-1 p-4 mx-auto w-full mt-2 ${(tipoBusqueda === "empresa" || resultadosEmpresa.length > 0) ? "max-w-5xl space-y-4" : resultado ? "max-w-5xl" : "max-w-lg space-y-4"}`}>
-
-        {/* ── Layout condicional: 2 columnas con resultado individual, 1 columna sin resultado ── */}
-        <div className={resultado && !resultadosEmpresa.length ? "grid grid-cols-1 lg:grid-cols-[370px_1fr] gap-5 items-start" : "space-y-4"}>
-
-        {/* ── Columna izquierda: búsqueda ── */}
-        <div className="space-y-3">
-
-        {/* ── Instrucciones ── */}
-        <div className="bg-white rounded-2xl shadow-sm border border-teal-100 p-4">
-          <div className="flex items-start gap-3">
-            <span className="text-2xl mt-0.5">📋</span>
-            <div>
-              <h2 className="font-black text-gray-800 text-sm">
-                Consulta y descarga certificados
-              </h2>
-              <p className="text-xs text-gray-500 mt-1 leading-relaxed">
-                Ingresa tu código de verificación, número de cédula, o NIT/nombre de empresa
-                para consultar y descargar certificados de aptitud laboral en PDF.
-              </p>
-            </div>
-          </div>
+      {/* ══ SELECTOR PRINCIPAL: TRABAJADOR / EMPRESA ════════════════════════ */}
+      <div className="px-4 pt-5 pb-2 max-w-4xl mx-auto w-full">
+        <div className="grid grid-cols-2 gap-3">
+          {[
+            { id:"trabajador", icon:"👤", title:"Trabajador", sub:"Consulta tu certificado personal" },
+            { id:"empresa",    icon:"🏢", title:"Empresa",    sub:"Gestiona tu nómina de evaluaciones" },
+          ].map(tab => (
+            <button key={tab.id}
+              onClick={() => {
+                if (tab.id === "trabajador" && tipoBusqueda === "empresa") {
+                  setTipoBusqueda("codigo"); setBusqueda(""); setCodigoPortal(""); setError(""); setResultado(null); setResultadosEmpresa([]); setEmpresaAtenciones(null); setFechaFiltroEmpresa("");
+                } else if (tab.id === "empresa" && tipoBusqueda !== "empresa") {
+                  setTipoBusqueda("empresa"); setBusqueda(""); setCodigoPortal(""); setError(""); setResultado(null); setResultadosEmpresa([]); setEmpresaAtenciones(null); setFechaFiltroEmpresa(""); setTabEmpresa("certificados");
+                }
+              }}
+              className={`rounded-2xl p-4 flex flex-col items-center gap-2 border-2 transition-all duration-200 shadow-sm ${tabPrincipal === tab.id ? "bg-white border-teal-500 shadow-teal-100 shadow-lg scale-[1.02]" : "bg-white/60 border-transparent hover:border-teal-200 hover:bg-white"}`}
+            >
+              <span className={`text-4xl transition-transform duration-200 ${tabPrincipal === tab.id ? "scale-110" : ""}`}>{tab.icon}</span>
+              <span className={`font-black text-sm tracking-wide ${tabPrincipal === tab.id ? "text-teal-700" : "text-gray-500"}`}>{tab.title}</span>
+              <span className="text-[10px] text-gray-400 text-center leading-tight">{tab.sub}</span>
+              {tabPrincipal === tab.id && <span className="w-8 h-1 bg-teal-500 rounded-full mt-1" />}
+            </button>
+          ))}
         </div>
+      </div>
 
-        {/* ── Formulario ── */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-          {/* Selector tipo búsqueda */}
-          <div className="flex gap-2 p-1 bg-gray-100 rounded-xl">
-            {[
-              { v: "codigo", label: "🔑 Código", hint: "SISO-2025-XXXX" },
-              { v: "cedula", label: "🪪 Cédula", hint: "1234567890" },
-              { v: "empresa", label: "🏢 Empresa", hint: "NIT empresa" },
-            ].map((opt) => (
+      {/* ══ CONTENIDO PRINCIPAL ══════════════════════════════════════════════ */}
+      <div className="flex-1 pb-6">
+
+        {/* ─── TAB TRABAJADOR ──────────────────────────────────────────────── */}
+        {tabPrincipal === "trabajador" && (
+          <div className="px-4 pt-3 max-w-2xl mx-auto w-full space-y-4">
+
+            {/* Sub-tabs: Código / Cédula */}
+            <div className="flex gap-2 p-1 bg-white rounded-2xl shadow-sm border border-gray-100">
+              {[
+                { v: "codigo", icon: "🔑", label: "Código", hint: "SISO-2025-XXXX" },
+                { v: "cedula", icon: "🪪", label: "Cédula", hint: "1234567890" },
+              ].map(opt => (
+                <button key={opt.v}
+                  onClick={() => { setTipoBusqueda(opt.v); setBusqueda(""); setError(""); setResultado(null); }}
+                  className={`flex-1 py-2.5 flex items-center justify-center gap-2 text-sm font-black rounded-xl transition-all duration-200 ${tipoBusqueda === opt.v ? "bg-teal-600 text-white shadow-md shadow-teal-200" : "text-gray-400 hover:text-gray-600 hover:bg-gray-50"}`}
+                >
+                  <span>{opt.icon}</span> {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Formulario búsqueda trabajador */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 space-y-4">
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-wider mb-1.5">
+                  {tipoBusqueda === "codigo" ? "Código de verificación" : "Número de cédula"}
+                </label>
+                <input
+                  value={busqueda}
+                  onChange={e => setBusqueda(tipoBusqueda === "codigo" ? e.target.value.toUpperCase().trim() : e.target.value.trim())}
+                  onKeyDown={e => e.key === "Enter" && !cargando && buscar()}
+                  className="w-full p-3.5 border-2 border-gray-200 focus:border-teal-400 rounded-xl text-base font-mono font-bold tracking-widest focus:outline-none transition"
+                  placeholder={tipoBusqueda === "codigo" ? "Ej: SISO-2025-XXXX" : "Ej: 1234567890"}
+                  maxLength={50}
+                  autoComplete="off"
+                  autoFocus
+                />
+              </div>
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700">
+                  <pre className="whitespace-pre-wrap font-sans">{error}</pre>
+                </div>
+              )}
               <button
-                key={opt.v}
-                onClick={() => {
-                  setTipoBusqueda(opt.v);
-                  setBusqueda("");
-                  setCodigoPortal("");
-                  setError("");
-                  setResultado(null);
-                  setResultadosEmpresa([]);
-                  setEmpresaAtenciones(null);
-                  setFechaFiltroEmpresa("");
-                }}
-                className={`flex-1 py-2 text-xs font-black rounded-lg transition ${
-                  tipoBusqueda === opt.v
-                    ? "bg-white text-teal-700 shadow-sm"
-                    : "text-gray-500 hover:text-gray-700"
-                }`}
+                onClick={buscar}
+                disabled={cargando || !busqueda.trim() || Date.now() < bloqueadoHasta}
+                className="w-full py-3.5 bg-gradient-to-r from-teal-600 to-blue-600 hover:from-teal-700 hover:to-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-sm rounded-xl transition shadow-md flex items-center justify-center gap-2"
               >
-                {opt.label}
+                {cargando ? <><span className="animate-spin">⏳</span> Consultando...</> : "🔍 Consultar resultado"}
               </button>
-            ))}
-          </div>
-          {/* Input principal */}
-          <div>
-            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-wider mb-1">
-              {tipoBusqueda === "codigo"
-                ? "Código de verificación"
-                : tipoBusqueda === "empresa"
-                ? "NIT de la empresa (sin dígito verificador)"
-                : "Número de cédula (sin puntos ni espacios)"}
-            </label>
-            <input
-              value={busqueda}
-              onChange={(e) =>
-                setBusqueda(
-                  tipoBusqueda === "codigo"
-                    ? e.target.value.toUpperCase().trim()
-                    : e.target.value.trim()
-                )
-              }
-              onKeyDown={(e) => e.key === "Enter" && !cargando && buscar()}
-              className="w-full p-3 border-2 border-gray-200 focus:border-teal-400 rounded-xl text-sm font-mono font-bold tracking-widest focus:outline-none transition"
-              placeholder={
-                tipoBusqueda === "codigo"
-                  ? "Ej: SISO-2025-XXXX"
-                  : tipoBusqueda === "empresa"
-                  ? "Ej: 900123456"
-                  : "Ej: 1234567890"
-              }
-              maxLength={50}
-              autoComplete="off"
-            />
-          </div>
-
-          {/* Campo código de acceso — solo empresa */}
-          {tipoBusqueda === "empresa" && (
-            <div>
-              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-wider mb-1">
-                🔐 Código de acceso
-              </label>
-              <input
-                value={codigoPortal}
-                onChange={(e) => setCodigoPortal(e.target.value.toUpperCase().trim())}
-                onKeyDown={(e) => e.key === "Enter" && !cargando && buscar()}
-                className="w-full p-3 border-2 border-gray-200 focus:border-teal-400 rounded-xl text-sm font-mono font-bold tracking-widest focus:outline-none transition"
-                placeholder="Ej: EMP-4567-AB3X"
-                maxLength={20}
-                autoComplete="off"
-              />
-              <p className="text-[9px] text-gray-400 mt-1">
-                Código enviado al email de la empresa con la documentación
+              <p className="text-[9px] text-gray-400 text-center">
+                Consulta segura y confidencial · Solo verás tus propios datos
+                {intentos > 0 && ` · Intentos: ${intentos}/${MAX_INTENTOS}`}
               </p>
             </div>
-          )}
 
-          {/* Error */}
-          {error && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700">
-              <pre className="whitespace-pre-wrap font-sans">{error}</pre>
-            </div>
-          )}
-          {/* Botón buscar */}
-          <button
-            onClick={buscar}
-            disabled={
-              cargando || !busqueda.trim() || Date.now() < bloqueadoHasta ||
-              (tipoBusqueda === "empresa" && !codigoPortal.trim())
-            }
-            className="w-full py-3 bg-gradient-to-r from-teal-600 to-blue-600 hover:from-teal-700 hover:to-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-sm rounded-xl transition shadow-sm flex items-center justify-center gap-2"
-          >
-            {cargando ? (
-              <>
-                <span className="animate-spin">⏳</span> Consultando...
-              </>
-            ) : (
-              "🔍 Consultar resultado"
-            )}
-          </button>
-          <p className="text-[9px] text-gray-400 text-center">
-            Consulta segura y confidencial · Solo verás tus propios datos
-            {intentos > 0 && ` · Intentos: ${intentos}/${MAX_INTENTOS}`}
-          </p>
-        </div>
-
-        </div>{/* fin columna izquierda */}
-
-        {/* ── Columna derecha: resultado individual (solo en modo 2 columnas) ── */}
-        {resultado && !resultadosEmpresa.length && (
-          <div className="min-w-0">
-            {(() => {
+            {/* Resultado individual */}
+            {resultado && (() => {
               const col = colorAptitud(resultado.conceptoAptitud);
               return (
                 <div className="bg-white rounded-2xl shadow-sm border border-teal-100 overflow-hidden">
-                  {/* Header resultado */}
                   <div className={`px-5 py-4 ${col.bg} border-b border-gray-100`}>
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider">
-                          Resultado de tu evaluación
-                        </p>
-                        <p className={`font-black text-base mt-0.5 ${col.text}`}>
-                          {col.dot}{" "}
-                          {resultado.conceptoAptitud || "Pendiente de concepto"}
-                        </p>
+                        <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider">Resultado de tu evaluación</p>
+                        <p className={`font-black text-base mt-0.5 ${col.text}`}>{col.dot} {resultado.conceptoAptitud || "Pendiente de concepto"}</p>
                       </div>
-                      <span className={`text-[10px] font-black px-3 py-1.5 rounded-full border ${col.badge}`}>
-                        {resultado.estadoHistoria || "Cerrada"}
-                      </span>
+                      <span className={`text-[10px] font-black px-3 py-1.5 rounded-full border ${col.badge}`}>{resultado.estadoHistoria || "Cerrada"}</span>
                     </div>
                   </div>
-                  {/* Datos */}
                   <div className="p-4 space-y-3">
                     <div className="grid grid-cols-2 gap-2">
                       {[
@@ -15638,8 +15573,6 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                         <p className="text-xs text-amber-800 leading-relaxed">{resultado.restricciones}</p>
                       </div>
                     )}
-
-                    {/* ── DOCUMENTOS EMITIDOS ──────────────────────────────── */}
                     {(() => {
                       const meds = resultado.formulaMedicamentos || [];
                       const derivs = resultado.derivaciones || [];
@@ -15657,7 +15590,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                         <div className="border border-indigo-100 bg-indigo-50 rounded-xl p-3">
                           <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider mb-2">📋 Documentos Emitidos en tu Consulta</p>
                           <div className="grid grid-cols-2 gap-2">
-                            {docBtns.map((btn) => (
+                            {docBtns.map(btn => (
                               <button key={btn.section} onClick={() => _portalPrint(btn.section, resultado)} className={`flex flex-col items-center gap-1 py-3 px-2 rounded-xl text-white font-black text-[11px] shadow-sm transition ${btn.color}`}>
                                 <span className="text-sm">{btn.label}</span>
                                 <span className="text-[9px] font-normal opacity-90">{btn.sub}</span>
@@ -15668,57 +15601,35 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
                         </div>
                       );
                     })()}
-
-                    {/* ── DESCARGAR CERTIFICADO PDF ─────────────────────────── */}
                     <button
                       onClick={() => {
                         const html = _generarCertificadoDesdePortal(resultado);
                         const w = window.open("", "_blank", "width=920,height=1150");
                         if (!w) { alert("El navegador bloqueó la ventana emergente. Permita los popups para descargar el certificado."); return; }
                         const htmlConBtn = html.replace("</body>", '<div class="np-dl"><button onclick="window.print()">📥 Guardar / Imprimir PDF</button><p>En el diálogo de impresión,<br/>selecciona <b>Guardar como PDF</b></p></div></body>');
-                        w.document.write(htmlConBtn);
-                        w.document.close();
-                        w.focus();
+                        w.document.write(htmlConBtn); w.document.close(); w.focus();
                       }}
                       className="w-full py-3 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-black text-sm rounded-xl flex items-center justify-center gap-2.5 shadow-sm transition"
                     >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17a3 3 0 003 3h12a3 3 0 003-3v-1M3 17V7a3 3 0 013-3h8l5 5v8" />
-                      </svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17a3 3 0 003 3h12a3 3 0 003-3v-1M3 17V7a3 3 0 013-3h8l5 5v8" /></svg>
                       Descargar Certificado PDF
                     </button>
-
-                    {/* HC Completa — solo visible en búsqueda personal */}
-                    {tipoBusqueda !== "empresa" && (
-                      <div className="mt-3 border border-violet-200 rounded-xl overflow-hidden">
-                        <div className="bg-violet-600 px-4 py-2 flex items-center justify-between">
-                          <span className="text-white font-black text-xs">📋 Historia Clínica Completa</span>
-                          {cargandoHC && <span className="text-violet-200 text-[10px]">Cargando...</span>}
-                        </div>
-                        <div className="p-3 bg-violet-50">
-                          {hcCompleta ? (
-                            <button
-                              onClick={() => {
-                                const html = _generarHCPortalHTML(hcCompleta);
-                                const w = window.open("", "_blank", "width=900,height=1100");
-                                if (!w) { alert("Permita las ventanas emergentes."); return; }
-                                w.document.write(html);
-                                w.document.close();
-                              }}
-                              className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-black text-sm hover:bg-violet-700 transition"
-                            >
-                              📋 Ver / Descargar Historia Clínica Completa
-                            </button>
-                          ) : (
-                            <p className="text-xs text-violet-600 text-center py-1">
-                              {cargandoHC ? "Cargando historia clínica..." : "Historia clínica no disponible en el portal. Solicítela directamente al médico."}
-                            </p>
-                          )}
-                          <p className="text-[9px] text-violet-400 text-center mt-1">Incluye: antecedentes · examen físico · diagnósticos · fórmulas · derivaciones · exámenes · incapacidades</p>
-                        </div>
+                    <div className="mt-1 border border-violet-200 rounded-xl overflow-hidden">
+                      <div className="bg-violet-600 px-4 py-2 flex items-center justify-between">
+                        <span className="text-white font-black text-xs">📋 Historia Clínica Completa</span>
+                        {cargandoHC && <span className="text-violet-200 text-[10px]">Cargando...</span>}
                       </div>
-                    )}
-
+                      <div className="p-3 bg-violet-50">
+                        {hcCompleta ? (
+                          <button onClick={() => { const html = _generarHCPortalHTML(hcCompleta); const w = window.open("", "_blank", "width=900,height=1100"); if (!w) { alert("Permita las ventanas emergentes."); return; } w.document.write(html); w.document.close(); }} className="w-full py-2.5 bg-violet-600 text-white rounded-lg font-black text-sm hover:bg-violet-700 transition">
+                            📋 Ver / Descargar Historia Clínica Completa
+                          </button>
+                        ) : (
+                          <p className="text-xs text-violet-600 text-center py-1">{cargandoHC ? "Cargando historia clínica..." : "Historia clínica no disponible en el portal. Solicítela directamente al médico."}</p>
+                        )}
+                        <p className="text-[9px] text-violet-400 text-center mt-1">Incluye: antecedentes · examen físico · diagnósticos · fórmulas · derivaciones · exámenes · incapacidades</p>
+                      </div>
+                    </div>
                     <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-[10px] text-blue-700 leading-relaxed">
                       <p className="font-black mb-0.5">🔒 Información confidencial - Res. 1995/1999</p>
                       <p>Tu historia clínica completa es custodiada por el médico ocupacional. Para consultas sobre tu resultado, comunícate con el servicio médico.</p>
@@ -15730,373 +15641,315 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver }) => {
           </div>
         )}
 
-        </div>{/* fin grid/wrapper columnas */}
+        {/* ─── TAB EMPRESA (formulario de acceso) ─────────────────────────── */}
+        {tabPrincipal === "empresa" && resultadosEmpresa.length === 0 && (
+          <div className="px-4 pt-3 max-w-lg mx-auto w-full space-y-4">
 
-        {/* ── Documentación por periodo (Portal Empresa Completo) ── */}
-        {/* FIX React #310: componente real en lugar de IIFE con hooks ilegales */}
-        {resultadosEmpresa.length > 0 && (
-          <PortalEmpresaDocsPeriodos
-            nitBusq={busqueda.replace(/[^0-9]/g, "")}
-            sbUrl={sbUrl}
-            sbKey={sbKey}
-            resultadosEmpresa={resultadosEmpresa}
-          />
+            {/* Tarjeta de acceso */}
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="bg-gradient-to-br from-blue-700 to-blue-900 p-6 text-center">
+                <div className="w-16 h-16 bg-white/20 rounded-3xl flex items-center justify-center text-4xl mx-auto mb-3 shadow-inner ring-1 ring-white/20">🏢</div>
+                <h2 className="text-white font-black text-base">Acceso Empresarial</h2>
+                <p className="text-blue-300 text-[11px] mt-1">Consulta y descarga todos los certificados de tu nómina</p>
+              </div>
+              <div className="p-5 space-y-4">
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-wider mb-1.5">
+                    🏭 NIT de la empresa <span className="text-gray-300 font-normal">(sin dígito verificador)</span>
+                  </label>
+                  <input
+                    value={busqueda}
+                    onChange={e => setBusqueda(e.target.value.trim())}
+                    onKeyDown={e => e.key === "Enter" && !cargando && buscar()}
+                    className="w-full p-3.5 border-2 border-gray-200 focus:border-blue-400 rounded-xl text-base font-mono font-bold tracking-widest focus:outline-none transition"
+                    placeholder="Ej: 900123456"
+                    maxLength={20}
+                    autoComplete="off"
+                    inputMode="numeric"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-wider mb-1.5">
+                    🔐 Código de acceso
+                  </label>
+                  <input
+                    value={codigoPortal}
+                    onChange={e => setCodigoPortal(e.target.value.toUpperCase().trim())}
+                    onKeyDown={e => e.key === "Enter" && !cargando && buscar()}
+                    className="w-full p-3.5 border-2 border-gray-200 focus:border-blue-400 rounded-xl text-base font-mono font-bold tracking-widest focus:outline-none transition"
+                    placeholder="Ej: EMP-4567-AB3X"
+                    maxLength={20}
+                    autoComplete="off"
+                  />
+                  <p className="text-[9px] text-gray-400 mt-1.5 text-center">Código enviado al email de la empresa con la documentación</p>
+                </div>
+                {error && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-700">
+                    <pre className="whitespace-pre-wrap font-sans">{error}</pre>
+                  </div>
+                )}
+                <button
+                  onClick={buscar}
+                  disabled={cargando || !busqueda.trim() || !codigoPortal.trim() || Date.now() < bloqueadoHasta}
+                  className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-sm rounded-xl transition shadow-md flex items-center justify-center gap-2"
+                >
+                  {cargando ? <><span className="animate-spin">⏳</span> Verificando acceso...</> : "🏢 Acceder al portal empresarial"}
+                </button>
+                <p className="text-[9px] text-gray-400 text-center">
+                  Acceso seguro y confidencial
+                  {intentos > 0 && ` · Intentos: ${intentos}/${MAX_INTENTOS}`}
+                </p>
+              </div>
+            </div>
+
+            {/* Hint de qué encontrarás */}
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { icon: "📋", label: "Certificados", sub: "Aptitud de cada trabajador" },
+                { icon: "📁", label: "Documentos", sub: "Archivos por período" },
+                { icon: "📊", label: "Estadísticas", sub: "Resumen de la nómina" },
+              ].map(c => (
+                <div key={c.label} className="bg-white rounded-xl p-3 text-center border border-gray-100 shadow-sm">
+                  <div className="text-2xl mb-1">{c.icon}</div>
+                  <p className="font-black text-[11px] text-gray-700">{c.label}</p>
+                  <p className="text-[9px] text-gray-400 mt-0.5 leading-tight">{c.sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
-        {/* ── Resultados Empresa (múltiples certificados + filtro por fecha) ── */}
-        {resultadosEmpresa.length > 0 && (() => {
-          // ── Calcular fechas disponibles y trabajadores únicos ─────────────
+        {/* ─── TAB EMPRESA (resultados — acceso verificado) ────────────────── */}
+        {tabPrincipal === "empresa" && resultadosEmpresa.length > 0 && (() => {
           const fechasDisponibles = empresaAtenciones?.fechas
             ? [...empresaAtenciones.fechas].sort()
             : [...new Set(resultadosEmpresa.map(p => p.fechaExamen || "").filter(Boolean))].sort();
           const multiDate = fechasDisponibles.length > 1;
-
-          // ── Filtrar atenciones según fecha seleccionada ───────────────────
-          const atencionesVisibles = fechaFiltroEmpresa
-            ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa)
-            : resultadosEmpresa;
-
+          const atencionesVisibles = fechaFiltroEmpresa ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa) : resultadosEmpresa;
           const trabajadoresUnicos = new Set(resultadosEmpresa.map(p => p.docNumero)).size;
-          const empNombre = empresaAtenciones?.nombre || resultadosEmpresa[0]?.empresaNombre || "Empresa";
-
-          // ── Formato fecha legible ─────────────────────────────────────────
-          const fmtFecha = (f) => {
-            if (!f) return "";
-            const [y, m, d] = f.split("-");
-            return `${d}/${m}/${y}`;
-          };
+          const totalApt = resultadosEmpresa.filter(p => { const c = (p.conceptoAptitud||"").toLowerCase(); return c.includes("apto") && !c.includes("no apto"); }).length;
+          const totalRestr = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("restricc")).length;
+          const totalNoApto = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("no apto")).length;
+          const totalDerivs = resultadosEmpresa.filter(p => (p.derivaciones||[]).length > 0).length;
 
           return (
-          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-            {/* ── Stats rapidas ── */}
-            {(() => {
-              const totalApt = resultadosEmpresa.filter(p => { const c = (p.conceptoAptitud||"").toLowerCase(); return c.includes("apto") && !c.includes("no apto"); }).length;
-              const totalRestr = resultadosEmpresa.filter(p => (p.conceptoAptitud||"").toLowerCase().includes("restricc")).length;
-              const totalDerivs = resultadosEmpresa.filter(p => (p.derivaciones||[]).length > 0).length;
-              return (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-gradient-to-br from-blue-700 to-blue-900">
-                  {[
-                    { emoji: "👷", valor: trabajadoresUnicos, label: "Trabajadores", color: "text-white" },
-                    { emoji: "✅", valor: totalApt, label: "Aptos", color: "text-emerald-300" },
-                    { emoji: "⚠️", valor: totalRestr, label: "Restricciones", color: "text-yellow-300" },
-                    { emoji: "🔀", valor: totalDerivs, label: "Derivaciones", color: "text-violet-300" },
-                  ].map(s => (
-                    <div key={s.label} className="bg-white/15 rounded-2xl p-3 text-center backdrop-blur-sm">
-                      <div className="text-3xl mb-1">{s.emoji}</div>
-                      <div className={"text-2xl font-black " + s.color}>{s.valor}</div>
-                      <div className="text-white/70 text-[10px] font-bold uppercase tracking-wider">{s.label}</div>
-                    </div>
-                  ))}
+            <div className="px-4 pt-3 max-w-4xl mx-auto w-full space-y-4">
+
+              {/* Banner verificado */}
+              <div className="bg-gradient-to-r from-emerald-600 to-teal-700 rounded-2xl px-5 py-4 flex items-center justify-between gap-3 shadow-md">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 bg-white/20 rounded-2xl flex items-center justify-center text-2xl flex-shrink-0">🏢</div>
+                  <div>
+                    <p className="text-white font-black text-sm leading-tight">{empNombreActual}</p>
+                    <p className="text-emerald-200 text-[10px] mt-0.5">✅ Acceso verificado · {resultadosEmpresa.length} atenciones · {trabajadoresUnicos} trabajadores</p>
+                  </div>
                 </div>
-              );
-            })()}
-
-            {/* ── Encabezado empresa + botones ── */}
-            <div className="bg-blue-800 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
-              <div>
-                <p className="text-white font-black text-sm">🏢 {empNombre}</p>
-                <p className="text-blue-200 text-[10px]">
-                  {resultadosEmpresa.length} atención(es)
-                  {multiDate && <span className="ml-1 text-yellow-300 font-black">· {fechasDisponibles.length} fechas</span>}
-                </p>
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                <button onClick={() => {
-                  const all = {};
-                  atencionesVisibles.forEach((_, i) => { all[i] = true; });
-                  setCertSeleccionados(Object.keys(certSeleccionados).length === atencionesVisibles.length ? {} : all);
-                }} className="px-3 py-1.5 bg-white/20 text-white text-[10px] font-black rounded-xl hover:bg-white/30 transition">
-                  {Object.keys(certSeleccionados).length === atencionesVisibles.length ? "☑ Deseleccionar" : "☐ Seleccionar todos"}
-                </button>
-                <button onClick={() => {
-                  const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
-                  const pacs = sel.length > 0 ? sel : atencionesVisibles;
-                  const certs = pacs.map((p, idx) => {
-                    const certHtml = _generarCertificadoDesdePortal(p);
-                    const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
-                    const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
-                    return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>";
-                  }).join("");
-                  const firstCert = _generarCertificadoDesdePortal(pacs[0]);
-                  const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
-                  const styles = styleMatch ? styleMatch[1] : "";
-                  const htmlContent = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>Certificados - " + empNombre + "</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}" + styles + ".np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class=\"np-dl\"><button onclick=\"window.print()\" style=\"background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);\">📥 Guardar PDF / Imprimir (" + pacs.length + " certificados)</button></div>" + certs + "</body></html>";
-                  const blob = new Blob([htmlContent], {type: "text/html"});
-                  const blobUrl = URL.createObjectURL(blob);
-                  const w = window.open(blobUrl, "_blank");
-                  if (!w) { const a = document.createElement("a"); a.href = blobUrl; a.target = "_blank"; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000); }
-                }} className="px-3 py-1.5 bg-emerald-500 text-white text-[10px] font-black rounded-xl hover:bg-emerald-400 transition shadow-lg">
-                  {"📥 Descargar " + (Object.keys(certSeleccionados).length > 0 ? "(" + Object.keys(certSeleccionados).length + ")" : "(" + atencionesVisibles.length + ")")}
+                <button onClick={() => { setResultadosEmpresa([]); setEmpresaAtenciones(null); setBusqueda(""); setCodigoPortal(""); setFechaFiltroEmpresa(""); setCertSeleccionados({}); }} className="text-white/70 hover:text-white text-[10px] font-bold bg-white/15 hover:bg-white/25 px-3 py-1.5 rounded-xl transition flex-shrink-0">
+                  Cerrar sesión
                 </button>
               </div>
-            </div>
 
-            {/* ── Filtro por fecha (solo si hay multiples fechas) ── */}
-            {multiDate && (
-              <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider flex items-center gap-1">
-                  📅 Fecha de atención:
-                </span>
-                <button
-                  onClick={() => { setFechaFiltroEmpresa(""); setCertSeleccionados({}); }}
-                  className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (!fechaFiltroEmpresa ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-700 border-blue-300 hover:border-blue-500")}
-                >
-                  Todas ({resultadosEmpresa.length})
-                </button>
-                {fechasDisponibles.map(f => {
-                  const cnt = resultadosEmpresa.filter(p => p.fechaExamen === f).length;
-                  return (
-                    <button
-                      key={f}
-                      onClick={() => { setFechaFiltroEmpresa(f); setCertSeleccionados({}); }}
-                      className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (fechaFiltroEmpresa === f ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-600 border-blue-200 hover:border-blue-500")}
-                    >
-                      {fmtFecha(f)} <span className="opacity-70">({cnt})</span>
-                    </button>
-                  );
-                })}
-                {fechaFiltroEmpresa && (
-                  <span className="text-[10px] text-blue-500 italic ml-1">
-                    Mostrando {atencionesVisibles.length} de {resultadosEmpresa.length} atenciones
-                  </span>
-                )}
+              {/* Stats rápidas */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  { emoji: "👷", valor: trabajadoresUnicos, label: "Trabajadores", bg: "bg-blue-50", text: "text-blue-700", border: "border-blue-100" },
+                  { emoji: "✅", valor: totalApt, label: "Aptos", bg: "bg-emerald-50", text: "text-emerald-700", border: "border-emerald-100" },
+                  { emoji: "⚠️", valor: totalRestr, label: "Restricciones", bg: "bg-amber-50", text: "text-amber-700", border: "border-amber-100" },
+                  { emoji: "🔀", valor: totalDerivs, label: "Derivaciones", bg: "bg-violet-50", text: "text-violet-700", border: "border-violet-100" },
+                ].map(s => (
+                  <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-3 text-center`}>
+                    <div className="text-3xl mb-1">{s.emoji}</div>
+                    <div className={`text-2xl font-black ${s.text}`}>{s.valor}</div>
+                    <div className="text-gray-500 text-[10px] font-bold uppercase tracking-wider">{s.label}</div>
+                  </div>
+                ))}
               </div>
-            )}
 
-            {/* ── Cards de trabajadores ── */}
-            <div className="divide-y divide-gray-50 max-h-[520px] overflow-y-auto">
-              {atencionesVisibles.map((p, i) => {
-                const col = colorAptitud(p.conceptoAptitud);
-                const pMeds = (p.formulaMedicamentos || []).length;
-                const pDerivs = (p.derivaciones || []).length;
-                const pExams = (p.solicitudExamenes || []).length;
-                const pIncap = p.incapacidad?.aplica;
-                const initials = (p.nombres || "?").split(" ").slice(0,2).map(n => n[0]).join("").toUpperCase();
-                const otrasAtenciones = multiDate ? resultadosEmpresa.filter(a => a.docNumero === p.docNumero && a.fechaExamen !== p.fechaExamen).length : 0;
-                const isSel = !!certSeleccionados[i];
-                return (
-                  <div key={p.docNumero + "-" + p.fechaExamen + "-" + i} className={"px-4 py-3 flex items-start gap-3 hover:bg-blue-50 transition-colors cursor-pointer " + (isSel ? "bg-blue-50 border-l-4 border-l-blue-500" : "border-l-4 border-l-transparent")} onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
-                    {/* Avatar circular */}
-                    <div className={"w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center font-black text-sm border-2 " + (isSel ? "bg-blue-600 text-white border-blue-400" : "bg-teal-50 text-teal-700 border-teal-200")}>
-                      {isSel ? "✓" : initials}
+              {/* Pestañas internas: Certificados / Documentos / Estadísticas */}
+              <div className="flex gap-1 p-1 bg-white rounded-2xl shadow-sm border border-gray-100">
+                {[
+                  { id: "certificados", icon: "📋", label: "Certificados" },
+                  { id: "documentos",   icon: "📁", label: "Documentos" },
+                  { id: "estadisticas", icon: "📊", label: "Estadísticas" },
+                ].map(t => (
+                  <button key={t.id}
+                    onClick={() => setTabEmpresa(t.id)}
+                    className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 text-xs font-black rounded-xl transition-all duration-200 ${tabEmpresa === t.id ? "bg-blue-700 text-white shadow-md" : "text-gray-400 hover:text-gray-700 hover:bg-gray-50"}`}
+                  >
+                    <span>{t.icon}</span> {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Pestaña: CERTIFICADOS ──────────────────────────────────── */}
+              {tabEmpresa === "certificados" && (
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                  {/* Toolbar */}
+                  <div className="bg-blue-800 px-4 py-3 flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                      <p className="text-white font-black text-sm">📋 Certificados de aptitud</p>
+                      <p className="text-blue-300 text-[10px]">{atencionesVisibles.length} atención(es){multiDate && <span className="ml-1 text-yellow-300 font-black">· {fechasDisponibles.length} fechas</span>}</p>
                     </div>
-                    {/* Datos */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2 flex-wrap">
-                        <div className="min-w-0">
-                          <p className="font-black text-sm text-gray-800 leading-tight">{p.nombres || "--"}</p>
-                          <p className="text-[10px] text-gray-400 mt-0.5">{"CC " + (p.docNumero || "--") + (p.cargo ? " · " + p.cargo : "") + " · " + (fmtFecha(p.fechaExamen) || "--")}</p>
-                          {p.tipoExamen && <p className="text-[10px] text-blue-500 font-bold mt-0.5">{p.tipoExamen}</p>}
-                          {otrasAtenciones > 0 && <p className="text-[9px] text-blue-400 mt-0.5">{"+ " + otrasAtenciones + " atención(es) en otras fechas"}</p>}
-                        </div>
-                        <span className={"text-[10px] font-black px-2 py-1 rounded-lg flex-shrink-0 " + col.badge}>{col.dot} {p.conceptoAptitud || "--"}</span>
-                      </div>
-                      {/* Botones de documentos */}
-                      {(pMeds > 0 || pDerivs > 0 || pExams > 0 || pIncap) && (
-                        <div className="flex gap-1.5 flex-wrap mt-2" onClick={e => e.stopPropagation()}>
-                          {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-200 transition">{"💊 Medicamentos (" + pMeds + ")"}</button>}
-                          {pDerivs > 0 && <button onClick={() => _portalPrint("derivaciones", p)} className="px-2 py-1 bg-violet-100 text-violet-700 text-[10px] font-black rounded-lg hover:bg-violet-200 transition">{"🏥 Derivaciones (" + pDerivs + ")"}</button>}
-                          {pExams > 0 && <button onClick={() => _portalPrint("examenes", p)} className="px-2 py-1 bg-teal-100 text-teal-700 text-[10px] font-black rounded-lg hover:bg-teal-200 transition">{"🔬 Exámenes (" + pExams + ")"}</button>}
-                          {pIncap && <button onClick={() => _portalPrint("incapacidad", p)} className="px-2 py-1 bg-red-100 text-red-700 text-[10px] font-black rounded-lg hover:bg-red-200 transition">🛌 Incapacidad</button>}
-                        </div>
-                      )}
+                    <div className="flex gap-2 flex-wrap">
+                      <button onClick={() => { const all = {}; atencionesVisibles.forEach((_, i) => { all[i] = true; }); setCertSeleccionados(Object.keys(certSeleccionados).length === atencionesVisibles.length ? {} : all); }} className="px-3 py-1.5 bg-white/20 text-white text-[10px] font-black rounded-xl hover:bg-white/30 transition">
+                        {Object.keys(certSeleccionados).length === atencionesVisibles.length ? "☑ Deseleccionar" : "☐ Seleccionar todos"}
+                      </button>
+                      <button onClick={() => {
+                        const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
+                        const pacs = sel.length > 0 ? sel : atencionesVisibles;
+                        const certs = pacs.map((p, idx) => { const certHtml = _generarCertificadoDesdePortal(p); const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/); const bodyContent = bodyMatch ? bodyMatch[1] : certHtml; return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>"; }).join("");
+                        const firstCert = _generarCertificadoDesdePortal(pacs[0]);
+                        const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
+                        const styles = styleMatch ? styleMatch[1] : "";
+                        const htmlContent = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>Certificados - " + empNombreActual + "</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}" + styles + ".np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class=\"np-dl\"><button onclick=\"window.print()\" style=\"background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);\">📥 Guardar PDF / Imprimir (" + pacs.length + " certificados)</button></div>" + certs + "</body></html>";
+                        const blob = new Blob([htmlContent], {type: "text/html"});
+                        const blobUrl = URL.createObjectURL(blob);
+                        const w = window.open(blobUrl, "_blank");
+                        if (!w) { const a = document.createElement("a"); a.href = blobUrl; a.target = "_blank"; document.body.appendChild(a); a.click(); setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 1000); }
+                      }} className="px-3 py-1.5 bg-emerald-500 text-white text-[10px] font-black rounded-xl hover:bg-emerald-400 transition shadow-lg">
+                        {"📥 Descargar " + (Object.keys(certSeleccionados).length > 0 ? "(" + Object.keys(certSeleccionados).length + ")" : "(" + atencionesVisibles.length + ")")}
+                      </button>
                     </div>
                   </div>
-                );
-              })}
+                  {/* Filtro fechas */}
+                  {multiDate && (
+                    <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] font-black text-blue-700 uppercase tracking-wider">📅 Fecha:</span>
+                      <button onClick={() => { setFechaFiltroEmpresa(""); setCertSeleccionados({}); }} className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (!fechaFiltroEmpresa ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-700 border-blue-300 hover:border-blue-500")}>
+                        Todas ({resultadosEmpresa.length})
+                      </button>
+                      {fechasDisponibles.map(f => {
+                        const cnt = resultadosEmpresa.filter(p => p.fechaExamen === f).length;
+                        return (
+                          <button key={f} onClick={() => { setFechaFiltroEmpresa(f); setCertSeleccionados({}); }} className={"px-2.5 py-1 rounded-full text-[10px] font-black border transition " + (fechaFiltroEmpresa === f ? "bg-blue-700 text-white border-blue-700" : "bg-white text-blue-600 border-blue-200 hover:border-blue-500")}>
+                            {fmtFechaCorta(f)} <span className="opacity-70">({cnt})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* Lista trabajadores */}
+                  <div className="divide-y divide-gray-50 max-h-[520px] overflow-y-auto">
+                    {atencionesVisibles.map((p, i) => {
+                      const col = colorAptitud(p.conceptoAptitud);
+                      const pMeds = (p.formulaMedicamentos || []).length;
+                      const pDerivs = (p.derivaciones || []).length;
+                      const pExams = (p.solicitudExamenes || []).length;
+                      const pIncap = p.incapacidad?.aplica;
+                      const initials = (p.nombres || "?").split(" ").slice(0,2).map(n => n[0]).join("").toUpperCase();
+                      const otrasAtenciones = multiDate ? resultadosEmpresa.filter(a => a.docNumero === p.docNumero && a.fechaExamen !== p.fechaExamen).length : 0;
+                      const isSel = !!certSeleccionados[i];
+                      return (
+                        <div key={p.docNumero + "-" + p.fechaExamen + "-" + i}
+                          className={"px-4 py-3 flex items-start gap-3 hover:bg-blue-50 transition-colors cursor-pointer border-l-4 " + (isSel ? "bg-blue-50 border-l-blue-500" : col.border || "border-l-transparent")}
+                          onClick={() => setCertSeleccionados(prev => ({...prev, [i]: !prev[i]}))}>
+                          <div className={"w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center font-black text-sm border-2 " + (isSel ? "bg-blue-600 text-white border-blue-400" : "bg-teal-50 text-teal-700 border-teal-200")}>
+                            {isSel ? "✓" : initials}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-2 flex-wrap">
+                              <div className="min-w-0">
+                                <p className="font-black text-sm text-gray-800 leading-tight">{p.nombres || "--"}</p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">{"CC " + (p.docNumero || "--") + (p.cargo ? " · " + p.cargo : "") + " · " + (fmtFechaCorta(p.fechaExamen) || "--")}</p>
+                                {p.tipoExamen && <p className="text-[10px] text-blue-500 font-bold mt-0.5">{p.tipoExamen}</p>}
+                                {otrasAtenciones > 0 && <p className="text-[9px] text-blue-400 mt-0.5">{"+ " + otrasAtenciones + " atención(es) en otras fechas"}</p>}
+                              </div>
+                              <span className={"text-[10px] font-black px-2 py-1 rounded-lg flex-shrink-0 " + col.badge}>{col.dot} {p.conceptoAptitud || "--"}</span>
+                            </div>
+                            {(pMeds > 0 || pDerivs > 0 || pExams > 0 || pIncap) && (
+                              <div className="flex gap-1.5 flex-wrap mt-2" onClick={e => e.stopPropagation()}>
+                                {pMeds > 0 && <button onClick={() => _portalPrint("formula", p)} className="px-2 py-1 bg-emerald-100 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-200 transition">{"💊 Medicamentos (" + pMeds + ")"}</button>}
+                                {pDerivs > 0 && <button onClick={() => _portalPrint("derivaciones", p)} className="px-2 py-1 bg-violet-100 text-violet-700 text-[10px] font-black rounded-lg hover:bg-violet-200 transition">{"🏥 Derivaciones (" + pDerivs + ")"}</button>}
+                                {pExams > 0 && <button onClick={() => _portalPrint("examenes", p)} className="px-2 py-1 bg-teal-100 text-teal-700 text-[10px] font-black rounded-lg hover:bg-teal-200 transition">{"🔬 Exámenes (" + pExams + ")"}</button>}
+                                {pIncap && <button onClick={() => _portalPrint("incapacidad", p)} className="px-2 py-1 bg-red-100 text-red-700 text-[10px] font-black rounded-lg hover:bg-red-200 transition">🛌 Incapacidad</button>}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Pestaña: DOCUMENTOS ───────────────────────────────────── */}
+              {tabEmpresa === "documentos" && (
+                <PortalEmpresaDocsPeriodos
+                  nitBusq={busqueda.replace(/[^0-9]/g, "")}
+                  sbUrl={sbUrl}
+                  sbKey={sbKey}
+                  resultadosEmpresa={resultadosEmpresa}
+                />
+              )}
+
+              {/* ── Pestaña: ESTADÍSTICAS ─────────────────────────────────── */}
+              {tabEmpresa === "estadisticas" && (
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
+                    <p className="font-black text-gray-800 text-sm mb-4">📊 Distribución por Concepto de Aptitud</p>
+                    {(() => {
+                      const grupos = {};
+                      resultadosEmpresa.forEach(p => {
+                        const apt = p.conceptoAptitud || "Sin concepto";
+                        grupos[apt] = (grupos[apt] || 0) + 1;
+                      });
+                      const total = resultadosEmpresa.length;
+                      return (
+                        <div className="space-y-2.5">
+                          {Object.entries(grupos).sort((a,b) => b[1]-a[1]).map(([apt, cnt]) => {
+                            const col = colorAptitud(apt);
+                            const pct = Math.round((cnt / total) * 100);
+                            return (
+                              <div key={apt}>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-xs font-bold text-gray-700">{col.dot} {apt}</span>
+                                  <span className="text-xs font-black text-gray-500">{cnt} ({pct}%)</span>
+                                </div>
+                                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                                  <div className="h-full rounded-full bg-gradient-to-r from-teal-500 to-blue-500 transition-all duration-500" style={{ width: pct + "%" }} />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-center">
+                      <div className="text-3xl mb-2">🔬</div>
+                      <div className="text-2xl font-black text-blue-700">{resultadosEmpresa.filter(p => (p.tipoExamen||"").toLowerCase().includes("ingreso")).length}</div>
+                      <div className="text-[10px] text-gray-500 font-bold mt-0.5">Exámenes de Ingreso</div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-center">
+                      <div className="text-3xl mb-2">🔄</div>
+                      <div className="text-2xl font-black text-teal-700">{resultadosEmpresa.filter(p => (p.tipoExamen||"").toLowerCase().includes("periódico") || (p.tipoExamen||"").toLowerCase().includes("periodico")).length}</div>
+                      <div className="text-[10px] text-gray-500 font-bold mt-0.5">Exámenes Periódicos</div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-center">
+                      <div className="text-3xl mb-2">🚪</div>
+                      <div className="text-2xl font-black text-amber-700">{resultadosEmpresa.filter(p => (p.tipoExamen||"").toLowerCase().includes("egreso") || (p.tipoExamen||"").toLowerCase().includes("retiro")).length}</div>
+                      <div className="text-[10px] text-gray-500 font-bold mt-0.5">Exámenes de Egreso</div>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 text-center">
+                      <div className="text-3xl mb-2">🚫</div>
+                      <div className="text-2xl font-black text-red-700">{totalNoApto}</div>
+                      <div className="text-[10px] text-gray-500 font-bold mt-0.5">No Aptos</div>
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-[10px] text-blue-700 leading-relaxed">
+                    <p className="font-black mb-1">🔒 Información confidencial - Res. 1995/1999 · Ley 1581/2012</p>
+                    <p>Esta información es de uso exclusivo del responsable de SST de la empresa. Los datos médicos individuales son reservados y custodiados por el médico ocupacional responsable.</p>
+                  </div>
+                </div>
+              )}
+
             </div>
-          </div>
           );
         })()}
 
-        {/* ── Resultado — renderizado en columna derecha del grid (ver arriba) ── */}
-        {false &&
-          (() => {
-            const col = colorAptitud(resultado?.conceptoAptitud);
-            return (
-              <div className="bg-white rounded-2xl shadow-sm border border-teal-100 overflow-hidden">
-                {/* Header resultado */}
-                <div className={`px-5 py-4 ${col.bg} border-b border-gray-100`}>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider">
-                        Resultado de tu evaluación
-                      </p>
-                      <p className={`font-black text-base mt-0.5 ${col.text}`}>
-                        {col.dot}{" "}
-                        {resultado.conceptoAptitud || "Pendiente de concepto"}
-                      </p>
-                    </div>
-                    <span
-                      className={`text-[10px] font-black px-3 py-1.5 rounded-full border ${col.badge}`}
-                    >
-                      {resultado.estadoHistoria || "Cerrada"}
-                    </span>
-                  </div>
-                </div>
-                {/* Datos */}
-                <div className="p-4 space-y-3">
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      ["👤 Nombre", resultado.nombres],
-                      [
-                        "🪪 Documento",
-                        `${resultado.docTipo || "CC"} ${resultado.docNumero}`,
-                      ],
-                      ["🏭 Empresa", resultado.empresaNombre || "--"],
-                      ["💼 Cargo", resultado.cargo || "--"],
-                      ["🔬 Tipo de examen", resultado.tipoExamen || "--"],
-                      ["📅 Fecha evaluación", resultado.fechaExamen || "--"],
-                      ["👨‍⚕️ Médico evaluador", resultado.medicoNombre || "--"],
-                      [
-                        "🔑 Código verificación",
-                        resultado.codigoVerificacion || "--",
-                      ],
-                    ].map(([k, v]) => (
-                      <div
-                        key={k}
-                        className="bg-gray-50 rounded-lg p-2.5 min-w-0"
-                      >
-                        <p className="text-[9px] font-black text-gray-400 uppercase truncate">
-                          {k}
-                        </p>
-                        <p className="text-xs font-bold text-gray-800 mt-0.5 break-words">
-                          {v || "--"}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  {resultado.restricciones && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
-                      <p className="text-[10px] font-black text-amber-700 uppercase mb-1">
-                        ⚠️ Restricciones / Recomendaciones
-                      </p>
-                      <p className="text-xs text-amber-800 leading-relaxed">
-                        {resultado.restricciones}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* ── DOCUMENTOS EMITIDOS ──────────────────────────────── */}
-                  {(() => {
-                    const meds = resultado.formulaMedicamentos || [];
-                    const derivs = resultado.derivaciones || [];
-                    const exams = resultado.solicitudExamenes || [];
-                    const incap = resultado.incapacidad || {};
-                    const hasDocs = meds.length > 0 || derivs.length > 0 || exams.length > 0 || incap?.aplica;
-                    if (!hasDocs) return null;
-                    const docBtns = [
-                      meds.length > 0 && {
-                        section: "formula",
-                        label: "💊 Receta Médica",
-                        sub: `${meds.length} medicamento${meds.length !== 1 ? "s" : ""}`,
-                        color: "bg-emerald-600 hover:bg-emerald-700",
-                        light: "bg-emerald-50 border-emerald-200",
-                      },
-                      derivs.length > 0 && {
-                        section: "derivaciones",
-                        label: "🏥 Derivaciones",
-                        sub: `${derivs.length} especialidad${derivs.length !== 1 ? "es" : ""}`,
-                        color: "bg-violet-600 hover:bg-violet-700",
-                        light: "bg-violet-50 border-violet-200",
-                      },
-                      exams.length > 0 && {
-                        section: "examenes",
-                        label: "🔬 Exámenes",
-                        sub: `${exams.length} examen${exams.length !== 1 ? "es" : ""}`,
-                        color: "bg-teal-600 hover:bg-teal-700",
-                        light: "bg-teal-50 border-teal-200",
-                      },
-                      incap?.aplica && {
-                        section: "incapacidad",
-                        label: "🛌 Incapacidad",
-                        sub: `${incap.dias || 0} día${(incap.dias || 0) !== 1 ? "s" : ""}`,
-                        color: "bg-red-600 hover:bg-red-700",
-                        light: "bg-red-50 border-red-200",
-                      },
-                    ].filter(Boolean);
-                    return (
-                      <div className="border border-indigo-100 bg-indigo-50 rounded-xl p-3">
-                        <p className="text-[10px] font-black text-indigo-700 uppercase tracking-wider mb-2">
-                          📋 Documentos Emitidos en tu Consulta
-                        </p>
-                        <div className="grid grid-cols-2 gap-2">
-                          {docBtns.map((btn) => (
-                            <button
-                              key={btn.section}
-                              onClick={() => _portalPrint(btn.section, resultado)}
-                              className={`flex flex-col items-center gap-1 py-3 px-2 rounded-xl text-white font-black text-[11px] shadow-sm transition ${btn.color}`}
-                            >
-                              <span className="text-sm">{btn.label}</span>
-                              <span className="text-[9px] font-normal opacity-90">{btn.sub}</span>
-                              <span className="text-[9px] opacity-75 mt-0.5">📥 Descargar PDF</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* ── DESCARGAR CERTIFICADO PDF ─────────────────────────── */}
-                  <button
-                    onClick={() => {
-                      const html = _generarCertificadoDesdePortal(resultado);
-                      const w = window.open(
-                        "",
-                        "_blank",
-                        "width=920,height=1150"
-                      );
-                      if (!w) {
-                        alert(
-                          "El navegador bloqueó la ventana emergente. Permita los popups para descargar el certificado."
-                        );
-                        return;
-                      }
-                      // Inyectar botón flotante de descarga
-                      const htmlConBtn = html.replace(
-                        "</body>",
-                        '<div class="np-dl">' +
-                          '<button onclick="window.print()">📥 Guardar / Imprimir PDF</button>' +
-                          "<p>En el diálogo de impresión,<br/>selecciona <b>Guardar como PDF</b></p>" +
-                          "</div></body>"
-                      );
-                      w.document.write(htmlConBtn);
-                      w.document.close();
-                      w.focus();
-                    }}
-                    className="w-full py-3 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-black text-sm rounded-xl flex items-center justify-center gap-2.5 shadow-sm transition"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className="w-4 h-4"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                      strokeWidth={2.5}
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M12 10v6m0 0l-3-3m3 3l3-3M3 17a3 3 0 003 3h12a3 3 0 003-3v-1M3 17V7a3 3 0 013-3h8l5 5v8"
-                      />
-                    </svg>
-                    Descargar Certificado PDF
-                  </button>
-                  <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-[10px] text-blue-700 leading-relaxed">
-                    <p className="font-black mb-0.5">
-                      🔒 Información confidencial - Res. 1995/1999
-                    </p>
-                    <p>
-                      Tu historia clínica completa es custodiada por el médico
-                      ocupacional. Para consultas sobre tu resultado, comunícate
-                      con el servicio médico.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
       </div>
+
       <div className="text-center pb-4 pt-2 text-[9px] text-gray-300">
         SISO OcupaSalud v4 · Res. 2346/2007 · Ley 1581/2012 · Res. 1843/2025
       </div>
