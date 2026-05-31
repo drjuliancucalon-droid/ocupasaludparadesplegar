@@ -54353,6 +54353,9 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
         vincularCajaMovCuenta={_v2VincularCajaMov}
         prefilledFromHc={billingV2Prefill}
         clearPrefilled={() => setBillingV2Prefill(null)}
+        activeDoctorData={activeDoctorData}
+        activeSignature={activeSignature}
+        numeroALetras={numeroALetras}
         goBack={goBack}
         showAlert={showAlert}
         workerGet={_workerGet}

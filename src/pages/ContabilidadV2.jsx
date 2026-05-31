@@ -75,6 +75,128 @@ const tipoVisual = (tipo) => tipo === "bloque_periodico"
   ? { label: "Bloque periódico", color: "bg-purple-100 text-purple-800 border-purple-300" }
   : { label: "Individual",        color: "bg-blue-100 text-blue-800 border-blue-300" };
 
+// ─── Impresión de cuenta de cobro V2 ─────────────────────────────────────
+// Abre ventana con HTML imprimible — replica visual del documento V1.
+function imprimirCuenta(cuenta, doctorData, firma) {
+  const w = window.open("", "_blank", "width=920,height=1150");
+  if (!w) { alert("Permite ventanas emergentes para imprimir."); return; }
+  const dd = doctorData || {};
+  const trabajadoresHtml = (cuenta.trabajadores || []).map((t, i) =>
+    `<tr><td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;">${i+1}</td>
+         <td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;">${(t.nombres || "")}</td>
+         <td style="padding:4px 8px;border-bottom:1px solid #e5e7eb;font-family:monospace;">${(t.docNumero || "")}</td>
+     </tr>`
+  ).join("");
+  const tienetrabajadores = (cuenta.trabajadores || []).length > 0;
+  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<title>Cuenta de Cobro #${String(cuenta.consecutivo).padStart(3,"0")}</title>
+<style>
+  @page { size: letter portrait; margin: 14mm; }
+  * { -webkit-print-color-adjust:exact!important; print-color-adjust:exact!important; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 11pt; color:#111; margin:0; padding:20px; }
+  .header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom: 2px solid #065f46; padding-bottom:12px; margin-bottom:20px; }
+  .doctor-info { font-size:9pt; line-height:1.4; }
+  .titulo { text-align:center; font-size:22pt; font-weight:900; letter-spacing:-1px; margin:20px 0; text-transform:uppercase; color:#065f46; }
+  .info-row { display:flex; justify-content:space-between; margin-bottom:8px; font-size:11pt; }
+  .info-label { font-weight:bold; color:#374151; }
+  .bloque { border:1px solid #d1d5db; border-radius:8px; padding:14px; margin:14px 0; }
+  .bloque-header { background:#065f46; color:white; padding:6px 12px; font-weight:bold; text-transform:uppercase; font-size:10pt; border-radius:6px 6px 0 0; display:flex; justify-content:space-between; }
+  .bloque-body { border:1px solid #065f46; border-top:none; padding:14px; border-radius:0 0 6px 6px; }
+  .monto-grande { font-size:24pt; font-weight:900; text-align:right; color:#111; }
+  .letras { font-style:italic; color:#6b7280; font-size:10pt; margin-top:6px; }
+  .banco-box { background:#eff6ff; border:1px solid #93c5fd; border-radius:8px; padding:12px; margin:14px 0; font-size:10pt; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; }
+  th { background:#f3f4f6; padding:6px 8px; text-align:left; font-size:10pt; border-bottom:2px solid #d1d5db; }
+  .firma-zone { margin-top:50px; border-top:1px solid #374151; padding-top:8px; text-align:center; font-size:10pt; }
+  .footer { margin-top:30px; padding-top:10px; border-top:1px solid #d1d5db; font-size:8pt; color:#6b7280; text-align:center; }
+  .btn-print { position:fixed; top:10px; right:10px; background:#065f46; color:white; border:none; padding:10px 24px; border-radius:10px; font-weight:900; cursor:pointer; box-shadow:0 4px 12px rgba(0,0,0,.2); }
+  @media print { .btn-print { display:none!important; } }
+</style></head><body>
+<button class="btn-print" onclick="window.print()">📥 Imprimir / PDF</button>
+<div class="header">
+  <div>
+    <p style="font-weight:900;font-size:14pt;margin:0;">${(dd.nombre || "DR. JULIAN CUCALON").toUpperCase()}</p>
+    <p style="font-size:8.5pt;margin:2px 0;color:#374151;">${(dd.titulo || "MEDICO ESPECIALISTA EN SST").toUpperCase()}</p>
+    <p style="font-size:8.5pt;margin:0;color:#374151;">RM: ${dd.licencia || "—"}</p>
+  </div>
+  <div class="doctor-info" style="text-align:right;">
+    <p style="margin:0;">${(dd.ciudad || "Popayán").toUpperCase()}</p>
+    <p style="margin:0;">Cel: ${dd.cel || dd.celular || "—"}</p>
+    <p style="margin:0;">Email: ${(dd.email || "").toLowerCase()}</p>
+  </div>
+</div>
+
+<p class="titulo">Cuenta de Cobro</p>
+
+<div class="info-row">
+  <span><span class="info-label">No.</span> ${String(cuenta.consecutivo).padStart(3,"0")}</span>
+  <span><span class="info-label">Fecha:</span> ${cuenta.fechaEmision || "—"}</span>
+</div>
+<div class="info-row">
+  <span><span class="info-label">Cliente:</span> ${cuenta.empresa?.nombre || "—"}</span>
+  <span><span class="info-label">NIT/CC:</span> ${cuenta.empresa?.nit || "—"}</span>
+</div>
+
+<div class="bloque-header">
+  <span>Concepto del Servicio</span>
+  <span>Valor</span>
+</div>
+<div class="bloque-body" style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;">
+  <div style="flex:1;">
+    <p style="margin:0;font-weight:bold;line-height:1.5;">${(cuenta.concepto || "EXAMENES MEDICOS OCUPACIONALES").toUpperCase()}</p>
+    ${cuenta.subtipoExamen ? `<p style="margin:4px 0 0;font-size:9pt;color:#6b7280;">Subtipo: ${cuenta.subtipoExamen}</p>` : ""}
+    ${cuenta.periodo ? `<p style="margin:2px 0 0;font-size:9pt;color:#6b7280;">Periodo: ${cuenta.periodo}</p>` : ""}
+    ${cuenta.cantidad > 1 ? `<p style="margin:2px 0 0;font-size:9pt;color:#6b7280;">${cuenta.cantidad} servicios × $${(cuenta.precioUnidad || 0).toLocaleString("es-CO")}</p>` : ""}
+  </div>
+  <div style="text-align:right;min-width:180px;">
+    <p class="monto-grande">$${(cuenta.monto || 0).toLocaleString("es-CO")}</p>
+    <p class="letras">Son: ${cuenta.amountWords || "—"}</p>
+  </div>
+</div>
+
+${tienetrabajadores ? `
+<div style="margin:20px 0;">
+  <p style="font-weight:bold;font-size:10pt;color:#374151;margin-bottom:6px;">TRABAJADORES INCLUIDOS (${cuenta.trabajadores.length}):</p>
+  <table>
+    <thead><tr><th>#</th><th>Nombre</th><th>Documento</th></tr></thead>
+    <tbody>${trabajadoresHtml}</tbody>
+  </table>
+</div>` : ""}
+
+<div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+  <div class="banco-box">
+    <p style="margin:0;font-weight:bold;text-transform:uppercase;color:#374151;font-size:9pt;">Información de Pago</p>
+    <p style="margin:6px 0 0;"><b>${(cuenta.datosBancarios?.banco || "—").toUpperCase()}</b></p>
+    <p style="margin:2px 0;">Tipo: ${cuenta.datosBancarios?.tipoCuenta || "Ahorros"}</p>
+    <p style="margin:2px 0;font-family:monospace;font-size:11pt;">${cuenta.datosBancarios?.numeroCuenta || "—"}</p>
+    <p style="margin:6px 0 0;font-size:9pt;">Titular: ${(dd.nombre || "—")}</p>
+  </div>
+  <div class="banco-box" style="background:#fef3c7;border-color:#fbbf24;">
+    <p style="margin:0;font-weight:bold;text-transform:uppercase;color:#374151;font-size:9pt;">Estado del cobro</p>
+    <p style="margin:6px 0 0;font-weight:bold;text-transform:uppercase;">${(cuenta.estado || "pendiente").toUpperCase()}</p>
+    ${cuenta.fechaPago ? `<p style="margin:2px 0;font-size:9pt;">Pagada: ${cuenta.fechaPago}</p>` : ""}
+    ${cuenta.metodoPago ? `<p style="margin:2px 0;font-size:9pt;">Método: ${cuenta.metodoPago}</p>` : ""}
+    ${cuenta.fechaVencimiento ? `<p style="margin:2px 0;font-size:9pt;">Vencimiento: ${cuenta.fechaVencimiento}</p>` : ""}
+  </div>
+</div>
+
+${cuenta.notas ? `<div style="margin-top:14px;padding:10px;background:#f9fafb;border-left:3px solid #6b7280;font-size:10pt;"><b>Notas:</b> ${cuenta.notas}</div>` : ""}
+
+<div class="firma-zone">
+  ${firma ? `<img src="${firma}" style="max-height:60px;display:block;margin:0 auto 8px;" />` : ""}
+  <p style="margin:0;font-weight:bold;">${(dd.nombre || "—").toUpperCase()}</p>
+  <p style="margin:2px 0;font-size:9pt;">CC ${dd.cc || dd.identificacion || "—"}</p>
+  <p style="margin:0;font-size:9pt;">${(dd.titulo || "Médico").toUpperCase()}</p>
+</div>
+
+<div class="footer">
+  Generado por SISO OcupaSalud · ${new Date().toLocaleString("es-CO")} · Consecutivo único · No modificable después de emitido
+</div>
+</body></html>`;
+  w.document.write(html);
+  w.document.close();
+}
+
 export default function ContabilidadV2({
   currentUser,
   companies,
@@ -84,6 +206,9 @@ export default function ContabilidadV2({
   vincularCajaMovCuenta, // (movId, cuentaV2Id) → void
   prefilledFromHc,     // { paciente, empresa, monto, cajaMovId, subtipo } al venir desde cierre HC
   clearPrefilled,      // () → void
+  activeDoctorData,    // datos del médico activo (banco, cuenta, firma, etc.)
+  activeSignature,     // base64 firma
+  numeroALetras,       // helper desde App para convertir monto a texto
   goBack,
   showAlert,
   // funciones de I/O del Worker D1 expuestas desde App
@@ -222,11 +347,26 @@ export default function ContabilidadV2({
       // VINCULACIÓN bidireccional con cajaMovimientos (V1)
       vinculaCajaMovIds: datos.vinculaCajaMovIds || [],
       portalPublicado: false,
+      // DATOS BANCARIOS auto-fill desde médico (para impresión)
+      datosBancarios: {
+        banco: activeDoctorData?.banco || datos.banco || "",
+        tipoCuenta: activeDoctorData?.tipoCuenta || datos.tipoCuenta || "Ahorros",
+        numeroCuenta: activeDoctorData?.numeroCuenta || datos.numeroCuenta || "",
+      },
+      emitidaPor: datos.emitidaPor || "organizacion",  // organizacion | medico_independiente
+      emitidaPorDoctorId: currentUser?.user || "drcucalon",
+      amountWords: "",  // se calcula abajo
       createdAt: new Date().toISOString(),
       createdBy: currentUser?.user || "drcucalon",
       updatedAt: new Date().toISOString(),
     };
     cuenta.monto = Math.max(0, (cuenta.precioUnidad * cuenta.cantidad) - cuenta.descuento);
+    // Calcular monto en letras (auto)
+    try {
+      if (typeof numeroALetras === "function") {
+        cuenta.amountWords = (numeroALetras(cuenta.monto) || "").toLowerCase() + " pesos mcte";
+      }
+    } catch {}
 
     const nuevo = {
       ...billing,
@@ -624,6 +764,7 @@ export default function ContabilidadV2({
           cuenta={showDetalle}
           onClose={() => setShowDetalle(null)}
           onCambiarEstado={cambiarEstado}
+          onImprimir={() => imprimirCuenta(showDetalle, activeDoctorData, activeSignature)}
         />
       )}
     </div>
@@ -767,7 +908,7 @@ function CrearCuentaModal({ onClose, onCreate, companies, consecutivoSiguiente, 
 // ════════════════════════════════════════════════════════════════════════════
 // MODAL DETALLE / CAMBIAR ESTADO
 // ════════════════════════════════════════════════════════════════════════════
-function DetalleCuentaModal({ cuenta, onClose, onCambiarEstado }) {
+function DetalleCuentaModal({ cuenta, onClose, onCambiarEstado, onImprimir }) {
   const [showPagar, setShowPagar] = useState(false);
   const [showAnular, setShowAnular] = useState(false);
   const [fechaPago, setFechaPago] = useState(todayISO());
@@ -840,6 +981,25 @@ function DetalleCuentaModal({ cuenta, onClose, onCambiarEstado }) {
             <p><b>Fecha:</b> {cuenta.fechaAnulacion}</p>
             <p><b>Motivo:</b> {cuenta.motivoAnulacion}</p>
           </div>
+        )}
+
+        {/* Datos bancarios visibles (si los tiene) */}
+        {cuenta.datosBancarios?.banco && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs">
+            <p className="font-black text-blue-800 mb-1">💳 Información de pago</p>
+            <p><b>Banco:</b> {cuenta.datosBancarios.banco}</p>
+            <p><b>Tipo cuenta:</b> {cuenta.datosBancarios.tipoCuenta}</p>
+            <p><b>Nº cuenta:</b> <span className="font-mono">{cuenta.datosBancarios.numeroCuenta}</span></p>
+          </div>
+        )}
+
+        {/* Botón imprimir disponible siempre */}
+        {onImprimir && (
+          <button onClick={onImprimir}
+            className="w-full py-2 bg-gray-700 text-white rounded-lg text-xs font-black hover:bg-gray-800 transition flex items-center justify-center gap-2"
+          >
+            🖨️ Imprimir / Descargar PDF
+          </button>
         )}
 
         {/* Acciones según estado */}
