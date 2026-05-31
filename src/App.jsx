@@ -16861,6 +16861,32 @@ function AppInner() {
       console.warn("[_publicarAlPortalEmpresa] error:", e?.message);
     }
   };
+  // ─── Helpers vinculación cajaMov (V1) ↔ Cuenta V2 ───────────────────────
+  // Marcar cajaMov como cobrado (cuando cuenta V2 vinculada se paga)
+  const _v2MarcarCajaMovCobrado = (movId, monto, formaPago) => {
+    setCajaMovimientos(prev => {
+      const updated = prev.map(m => m.id === movId
+        ? { ...m, estado: "cobrado", montoCobrado: monto, formaPagoCobro: formaPago || "transferencia", cobradoEn: new Date().toISOString() }
+        : m
+      );
+      try { localStorage.setItem("siso_caja_movs", JSON.stringify(updated)); } catch {}
+      _sbSet(`siso_caja_movs_${currentUser?.user || "shared"}`, updated);
+      return updated;
+    });
+  };
+  // Vincular cajaMov a cuenta V2 (referencia bidireccional)
+  const _v2VincularCajaMov = (movId, cuentaV2Id) => {
+    setCajaMovimientos(prev => {
+      const updated = prev.map(m => m.id === movId
+        ? { ...m, vinculaCuentaV2Id: cuentaV2Id }
+        : m
+      );
+      try { localStorage.setItem("siso_caja_movs", JSON.stringify(updated)); } catch {}
+      _sbSet(`siso_caja_movs_${currentUser?.user || "shared"}`, updated);
+      return updated;
+    });
+  };
+
   const saveInforme = (informe) => {
     const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo && i.tipo === informe.tipo)), informe];
     setSavedInformes(updated);
@@ -17128,6 +17154,10 @@ function AppInner() {
   const [savedBillsList, setSavedBillsList] = useState([]);
   const [showSavedBills, setShowSavedBills] = useState(false); // Panel cuentas guardadas
   const [editingBillId, setEditingBillId] = useState(null);    // ID de cuenta en edición
+  // ── Modal post-cierre HC: ofrece crear cuenta V2 ──────────────────────────
+  const [postCierreHC, setPostCierreHC] = useState(null);  // { paciente, empresa, subtipo, monto, cajaMovId, code }
+  // ── Prefill para ContabilidadV2 al navegar desde cierre HC ───────────────
+  const [billingV2Prefill, setBillingV2Prefill] = useState(null);
   // ── B-F1-03 Portafolio de servicios ──────────────────────────────────
   const [portafolioItems, setPortafolioItems] = useState(() => {
     try {
@@ -21291,15 +21321,29 @@ const handleLogin = (u, p) => {
           };
           const nuevosCaja = [...cajaMovimientos, autoMov];
           saveCaja(nuevosCaja);
+          // GUARDAR datos para el modal post-cierre (decisión usuario sobre cuenta V2)
+          setPostCierreHC({
+            paciente: { nombres: closed.nombres, docNumero: closed.docNumero },
+            empresa: _empCliente
+              ? { id: _empCliente.id, nit: _empCliente.nit, nombre: _empCliente.nombre }
+              : { id: "particular", nit: "1", nombre: "PARTICULAR" },
+            subtipo: _tipoConsulta.includes("ingreso") ? "INGRESO"
+                    : _tipoConsulta.includes("periodic") ? "PERIODICO"
+                    : _tipoConsulta.includes("egreso") ? "EGRESO"
+                    : _tipoConsulta.includes("postincap") ? "POSTINCAPACIDAD"
+                    : _tipoConsulta.includes("seguim") ? "SEGUIMIENTO"
+                    : "OTRO",
+            monto: _tarifa || 0,
+            cajaMovId: autoMov.id,
+            code,
+          });
         } catch (_autoErr) {
           console.warn("[PASO3] Auto-billing error:", _autoErr);
+          // Si falla la creación del cajaMov, mostrar alert clásico
+          showAlert(
+            `✅ Historia cerrada y firmada digitalmente.\n📋 Código QR: ${code}\n🔐 Hash integridad: ${hashHC.substring(0, 20)}...\n⚖️ Válido: Ley 527/1999 - Decreto 2364/2012`
+          );
         }
-        showAlert(
-          `✅ Historia cerrada y firmada digitalmente.\n📋 Código QR: ${code}\n🔐 Hash integridad: ${hashHC.substring(
-            0,
-            20
-          )}...\n⚖️ Válido: Ley 527/1999 - Decreto 2364/2012`
-        );
         logAccess("Cierre", data.id, dataType); // AUDIT: Res. 1888/2025 RDA
       }
     );
@@ -54304,6 +54348,11 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
         currentUser={currentUser}
         companies={companies}
         savedBillsLegacy={savedBillsList}
+        cajaMovimientos={cajaMovimientos}
+        marcarCajaMovCobrado={_v2MarcarCajaMovCobrado}
+        vincularCajaMovCuenta={_v2VincularCajaMov}
+        prefilledFromHc={billingV2Prefill}
+        clearPrefilled={() => setBillingV2Prefill(null)}
         goBack={goBack}
         showAlert={showAlert}
         workerGet={_workerGet}
@@ -55907,6 +55956,62 @@ body{padding-top:52px;}
         />
       ) : (
         renderCurrentView()
+      )}
+      {/* MODAL post-cierre HC — Decisión sobre cuenta V2 */}
+      {postCierreHC && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="text-center">
+              <div className="text-5xl mb-2">✅</div>
+              <p className="font-black text-lg text-emerald-800">Historia cerrada y firmada</p>
+              <p className="text-[10px] text-gray-500 font-mono mt-1">Código QR: {postCierreHC.code}</p>
+            </div>
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+              <p className="text-xs font-bold text-emerald-800">💰 Movimiento de caja generado</p>
+              <p className="text-2xl font-black text-emerald-800 mt-1">
+                ${(postCierreHC.monto || 0).toLocaleString("es-CO")}
+              </p>
+              <p className="text-[10px] text-emerald-700">
+                {postCierreHC.subtipo} · {postCierreHC.empresa.nombre}
+              </p>
+            </div>
+            <p className="text-xs text-gray-600 text-center">¿Cómo deseas continuar con esta atención?</p>
+            <div className="space-y-2">
+              {/* OPCIÓN 1: Crear cuenta YA — navega a V2 con prefill y abre modal directo */}
+              {currentUser?.user === "drcucalon" && (
+                <button
+                  onClick={() => {
+                    setBillingV2Prefill({
+                      paciente: postCierreHC.paciente,
+                      empresa: postCierreHC.empresa,
+                      subtipo: postCierreHC.subtipo,
+                      monto: postCierreHC.monto,
+                      cajaMovId: postCierreHC.cajaMovId,
+                    });
+                    setPostCierreHC(null);
+                    goTo("billing_v2");
+                  }}
+                  className="w-full py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-black hover:bg-emerald-700 transition flex items-center justify-center gap-2"
+                >
+                  💸 Crear cuenta de cobro ahora (Contabilidad V2)
+                </button>
+              )}
+              {/* OPCIÓN 2: Dejar pendiente — solo cierra el modal */}
+              <button
+                onClick={() => setPostCierreHC(null)}
+                className="w-full py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded-xl text-xs font-bold hover:bg-gray-200 transition"
+              >
+                ⏳ Dejar pendiente en caja
+                <span className="block text-[9px] text-gray-500 font-normal mt-0.5">
+                  Aparecerá en "Por facturar" de Contabilidad V2
+                </span>
+              </button>
+            </div>
+            <p className="text-[9px] text-gray-400 text-center pt-2 border-t border-gray-100">
+              ⚖️ Hash de integridad registrado · Ley 527/1999 - Decreto 2364/2012
+            </p>
+          </div>
+        </div>
       )}
       {renderMensajesOverlay()}
       {/* MODAL: Envío Integral por Empresa */}

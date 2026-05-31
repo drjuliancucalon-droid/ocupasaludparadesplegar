@@ -36,6 +36,24 @@ const nitNorm = (n) => (n || "").toString().replace(/[^0-9]/g, "");
 // Estructura inicial de billing v2
 const EMPTY_BILLING = { version: "v2", consecutivo: 0, cuentas: [], historial: [] };
 
+// Clave única para LS + D1
+const BILLING_KEY = "siso_billing_v2";
+
+// Lee desde localStorage de manera segura
+const lsRead = () => {
+  try {
+    const raw = localStorage.getItem(BILLING_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.cuentas)) return { ...EMPTY_BILLING, ...parsed };
+  } catch {}
+  return null;
+};
+// Escribe a localStorage de manera segura
+const lsWrite = (data) => {
+  try { localStorage.setItem(BILLING_KEY, JSON.stringify(data)); return true; } catch { return false; }
+};
+
 const SUBTIPOS = ["PERIODICO", "INGRESO", "EGRESO", "POSTINCAPACIDAD", "SEGUIMIENTO", "PARTICULAR", "OTRO"];
 const SUBTIPO_TARIFA_MAP = {
   "INGRESO":       "tarifaIngreso",
@@ -60,7 +78,12 @@ const tipoVisual = (tipo) => tipo === "bloque_periodico"
 export default function ContabilidadV2({
   currentUser,
   companies,
-  savedBillsLegacy,  // siso_saved_bills_drcucalon — solo lectura
+  savedBillsLegacy,    // siso_saved_bills_drcucalon — solo lectura
+  cajaMovimientos,     // V1 cajaMov — para pestaña "Por facturar"
+  marcarCajaMovCobrado, // (movId) → void — cuando se factura desde cajaMov
+  vincularCajaMovCuenta, // (movId, cuentaV2Id) → void
+  prefilledFromHc,     // { paciente, empresa, monto, cajaMovId, subtipo } al venir desde cierre HC
+  clearPrefilled,      // () → void
   goBack,
   showAlert,
   // funciones de I/O del Worker D1 expuestas desde App
@@ -98,40 +121,73 @@ export default function ContabilidadV2({
 
   const [showCrear, setShowCrear] = useState(false);
   const [showDetalle, setShowDetalle] = useState(null); // cuenta seleccionada
+  const [selectedMovIds, setSelectedMovIds] = useState(new Set()); // por facturar — selección múltiple
 
-  // ─── Cargar billing desde D1 ────────────────────────────────────────────
+  // Auto-abrir modal crear si llegamos con prefilled desde cierre HC
+  useEffect(() => {
+    if (prefilledFromHc && !loading) {
+      setShowCrear(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefilledFromHc, loading]);
+
+  // ─── Cargar billing — OFFLINE-FIRST: LS primero, D1 después ─────────────
+  // Estrategia: leer LS inmediato para mostrar UI sin esperar red.
+  // En paralelo leer D1; si D1 tiene versión más reciente (mayor consecutivo
+  // o updatedAt), reemplazar LS con D1.
   const cargarBilling = useCallback(async () => {
-    if (!workerGet) { setLoading(false); return; }
-    try {
-      const val = await workerGet("siso_billing_v2");
-      if (val && typeof val === "object" && Array.isArray(val.cuentas)) {
-        setBilling({ ...EMPTY_BILLING, ...val });
-      } else {
-        setBilling(EMPTY_BILLING);
-      }
-    } catch (e) {
-      console.warn("[ContabilidadV2] load failed:", e?.message);
-    } finally {
+    // 1) LS instantáneo
+    const fromLS = lsRead();
+    if (fromLS) {
+      setBilling(fromLS);
       setLoading(false);
     }
+    // 2) D1 en background — fuente de verdad cuando hay red
+    if (workerGet) {
+      try {
+        const fromD1 = await workerGet(BILLING_KEY);
+        if (fromD1 && typeof fromD1 === "object" && Array.isArray(fromD1.cuentas)) {
+          const merged = { ...EMPTY_BILLING, ...fromD1 };
+          // Solo reemplazar si D1 tiene MÁS consecutivo o LS no existe
+          if (!fromLS || (merged.consecutivo || 0) >= (fromLS.consecutivo || 0)) {
+            setBilling(merged);
+            lsWrite(merged); // sincronizar LS con D1
+          }
+        } else if (!fromLS) {
+          setBilling(EMPTY_BILLING);
+        }
+      } catch (e) {
+        console.warn("[ContabilidadV2] D1 load failed (LS still works):", e?.message);
+        if (!fromLS) setBilling(EMPTY_BILLING);
+      }
+    } else if (!fromLS) {
+      setBilling(EMPTY_BILLING);
+    }
+    setLoading(false);
   }, [workerGet]);
 
   useEffect(() => { cargarBilling(); }, [cargarBilling]);
 
-  // ─── Guardar billing a D1 ────────────────────────────────────────────────
+  // ─── Persistir — LS PRIMERO (síncrono), D1 fire-and-forget ──────────────
+  // Garantía: el dato queda guardado en LS antes de retornar.
+  // Si D1 falla por red, el dato sobrevive y se sincronizará después.
   const persistir = async (nuevoBilling) => {
-    if (!workerSet) {
-      showAlert?.("Sistema de guardado no disponible.");
-      return false;
-    }
     setSaving(true);
     try {
-      const ok = await workerSet("siso_billing_v2", nuevoBilling);
-      if (!ok) {
-        showAlert?.("Error al guardar. Reintenta.");
+      // 1) LS sync — esto NUNCA debe fallar
+      const lsOk = lsWrite(nuevoBilling);
+      if (!lsOk) {
+        showAlert?.("⚠️ No se pudo guardar localmente (LS lleno?). Reintenta.");
         return false;
       }
+      // 2) Actualizar state inmediatamente — UI responde sin esperar D1
       setBilling(nuevoBilling);
+      // 3) D1 en background — best-effort, NO bloquea UI
+      if (workerSet) {
+        workerSet(BILLING_KEY, nuevoBilling).then(ok => {
+          if (!ok) console.warn("[ContabilidadV2] D1 sync diferido falló (LS OK)");
+        }).catch(e => console.warn("[ContabilidadV2] D1 error:", e?.message));
+      }
       return true;
     } finally {
       setSaving(false);
@@ -163,6 +219,8 @@ export default function ContabilidadV2({
       notas: datos.notas || "",
       vinculaInforme: datos.vinculaInforme || null,
       vinculaCustodia: datos.vinculaCustodia || null,
+      // VINCULACIÓN bidireccional con cajaMovimientos (V1)
+      vinculaCajaMovIds: datos.vinculaCajaMovIds || [],
       portalPublicado: false,
       createdAt: new Date().toISOString(),
       createdBy: currentUser?.user || "drcucalon",
@@ -182,6 +240,15 @@ export default function ContabilidadV2({
     };
     const ok = await persistir(nuevo);
     if (ok) {
+      // VINCULAR cajaMovs (V1) a esta cuenta V2
+      if (vincularCajaMovCuenta && cuenta.vinculaCajaMovIds.length > 0) {
+        for (const movId of cuenta.vinculaCajaMovIds) {
+          try { vincularCajaMovCuenta(movId, cuenta.id); } catch {}
+        }
+      }
+      // Limpiar selección y prefilled
+      setSelectedMovIds(new Set());
+      if (clearPrefilled) clearPrefilled();
       setShowCrear(false);
       showAlert?.(`✅ Cuenta #${String(consec).padStart(3, "0")} creada por ${fmtCOP(cuenta.monto)}.`);
     }
@@ -217,6 +284,12 @@ export default function ContabilidadV2({
     };
     const ok = await persistir(nuevo);
     if (ok) {
+      // PROPAGACIÓN: si la cuenta se marca pagada, cobrar los cajaMovs vinculados
+      if (nuevoEstado === "pagada" && marcarCajaMovCobrado && Array.isArray(cuenta?.vinculaCajaMovIds)) {
+        for (const movId of cuenta.vinculaCajaMovIds) {
+          try { marcarCajaMovCobrado(movId, cuenta.monto, extras.metodoPago || "transferencia"); } catch {}
+        }
+      }
       setShowDetalle(null);
       showAlert?.(`✅ Cuenta #${String(cuenta?.consecutivo).padStart(3, "0")} → ${estadoVisuales[nuevoEstado]?.label || nuevoEstado}`);
     }
@@ -314,11 +387,18 @@ export default function ContabilidadV2({
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-4 border-b border-gray-200">
+        <div className="flex gap-2 mb-4 border-b border-gray-200 flex-wrap">
           <button onClick={() => setTab("activas")}
             className={`px-4 py-2 text-sm font-black border-b-2 transition ${tab === "activas" ? "border-emerald-600 text-emerald-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}
           >
-            📋 Activas ({billing.cuentas?.length || 0})
+            📋 Cuentas ({billing.cuentas?.length || 0})
+          </button>
+          <button onClick={() => setTab("porfacturar")}
+            className={`px-4 py-2 text-sm font-black border-b-2 transition relative ${tab === "porfacturar" ? "border-orange-600 text-orange-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+          >
+            💸 Por facturar ({(() => {
+              return (cajaMovimientos || []).filter(m => m._autoGenerated && m.estado === "pendiente" && !m.vinculaCuentaV2Id).length;
+            })()})
           </button>
           <button onClick={() => setTab("historico")}
             className={`px-4 py-2 text-sm font-black border-b-2 transition ${tab === "historico" ? "border-amber-600 text-amber-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}
@@ -453,6 +533,59 @@ export default function ContabilidadV2({
           </>
         )}
 
+        {/* Por facturar tab */}
+        {tab === "porfacturar" && (
+          <PorFacturarTab
+            cajaMovimientos={cajaMovimientos || []}
+            companies={companies}
+            selectedMovIds={selectedMovIds}
+            setSelectedMovIds={setSelectedMovIds}
+            onFacturarIndividual={(mov) => {
+              // Pre-fill data y abrir modal crear
+              const empresa = companies.find(c => c.id === mov.empresaClienteId || c.nombre === mov.empresaClienteNombre);
+              const subtipo = (mov.tipoConsulta || "").toUpperCase().includes("PERIOD") ? "PERIODICO" :
+                (mov.tipoConsulta || "").toUpperCase().includes("INGRESO") ? "INGRESO" :
+                (mov.tipoConsulta || "").toUpperCase().includes("EGRESO") ? "EGRESO" : "OTRO";
+              // Configurar prefill simulado
+              setShowCrear({
+                __prefill: {
+                  tipo: "individual",
+                  subtipo,
+                  empresaId: empresa?.id || "",
+                  precioUnidad: mov.monto || "",
+                  cantidad: 1,
+                  trabajadores: [{ docNumero: mov.pacienteDoc, nombres: mov.pacienteNombre }],
+                  vinculaCajaMovIds: [mov.id],
+                  concepto: mov.concepto || "",
+                }
+              });
+            }}
+            onFacturarBloque={() => {
+              const movs = (cajaMovimientos || []).filter(m => selectedMovIds.has(m.id));
+              if (movs.length < 2) { showAlert?.("Selecciona al menos 2 movimientos para agrupar en bloque."); return; }
+              // Verificar misma empresa
+              const empresaIds = new Set(movs.map(m => m.empresaClienteId).filter(Boolean));
+              if (empresaIds.size > 1) { showAlert?.("Todos los movimientos deben ser de la MISMA empresa para agrupar."); return; }
+              const empresa = companies.find(c => c.id === movs[0].empresaClienteId);
+              const total = movs.reduce((s, m) => s + Number(m.monto || 0), 0);
+              const precioU = movs.length > 0 ? Math.floor(total / movs.length) : 0;
+              const subtipo = "PERIODICO"; // bloques son normalmente periódicos
+              setShowCrear({
+                __prefill: {
+                  tipo: "bloque_periodico",
+                  subtipo,
+                  empresaId: empresa?.id || "",
+                  precioUnidad: precioU,
+                  cantidad: movs.length,
+                  trabajadores: movs.map(m => ({ docNumero: m.pacienteDoc, nombres: m.pacienteNombre })),
+                  vinculaCajaMovIds: movs.map(m => m.id),
+                  concepto: `Examen ${subtipo} × ${movs.length} trabajadores · ${empresa?.nombre || ""}`,
+                }
+              });
+            }}
+          />
+        )}
+
         {/* Histórico tab */}
         {tab === "historico" && (
           <HistoricoTab cuentas={savedBillsLegacy || []} />
@@ -468,10 +601,20 @@ export default function ContabilidadV2({
       {/* Modal crear cuenta */}
       {showCrear && (
         <CrearCuentaModal
-          onClose={() => setShowCrear(false)}
+          onClose={() => { setShowCrear(false); if (clearPrefilled) clearPrefilled(); }}
           onCreate={crearCuenta}
           companies={companies}
           consecutivoSiguiente={(billing.consecutivo || 0) + 1}
+          prefill={showCrear?.__prefill || (prefilledFromHc ? {
+            tipo: "individual",
+            subtipo: (prefilledFromHc.subtipo || "OTRO").toUpperCase(),
+            empresaId: prefilledFromHc.empresa?.id || "",
+            precioUnidad: prefilledFromHc.monto || "",
+            cantidad: 1,
+            trabajadores: prefilledFromHc.paciente ? [{ docNumero: prefilledFromHc.paciente.docNumero, nombres: prefilledFromHc.paciente.nombres }] : [],
+            vinculaCajaMovIds: prefilledFromHc.cajaMovId ? [prefilledFromHc.cajaMovId] : [],
+            concepto: `Examen ${(prefilledFromHc.subtipo || "OTRO").toUpperCase()} · ${prefilledFromHc.paciente?.nombres || "Particular"}`,
+          } : null)}
         />
       )}
 
@@ -490,17 +633,20 @@ export default function ContabilidadV2({
 // ════════════════════════════════════════════════════════════════════════════
 // MODAL CREAR CUENTA
 // ════════════════════════════════════════════════════════════════════════════
-function CrearCuentaModal({ onClose, onCreate, companies, consecutivoSiguiente }) {
-  const [tipo, setTipo] = useState("individual");
-  const [subtipo, setSubtipo] = useState("INGRESO");
-  const [empresaId, setEmpresaId] = useState("");
+function CrearCuentaModal({ onClose, onCreate, companies, consecutivoSiguiente, prefill }) {
+  const [tipo, setTipo] = useState(prefill?.tipo || "individual");
+  const [subtipo, setSubtipo] = useState(prefill?.subtipo || "INGRESO");
+  const [empresaId, setEmpresaId] = useState(prefill?.empresaId || "");
   const [fechaEmision, setFechaEmision] = useState(todayISO());
   const [fechaVencimiento, setFechaVencimiento] = useState("");
-  const [precioUnidad, setPrecioUnidad] = useState("");
-  const [cantidad, setCantidad] = useState(1);
+  const [precioUnidad, setPrecioUnidad] = useState(prefill?.precioUnidad ? String(prefill.precioUnidad) : "");
+  const [cantidad, setCantidad] = useState(prefill?.cantidad || 1);
   const [descuento, setDescuento] = useState(0);
-  const [concepto, setConcepto] = useState("");
+  const [concepto, setConcepto] = useState(prefill?.concepto || "");
   const [notas, setNotas] = useState("");
+  // Datos pre-cargados que se incluyen al crear (no editables aquí)
+  const trabajadoresPrefill = prefill?.trabajadores || [];
+  const vinculaCajaMovIds   = prefill?.vinculaCajaMovIds || [];
 
   const empresa = companies.find(c => c.id === empresaId);
   const periodo = yearMonth(fechaEmision);
@@ -525,6 +671,8 @@ function CrearCuentaModal({ onClose, onCreate, companies, consecutivoSiguiente }
       precioUnidad: Number(precioUnidad), cantidad: Number(cantidad), descuento: Number(descuento) || 0,
       concepto: concepto || `${subtipo} ${cantidad > 1 ? `× ${cantidad}` : ""}`.trim(),
       notas, periodo,
+      trabajadores: trabajadoresPrefill,
+      vinculaCajaMovIds,
     };
     onCreate(datos);
   };
@@ -746,6 +894,167 @@ function DetalleCuentaModal({ cuenta, onClose, onCambiarEstado }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TAB POR FACTURAR — cajaMovs pendientes (V1) listos para facturar a V2
+// ════════════════════════════════════════════════════════════════════════════
+function PorFacturarTab({ cajaMovimientos, companies, selectedMovIds, setSelectedMovIds, onFacturarIndividual, onFacturarBloque }) {
+  const [filterEmpresa, setFilterEmpresa] = useState("");
+  const [filterMes, setFilterMes] = useState(""); // vacío = todos
+  const pendientes = useMemo(() => {
+    return (cajaMovimientos || [])
+      .filter(m => m._autoGenerated && m.estado === "pendiente" && !m.vinculaCuentaV2Id)
+      .filter(m => {
+        if (filterMes && yearMonth(m.fecha) !== filterMes) return false;
+        if (filterEmpresa) {
+          const q = filterEmpresa.toLowerCase();
+          if (!(m.empresaClienteNombre || "").toLowerCase().includes(q)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+  }, [cajaMovimientos, filterMes, filterEmpresa]);
+
+  const total = pendientes.reduce((s, m) => s + Number(m.monto || 0), 0);
+  const selected = pendientes.filter(m => selectedMovIds.has(m.id));
+  const totalSelected = selected.reduce((s, m) => s + Number(m.monto || 0), 0);
+  // Agrupar por empresa
+  const byEmpresa = useMemo(() => {
+    const map = new Map();
+    for (const m of pendientes) {
+      const k = m.empresaClienteId || m.empresaClienteNombre || "particular";
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(m);
+    }
+    return [...map.entries()].map(([k, movs]) => ({
+      empresaKey: k,
+      empresaNombre: movs[0].empresaClienteNombre || "PARTICULAR",
+      movs,
+      total: movs.reduce((s, m) => s + Number(m.monto || 0), 0),
+    })).sort((a, b) => b.total - a.total);
+  }, [pendientes]);
+
+  const toggleSelect = (id) => {
+    const next = new Set(selectedMovIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedMovIds(next);
+  };
+  const toggleAllOfEmpresa = (grupoMovs) => {
+    const next = new Set(selectedMovIds);
+    const allSelected = grupoMovs.every(m => next.has(m.id));
+    for (const m of grupoMovs) {
+      if (allSelected) next.delete(m.id);
+      else next.add(m.id);
+    }
+    setSelectedMovIds(next);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-orange-50 border border-orange-200 rounded-2xl p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <AlertTriangle className="w-5 h-5 text-orange-700" />
+          <p className="font-black text-orange-900">Movimientos pendientes de facturar</p>
+        </div>
+        <p className="text-xs text-orange-800">
+          Estos son los movimientos generados automáticamente al cerrar HC (V1) que aún no se han convertido
+          en cuentas de cobro V2. Selecciona uno o varios y conviértelos en cuentas con consecutivo único.
+        </p>
+        <div className="mt-3 grid md:grid-cols-3 gap-2 text-xs">
+          <div className="bg-white border border-orange-200 rounded-xl p-3">
+            <p className="text-[10px] text-gray-500 uppercase">Total pendiente</p>
+            <p className="text-lg font-black text-orange-700">{fmtCOP(total)}</p>
+            <p className="text-[10px] text-gray-500">{pendientes.length} movimientos</p>
+          </div>
+          <div className="bg-white border border-orange-200 rounded-xl p-3">
+            <p className="text-[10px] text-gray-500 uppercase">Empresas distintas</p>
+            <p className="text-lg font-black text-orange-700">{byEmpresa.length}</p>
+            <p className="text-[10px] text-gray-500">grupos</p>
+          </div>
+          <div className="bg-white border border-orange-200 rounded-xl p-3">
+            <p className="text-[10px] text-gray-500 uppercase">Seleccionados</p>
+            <p className="text-lg font-black text-emerald-700">{fmtCOP(totalSelected)}</p>
+            <p className="text-[10px] text-gray-500">{selected.length} movs</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-3 grid md:grid-cols-3 gap-2">
+        <input value={filterEmpresa} onChange={e => setFilterEmpresa(e.target.value)}
+          placeholder="🔍 Buscar empresa..."
+          className="border border-gray-300 rounded-lg px-3 py-1.5 text-xs"
+        />
+        <input type="month" value={filterMes} onChange={e => setFilterMes(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-1.5 text-xs"
+        />
+        <button
+          onClick={onFacturarBloque}
+          disabled={selected.length < 2}
+          className="bg-purple-600 text-white rounded-lg px-3 py-1.5 text-xs font-black hover:bg-purple-700 transition disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          🧾 Facturar como bloque ({selected.length})
+        </button>
+      </div>
+
+      {byEmpresa.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+          <CheckCircle2 className="w-12 h-12 text-emerald-300 mx-auto mb-3" />
+          <p className="font-black text-gray-700">No hay movimientos pendientes</p>
+          <p className="text-xs text-gray-500 mt-1">Todos los pacientes vistos ya tienen cuenta de cobro o están en otro estado.</p>
+        </div>
+      ) : (
+        byEmpresa.map(grupo => {
+          const allSel = grupo.movs.every(m => selectedMovIds.has(m.id));
+          return (
+            <div key={grupo.empresaKey} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="bg-gray-50 px-4 py-2 flex items-center justify-between border-b border-gray-200">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <input type="checkbox" checked={allSel} onChange={() => toggleAllOfEmpresa(grupo.movs)} className="w-4 h-4" />
+                  <p className="font-black text-sm text-gray-800 truncate">{grupo.empresaNombre}</p>
+                  <span className="text-[10px] text-gray-500 flex-shrink-0">· {grupo.movs.length} movs · {fmtCOP(grupo.total)}</span>
+                </div>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-gray-50 border-b border-gray-100">
+                  <tr>
+                    <th className="w-10"></th>
+                    <th className="px-2 py-1 text-left font-bold text-gray-700">Fecha</th>
+                    <th className="px-2 py-1 text-left font-bold text-gray-700">Paciente</th>
+                    <th className="px-2 py-1 text-left font-bold text-gray-700">Tipo</th>
+                    <th className="px-2 py-1 text-right font-bold text-gray-700">Monto</th>
+                    <th className="px-2 py-1 text-right font-bold text-gray-700"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {grupo.movs.map(m => (
+                    <tr key={m.id} className={`border-b border-gray-50 ${selectedMovIds.has(m.id) ? "bg-emerald-50/40" : "hover:bg-gray-50"}`}>
+                      <td className="px-2 py-1.5 text-center">
+                        <input type="checkbox" checked={selectedMovIds.has(m.id)} onChange={() => toggleSelect(m.id)} className="w-3.5 h-3.5" />
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-600">{m.fecha}</td>
+                      <td className="px-2 py-1.5">
+                        <p className="font-bold text-gray-800">{m.pacienteNombre || "?"}</p>
+                        <p className="text-[9px] text-gray-400 font-mono">CC {m.pacienteDoc || "?"}</p>
+                      </td>
+                      <td className="px-2 py-1.5 text-gray-600">{(m.tipoConsulta || "?").toUpperCase()}</td>
+                      <td className="px-2 py-1.5 text-right font-black">{fmtCOP(m.monto)}</td>
+                      <td className="px-2 py-1.5 text-right">
+                        <button onClick={() => onFacturarIndividual(m)} className="text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-lg font-black hover:bg-emerald-700">
+                          Facturar →
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
