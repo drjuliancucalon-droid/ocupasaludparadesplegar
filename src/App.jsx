@@ -18129,9 +18129,17 @@ function AppInner() {
     // Si no hay sesión guardada, dejar la lista vacía - se cargará en handleLogin
     if (sessionUser) {
       const _localPats = sp(_patKey(sessionUser), []);
-      setPatientsList(_localPats);
-      // Si había pacientes en localStorage, marcar datos como listos para sync
-      if (_localPats.length > 0) dataReadyRef.current = true;
+      // ANTI-FANTASMA (FIX 2026-05-29): filtrar entries sin `id` que entran de
+      // localStorage corrupto. Evita que el panel cuente fantasmas y que el
+      // próximo _syncPatients los re-suba a D1.
+      const _localPatsClean = Array.isArray(_localPats) ? _localPats.filter(p => p && p.id) : [];
+      setPatientsList(_localPatsClean);
+      // Si filtramos fantasmas, persistir versión limpia para que próximos boots
+      // ya carguen rápido (selfheal del localStorage)
+      if (Array.isArray(_localPats) && _localPatsClean.length !== _localPats.length) {
+        try { _ls.setItem(_patKey(sessionUser), JSON.stringify(_localPatsClean)); } catch {}
+      }
+      if (_localPatsClean.length > 0) dataReadyRef.current = true;
     }
     // NO cargar 'siso_db_patients' genérico - mezclaria pacientes de todos los médicos
     // ══ FIX DEFINITIVO: Cargar usuarios con persistencia real ══
@@ -18169,9 +18177,11 @@ function AppInner() {
               ]);
               if (!cloud) return;
               if (_localPatsNow.length === 0) {
-                const _pats = cloud?.["siso_patients_" + sessionUser]?.value
+                const _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
                   || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                if (Array.isArray(_pats) && _pats.length > 0) {
+                // ANTI-FANTASMA: filtrar entries sin id que vienen desde la nube
+                const _pats = Array.isArray(_patsRaw) ? _patsRaw.filter(p => p && p.id) : [];
+                if (_pats.length > 0) {
                   setPatientsList(_pats);
                   _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats));
                   dataReadyRef.current = true;
@@ -18255,9 +18265,12 @@ function AppInner() {
             }
             // ── Restaurar pacientes y empresas del usuario activo (arranque fresco) ──
             if (sessionUser) {
-              const _initPats = cloud?.["siso_patients_" + sessionUser]?.value
+              const _initPatsRaw = cloud?.["siso_patients_" + sessionUser]?.value
                 || cloud?.["siso_db_patients_" + sessionUser]?.value;
-              if (Array.isArray(_initPats) && _initPats.length > 0) {
+              // ANTI-FANTASMA: filtrar al restaurar desde la nube
+              const _initPats = Array.isArray(_initPatsRaw)
+                ? _initPatsRaw.filter(p => p && p.id) : [];
+              if (_initPats.length > 0) {
                 setPatientsList(_initPats);
                 _ls.setItem(_patKey(sessionUser), JSON.stringify(_initPats));
                 dataReadyRef.current = true; // datos reales listos → auto-sync puede proceder
@@ -18761,19 +18774,33 @@ function AppInner() {
         // ANTI-REGRESIÓN: si localStorage tiene más pacientes que patientsList en
         // memoria (ej: otra pestaña bajó 285 y lo guardó, pero esta sesión vieja
         // solo tiene 277), usar los del localStorage para no reducir el total.
+        //
+        // ANTI-FANTASMA (FIX 2026-05-29): los entries sin `id` se cuelan en el
+        // merge porque `ids.has(undefined)` siempre es false → cada fantasma se
+        // considera "extra" y se duplica al concatenar. Filtramos a entries con
+        // `id` válido tanto en patientsList como en los "extras" de localStorage.
         const _patFull = (() => {
           if (patientsList.length === 0) return null;
+          // Sanitizar la lista en memoria primero (descarta fantasmas)
+          const cleanList = patientsList.filter(p => p && p.id);
           try {
             const stored = JSON.parse(_ls.getItem(_patKey(_u)) || "[]");
-            if (Array.isArray(stored) && stored.length > patientsList.length) {
-              const ids = new Set(patientsList.map(p => p.id));
-              const extras = stored.filter(p => !ids.has(p.id));
-              return extras.length > 0 ? [...patientsList, ...extras] : patientsList;
+            if (Array.isArray(stored)) {
+              const cleanStored = stored.filter(p => p && p.id);
+              if (cleanStored.length > cleanList.length) {
+                const ids = new Set(cleanList.map(p => p.id));
+                const extras = cleanStored.filter(p => !ids.has(p.id));
+                if (extras.length > 0) return [...cleanList, ...extras];
+              }
             }
           } catch { /**/ }
-          return patientsList;
+          return cleanList;
         })();
-        const _patToSave = _patFull ? _patFull.map(_slimPatient) : null;
+        // SEGUNDA DEFENSA: incluso si por algún camino llegara un fantasma,
+        // filtrar de nuevo antes de serializar a la nube.
+        const _patToSave = _patFull
+          ? _patFull.filter(p => p && p.id).map(_slimPatient)
+          : null;
         // Empresas: sin logos base64
         const _compFull   = companies.length > 0 ? companies : null;
         const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
@@ -19792,7 +19819,10 @@ JSON REQUERIDO (estructura exacta):
       .map(([k]) => k);
     const _bkSuf = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user || "shared";
     // GUARD: solo guardar pacientes/empresas si hay datos reales
-    const _patToSaveManual = patientsList.length > 0 ? patientsList : null;
+    // ANTI-FANTASMA: filtrar entries sin id (corruptos) antes del save manual
+    const _patToSaveManual = patientsList.length > 0
+      ? patientsList.filter(p => p && p.id)
+      : null;
     const _compToSaveManual = companies.length > 0 ? companies : null;
     // Slim antes de enviar: evita exceder 1MB/fila en D1 con base64 de estudios/imágenes
     const _patSlim = _patToSaveManual ? _patToSaveManual.map(_slimPatient) : null;
