@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Portal Empresa — Mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; background: #f1f5f9; }
+  .card-hover { transition: all .18s; }
+  .card-hover:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.13); }
+  .checkbox-worker:checked + label { background: #ecfdf5; border-color: #10b981; }
+  .fade { animation: fadeIn .3s; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- HEADER -->
+<div class="bg-gradient-to-r from-teal-700 to-emerald-600 px-6 py-4 flex items-center justify-between shadow-lg">
+  <div class="flex items-center gap-3">
+    <div class="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center text-white text-xl font-black">💼</div>
+    <div>
+      <p class="text-white font-black text-base leading-tight">Portal Empresarial</p>
+      <p class="text-emerald-200 text-xs">DISTRIBUIDORA LA SUPERIOR TAT SAS</p>
+    </div>
+  </div>
+  <div class="flex items-center gap-2">
+    <span class="bg-white/20 text-white text-xs px-3 py-1 rounded-full font-semibold">NIT 900374407-3</span>
+    <button class="bg-white/10 hover:bg-white/20 text-white text-xs px-3 py-1.5 rounded-lg font-semibold">🚪 Salir</button>
+  </div>
+</div>
+
+<!-- TABS DE NAVEGACIÓN -->
+<div class="bg-white border-b border-gray-200 px-6">
+  <div class="flex gap-1 overflow-x-auto">
+    <button onclick="showTab('resumen')" id="tab-resumen" class="tab-btn px-4 py-3 text-sm font-bold border-b-2 border-teal-600 text-teal-700">🏠 Resumen</button>
+    <button onclick="showTab('trabajadores')" id="tab-trabajadores" class="tab-btn px-4 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent hover:text-teal-600">👥 Trabajadores</button>
+    <button onclick="showTab('descargas')" id="tab-descargas" class="tab-btn px-4 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent hover:text-teal-600">📥 Descargas</button>
+    <button onclick="showTab('documentos')" id="tab-documentos" class="tab-btn px-4 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent hover:text-teal-600">📄 Documentos</button>
+  </div>
+</div>
+
+<!-- ══════════════════════ TAB: RESUMEN ══════════════════════ -->
+<div id="panel-resumen" class="p-6 fade">
+  <p class="text-xs text-gray-400 mb-4 font-semibold uppercase tracking-wider">Resumen del período · Mayo 2026</p>
+
+  <!-- Stats grandes -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center card-hover">
+      <div class="text-4xl mb-1">👷</div>
+      <p class="text-3xl font-black text-teal-700">33</p>
+      <p class="text-xs text-gray-500 font-semibold mt-1">Trabajadores evaluados</p>
+    </div>
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center card-hover">
+      <div class="text-4xl mb-1">✅</div>
+      <p class="text-3xl font-black text-emerald-600">33</p>
+      <p class="text-xs text-gray-500 font-semibold mt-1">Certificados listos</p>
+    </div>
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center card-hover">
+      <div class="text-4xl mb-1">⚠️</div>
+      <p class="text-3xl font-black text-amber-500">8</p>
+      <p class="text-xs text-gray-500 font-semibold mt-1">Con hallazgos</p>
+    </div>
+    <div class="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center card-hover">
+      <div class="text-4xl mb-1">🔀</div>
+      <p class="text-3xl font-black text-blue-600">5</p>
+      <p class="text-xs text-gray-500 font-semibold mt-1">Derivaciones</p>
+    </div>
+  </div>
+
+  <!-- Accesos rápidos con iconos grandes -->
+  <p class="text-xs text-gray-400 mb-3 font-semibold uppercase tracking-wider">Acceso rápido</p>
+  <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+    <button onclick="showTab('trabajadores')" class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">👥</span>
+      <p class="font-black text-gray-800 text-sm">Ver trabajadores</p>
+      <p class="text-xs text-gray-400">Lista completa con búsqueda</p>
+    </button>
+    <button onclick="showTab('descargas')" class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">📥</span>
+      <p class="font-black text-gray-800 text-sm">Descargar documentos</p>
+      <p class="text-xs text-gray-400">Certificados, fórmulas, exámenes</p>
+    </button>
+    <button onclick="showTab('documentos')" class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">📋</span>
+      <p class="font-black text-gray-800 text-sm">Informe epidemiológico</p>
+      <p class="text-xs text-gray-400">Diagnóstico colectivo</p>
+    </button>
+    <button class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">🧾</span>
+      <p class="font-black text-gray-800 text-sm">Cuentas de cobro</p>
+      <p class="text-xs text-gray-400">Historial de facturación</p>
+    </button>
+    <button class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">🔒</span>
+      <p class="font-black text-gray-800 text-sm">Carta de custodia</p>
+      <p class="text-xs text-gray-400">Confidencialidad de datos</p>
+    </button>
+    <button class="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 flex flex-col items-center gap-2 card-hover">
+      <span class="text-5xl">📅</span>
+      <p class="font-black text-gray-800 text-sm">Próximas evaluaciones</p>
+      <p class="text-xs text-gray-400">Agenda y vencimientos</p>
+    </button>
+  </div>
+</div>
+
+<!-- ══════════════════════ TAB: TRABAJADORES ══════════════════════ -->
+<div id="panel-trabajadores" class="p-6 fade hidden">
+  <!-- Buscador -->
+  <div class="flex gap-3 mb-4">
+    <div class="flex-1 relative">
+      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
+      <input type="text" placeholder="Buscar por nombre o cédula..."
+        oninput="filterWorkers(this.value)"
+        class="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-teal-400 bg-white shadow-sm"/>
+    </div>
+    <button onclick="showTab('descargas')" class="bg-teal-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-teal-700 flex items-center gap-2 whitespace-nowrap">
+      📥 Descargar selección
+    </button>
+  </div>
+
+  <p class="text-xs text-gray-400 mb-3 font-semibold">33 trabajadores · Mayo 23-27 2026</p>
+
+  <!-- Lista de trabajadores -->
+  <div id="worker-list" class="space-y-2">
+  </div>
+</div>
+
+<!-- ══════════════════════ TAB: DESCARGAS ══════════════════════ -->
+<div id="panel-descargas" class="p-6 fade hidden">
+
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+    <p class="font-black text-gray-800 mb-1">📥 Descarga de documentos</p>
+    <p class="text-xs text-gray-500">Selecciona los trabajadores y el tipo de documento que deseas descargar</p>
+  </div>
+
+  <!-- PASO 1: Selección trabajadores -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+    <div class="flex items-center justify-between mb-3">
+      <p class="font-black text-gray-800 text-sm">Paso 1 — Seleccionar trabajadores</p>
+      <div class="flex gap-2">
+        <button onclick="selectAll(true)" class="text-xs bg-teal-50 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-100">✅ Todos</button>
+        <button onclick="selectAll(false)" class="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-lg font-bold hover:bg-gray-200">❌ Ninguno</button>
+      </div>
+    </div>
+    <div class="relative mb-3">
+      <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+      <input type="text" placeholder="Filtrar trabajadores..." class="w-full pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-teal-400"/>
+    </div>
+    <div id="download-worker-list" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-52 overflow-y-auto pr-1">
+    </div>
+    <p id="selected-count" class="text-xs text-teal-700 font-bold mt-2">0 trabajadores seleccionados</p>
+  </div>
+
+  <!-- PASO 2: Tipos de documento -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-4">
+    <p class="font-black text-gray-800 text-sm mb-3">Paso 2 — Tipos de documento a descargar</p>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+      <label class="flex items-center gap-3 p-3 border-2 border-emerald-200 bg-emerald-50 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors">
+        <input type="checkbox" checked class="w-4 h-4 accent-emerald-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">📋 Certificado de Aptitud</p>
+          <p class="text-[10px] text-gray-500">PDF firmado</p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 p-3 border-2 border-blue-200 bg-blue-50 rounded-xl cursor-pointer hover:bg-blue-100 transition-colors">
+        <input type="checkbox" class="w-4 h-4 accent-blue-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">🔀 Derivaciones</p>
+          <p class="text-[10px] text-gray-500">Interconsultas / remisiones</p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 p-3 border-2 border-purple-200 bg-purple-50 rounded-xl cursor-pointer hover:bg-purple-100 transition-colors">
+        <input type="checkbox" class="w-4 h-4 accent-purple-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">💊 Fórmulas / Medicamentos</p>
+          <p class="text-[10px] text-gray-500">Prescripciones médicas</p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 p-3 border-2 border-amber-200 bg-amber-50 rounded-xl cursor-pointer hover:bg-amber-100 transition-colors">
+        <input type="checkbox" class="w-4 h-4 accent-amber-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">🧪 Exámenes paraclínicos</p>
+          <p class="text-[10px] text-gray-500">Laboratorios / imágenes</p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 p-3 border-2 border-rose-200 bg-rose-50 rounded-xl cursor-pointer hover:bg-rose-100 transition-colors">
+        <input type="checkbox" class="w-4 h-4 accent-rose-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">🏥 Interconsultas</p>
+          <p class="text-[10px] text-gray-500">Especialistas requeridos</p>
+        </div>
+      </label>
+      <label class="flex items-center gap-3 p-3 border-2 border-teal-200 bg-teal-50 rounded-xl cursor-pointer hover:bg-teal-100 transition-colors">
+        <input type="checkbox" class="w-4 h-4 accent-teal-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">📊 Informe Epidemiológico</p>
+          <p class="text-[10px] text-gray-500">Diagnóstico colectivo</p>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <!-- PASO 3: Formato de descarga -->
+  <div class="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 mb-5">
+    <p class="font-black text-gray-800 text-sm mb-3">Paso 3 — Formato de descarga</p>
+    <div class="flex gap-3">
+      <label class="flex-1 flex items-center gap-3 p-3 border-2 border-teal-300 bg-teal-50 rounded-xl cursor-pointer">
+        <input type="radio" name="format" checked class="accent-teal-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">📦 ZIP por trabajador</p>
+          <p class="text-[10px] text-gray-500">Carpetas organizadas por persona</p>
+        </div>
+      </label>
+      <label class="flex-1 flex items-center gap-3 p-3 border-2 border-gray-200 bg-gray-50 rounded-xl cursor-pointer">
+        <input type="radio" name="format" class="accent-gray-600"/>
+        <div>
+          <p class="text-xs font-black text-gray-800">📄 PDF único combinado</p>
+          <p class="text-[10px] text-gray-500">Todos juntos en un archivo</p>
+        </div>
+      </label>
+    </div>
+  </div>
+
+  <!-- Botón descarga -->
+  <button class="w-full bg-gradient-to-r from-teal-600 to-emerald-600 text-white py-4 rounded-2xl font-black text-base shadow-lg hover:from-teal-700 hover:to-emerald-700 flex items-center justify-center gap-3">
+    <span class="text-xl">📥</span>
+    DESCARGAR DOCUMENTOS SELECCIONADOS
+  </button>
+</div>
+
+<!-- ══════════════════════ TAB: DOCUMENTOS ══════════════════════ -->
+<div id="panel-documentos" class="p-6 fade hidden">
+  <div class="space-y-3">
+    <div class="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between card-hover">
+      <div class="flex items-center gap-3">
+        <span class="text-3xl">📊</span>
+        <div>
+          <p class="font-black text-gray-800 text-sm">Informe Epidemiológico</p>
+          <p class="text-xs text-gray-500">Mayo 2026 · 33 trabajadores</p>
+        </div>
+      </div>
+      <button class="bg-teal-600 text-white text-xs px-4 py-2 rounded-lg font-bold hover:bg-teal-700">Ver / Descargar</button>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between card-hover">
+      <div class="flex items-center gap-3">
+        <span class="text-3xl">🔒</span>
+        <div>
+          <p class="font-black text-gray-800 text-sm">Carta de Custodia</p>
+          <p class="text-xs text-gray-500">Confidencialidad de datos clínicos</p>
+        </div>
+      </div>
+      <button class="bg-teal-600 text-white text-xs px-4 py-2 rounded-lg font-bold hover:bg-teal-700">Ver / Descargar</button>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between card-hover">
+      <div class="flex items-center gap-3">
+        <span class="text-3xl">🧾</span>
+        <div>
+          <p class="font-black text-gray-800 text-sm">Cuenta de Cobro — No. 002</p>
+          <p class="text-xs text-gray-500">Mayo 2026 · $1.155.000</p>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button class="bg-gray-100 text-gray-700 text-xs px-3 py-2 rounded-lg font-bold hover:bg-gray-200">✏️ Editar</button>
+        <button class="bg-teal-600 text-white text-xs px-4 py-2 rounded-lg font-bold hover:bg-teal-700">Descargar</button>
+      </div>
+    </div>
+    <div class="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between card-hover">
+      <div class="flex items-center gap-3">
+        <span class="text-3xl">🧾</span>
+        <div>
+          <p class="font-black text-gray-800 text-sm">Cuenta de Cobro — No. 001</p>
+          <p class="text-xs text-gray-500">Marzo 2026 · $875.000</p>
+        </div>
+      </div>
+      <div class="flex gap-2">
+        <button class="bg-gray-100 text-gray-700 text-xs px-3 py-2 rounded-lg font-bold hover:bg-gray-200">✏️ Editar</button>
+        <button class="bg-teal-600 text-white text-xs px-4 py-2 rounded-lg font-bold hover:bg-teal-700">Descargar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const workers = [
+  {name:"WILLIAM ERICK HENRIQUEZ TOWERS", doc:"16825275", date:"23/05"},
+  {name:"JHON ALEXANDER SANCLEMENTE SANCHEZ", doc:"1061819991", date:"23/05"},
+  {name:"ANGI DANIELA SANCHEZ BOLAÑOS", doc:"1002964555", date:"23/05"},
+  {name:"CRISTIAN FABIAN FORERO LOAIZA", doc:"1006028414", date:"23/05"},
+  {name:"DUFAY EMI RUIZ GOMEZ", doc:"1002975768", date:"23/05"},
+  {name:"GALO HERNAN RODRIGUEZ ARCOS", doc:"12998222", date:"23/05"},
+  {name:"INGRID TATIANA MARTINEZ LEYTON", doc:"1061805867", date:"23/05"},
+  {name:"INGRID MARCELA RUANO ROJAS", doc:"1061755752", date:"23/05"},
+  {name:"JORGE LUIS MUÑOZ FLOR", doc:"1061736314", date:"23/05"},
+  {name:"JHON ALEJANDRO GUETIO TALAGA", doc:"1064431697", date:"23/05"},
+  {name:"JANETH PATRICIA TUMBAJOY MENESES", doc:"25290516", date:"23/05"},
+  {name:"JOSE EDUARDO RAMIREZ DELGADO", doc:"1117550110", date:"23/05"},
+  {name:"KAREN XIOMARA TELLO RODRIGUEZ", doc:"1059900786", date:"23/05"},
+  {name:"ANGELA ADRIANA VELARDE HOYOS", doc:"1002921079", date:"23/05"},
+  {name:"KAROL DAYANA ASTAIZA BOLAÑOS", doc:"1061795827", date:"23/05"},
+  {name:"ARLEX RODRIGO ASTUDILLO MUÑOZ", doc:"1061767607", date:"23/05"},
+  {name:"KEVIN SANTIAGO MEDINA TELLO", doc:"1059901715", date:"23/05"},
+  {name:"BRIGADIER PEREZ MELECIO", doc:"76319516", date:"27/05"},
+  {name:"JUAN ALEJANDRO RENGIFO ANACONA", doc:"1061817145", date:"27/05"},
+  {name:"DANIEL FERNANDO PEREZ", doc:"1061789256", date:"27/05"},
+  {name:"MANUEL ALBEIRO JIMENEZ GARZON", doc:"10548064", date:"27/05"},
+  {name:"JULIO CESAR GAVIRIA TEJADA", doc:"12754126", date:"27/05"},
+  {name:"MIGUEL ANGEL VASQUEZ TULANDE", doc:"1002820541", date:"27/05"},
+  {name:"ANDRES FELIPE RUIZ POMEO", doc:"1061767399", date:"27/05"},
+  {name:"LUIS HERNANDO REBOLLEDO AGUDELO", doc:"4668439", date:"27/05"},
+  {name:"ANGEL HUMBERTO ASTUDILLO MUÑOZ", doc:"1061789920", date:"27/05"},
+  {name:"RENE ORLANDO SAMBONI JOAQUI", doc:"1061740131", date:"27/05"},
+  {name:"SANDRA LISETH MACIAS CAJAS", doc:"1061741790", date:"27/05"},
+  {name:"JEFRY ALEXANDER CARABALI GIRON", doc:"1113532539", date:"27/05"},
+  {name:"DIEGO FELIPE GUERRERO BOLAÑOS", doc:"1061776242", date:"27/05"},
+  {name:"FABIAN ANDRES GOMEZ DIAZ", doc:"1063816157", date:"27/05"},
+  {name:"JOHN FREIMAND ORDOÑEZ PATIÑO", doc:"10293431", date:"27/05"},
+  {name:"SEN HAROLD PIZO RODRIGUEZ", doc:"76330436", date:"27/05"},
+];
+
+let selectedWorkers = new Set();
+
+function renderWorkerList() {
+  const list = document.getElementById('worker-list');
+  list.innerHTML = workers.map((w,i) => `
+    <div class="bg-white rounded-xl border border-gray-100 p-3 flex items-center gap-3 shadow-sm hover:border-teal-200 transition-colors">
+      <div class="w-9 h-9 rounded-full bg-teal-50 border-2 border-teal-200 flex items-center justify-center text-sm font-black text-teal-700 flex-shrink-0">
+        ${w.name.split(' ').map(n=>n[0]).slice(0,2).join('')}
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-xs font-black text-gray-800 truncate">${w.name}</p>
+        <p class="text-[10px] text-gray-400">CC ${w.doc} · Atendido ${w.date}/2026</p>
+      </div>
+      <button onclick="openWorker(${i})" class="text-[10px] bg-teal-50 text-teal-700 px-3 py-1.5 rounded-lg font-bold hover:bg-teal-100 whitespace-nowrap">Ver →</button>
+    </div>
+  `).join('');
+}
+
+function renderDownloadList() {
+  const list = document.getElementById('download-worker-list');
+  list.innerHTML = workers.map((w,i) => `
+    <label class="flex items-center gap-2 p-2 rounded-lg border border-gray-100 hover:bg-teal-50 hover:border-teal-200 cursor-pointer transition-colors">
+      <input type="checkbox" onchange="toggleWorker(${i},this.checked)" class="w-4 h-4 accent-teal-600 flex-shrink-0"/>
+      <div class="min-w-0">
+        <p class="text-[11px] font-bold text-gray-800 truncate">${w.name}</p>
+        <p class="text-[10px] text-gray-400">CC ${w.doc}</p>
+      </div>
+    </label>
+  `).join('');
+}
+
+function toggleWorker(i, checked) {
+  if(checked) selectedWorkers.add(i); else selectedWorkers.delete(i);
+  document.getElementById('selected-count').textContent = selectedWorkers.size + ' trabajadores seleccionados';
+}
+
+function selectAll(val) {
+  const checks = document.querySelectorAll('#download-worker-list input[type=checkbox]');
+  checks.forEach((c,i) => { c.checked = val; if(val) selectedWorkers.add(i); else selectedWorkers.delete(i); });
+  document.getElementById('selected-count').textContent = (val ? workers.length : 0) + ' trabajadores seleccionados';
+}
+
+function filterWorkers(q) {
+  const items = document.querySelectorAll('#worker-list > div');
+  items.forEach((el,i) => {
+    const w = workers[i];
+    const match = !q || w.name.toLowerCase().includes(q.toLowerCase()) || w.doc.includes(q);
+    el.style.display = match ? '' : 'none';
+  });
+}
+
+function showTab(tab) {
+  ['resumen','trabajadores','descargas','documentos'].forEach(t => {
+    document.getElementById('panel-'+t).classList.add('hidden');
+    document.getElementById('tab-'+t).className = 'tab-btn px-4 py-3 text-sm font-semibold text-gray-500 border-b-2 border-transparent hover:text-teal-600';
+  });
+  document.getElementById('panel-'+tab).classList.remove('hidden');
+  document.getElementById('tab-'+tab).className = 'tab-btn px-4 py-3 text-sm font-bold border-b-2 border-teal-600 text-teal-700';
+}
+
+function openWorker(i) {
+  showTab('descargas');
+  setTimeout(() => {
+    const checks = document.querySelectorAll('#download-worker-list input[type=checkbox]');
+    checks.forEach((c,j) => { c.checked = j===i; });
+    selectedWorkers.clear(); selectedWorkers.add(i);
+    document.getElementById('selected-count').textContent = '1 trabajador seleccionado';
+  }, 100);
+}
+
+renderWorkerList();
+renderDownloadList();
+</script>
+</body>
+</html>

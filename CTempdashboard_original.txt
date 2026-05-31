@@ -1,0 +1,391 @@
+                </div>
+                <span className="bg-white/20 text-white text-xs px-3 py-1 rounded-full font-semibold">{hoy}</span>
+              </div>
+              {/* Tabs navegación */}
+              <div className="bg-white border-b border-gray-200 px-6">
+                <div className="flex gap-1 overflow-x-auto">
+                  {[
+                    { k: "resumen",      l: "🏠 Resumen" },
+                    { k: "trabajadores", l: "👥 Trabajadores" },
+                    { k: "descargas",    l: "📥 Descargas" },
+                    { k: "documentos",   l: "📄 Documentos" },
+                  ].map(t => (
+                    <button key={t.k} onClick={() => setPortalTab(t.k)}
+                      className={`px-4 py-3 text-sm font-bold border-b-2 whitespace-nowrap transition-colors ${portalTab === t.k ? "border-teal-600 text-teal-700" : "border-transparent text-gray-500 hover:text-teal-600"}`}>
+                      {t.l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="px-6 pt-5 space-y-4">
+
+              {/* ── TAB: RESUMEN ── */}
+              {portalTab === "resumen" && (<>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Estadísticas generales</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {[
+                    { icon:"👷", val: pacientesEmpresa.length, label:"Evaluados", color:"text-teal-700" },
+                    { icon:"✅", val: pacientesEmpresa.filter(p=>p.estadoHistoria==="Cerrada").length, label:"Certificados", color:"text-emerald-600" },
+                    { icon:"⚠️", val: pacientesEmpresa.filter(p=>p.conceptoAptitud?.toLowerCase().includes("restricc")).length, label:"Con restricciones", color:"text-amber-600" },
+                    { icon:"🔀", val: pacientesEmpresa.filter(p=>Array.isArray(p.derivaciones)&&p.derivaciones.length>0).length, label:"Derivaciones", color:"text-blue-600" },
+                  ].map(s=>(
+                    <div key={s.label} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 text-center">
+                      <div className="text-3xl mb-1">{s.icon}</div>
+                      <p className={`text-3xl font-black ${s.color}`}>{s.val}</p>
+                      <p className="text-[10px] text-gray-500 font-semibold mt-1">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Acceso rápido</p>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pb-6">
+                  {[
+                    { icon:"👥", label:"Ver trabajadores", desc:"Lista completa con búsqueda", tab:"trabajadores" },
+                    { icon:"📥", label:"Descargar documentos", desc:"Certificados, fórmulas, exámenes", tab:"descargas" },
+                    { icon:"📄", label:"Documentos e informes", desc:"Informe epidemiológico, cuentas", tab:"documentos" },
+                    { icon:"⛔", label:"No aptos / Restricciones", desc:"Trabajadores con hallazgos", tab:"noAptos_inline" },
+                    { icon:"💳", label:"Cuentas de cobro", desc:"Historial de facturación", tab:"documentos" },
+                    { icon:"🔒", label:"Carta de custodia", desc:"Confidencialidad de datos", tab:"documentos" },
+                  ].map(a=>(
+                    <button key={a.label} onClick={()=>{ if(a.tab==="noAptos_inline") setPortalTab("trabajadores"); else setPortalTab(a.tab); }}
+                      className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-col items-center gap-2 hover:border-teal-300 hover:shadow-md transition-all text-center">
+                      <span className="text-4xl">{a.icon}</span>
+                      <p className="font-black text-gray-800 text-sm">{a.label}</p>
+                      <p className="text-[10px] text-gray-400">{a.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </>)}
+
+              {/* ── TAB: TRABAJADORES ── */}
+              {portalTab === "trabajadores" && (<>
+                <div className="flex gap-3">
+                  <div className="flex-1 relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+                    <input value={portalEmpresaFiltroDoc} onChange={e=>setPortalEmpresaFiltroDoc(e.target.value)}
+                      placeholder="Buscar por nombre o cédula..."
+                      className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:border-teal-400 bg-white shadow-sm"/>
+                  </div>
+                  <button onClick={()=>setPortalTab("descargas")}
+                    className="bg-teal-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-teal-700 flex items-center gap-2 whitespace-nowrap shadow-sm">
+                    📥 Descargar
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400 font-semibold">{pacientesEmpresa.length} trabajadores evaluados · Art. 16 Res. 1843/2025 — diagnósticos clínicos confidenciales</p>
+                <div className="space-y-2 pb-6">
+                  {(()=>{
+                    const f = portalEmpresaFiltroDoc.trim().toLowerCase();
+                    const lista = f ? pacientesEmpresa.filter(p=>(p.nombres||"").toLowerCase().includes(f)||(p.docNumero||"").includes(f)) : pacientesEmpresa;
+                    if(lista.length===0) return <p className="text-center text-gray-400 py-8 text-sm">Sin resultados.</p>;
+                    return lista.map((p,i)=>{
+                      const apto = p.conceptoAptitud||"--";
+                      const aptColor = apto.toLowerCase().includes("no apto")?"bg-red-100 text-red-700":apto.toLowerCase().includes("restricc")?"bg-amber-100 text-amber-700":"bg-emerald-100 text-emerald-700";
+                      const initials = (p.nombres||"?").split(" ").map(n=>n[0]).slice(0,2).join("").toUpperCase();
+                      return (
+                        <div key={p.id||i} className="bg-white rounded-xl border border-gray-100 p-3 flex items-center gap-3 shadow-sm hover:border-teal-200 transition-colors">
+                          <div className="w-10 h-10 rounded-full bg-teal-50 border-2 border-teal-200 flex items-center justify-center text-sm font-black text-teal-700 flex-shrink-0">{initials}</div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-black text-gray-800 truncate">{p.nombres}</p>
+                            <p className="text-[10px] text-gray-400">CC {p.docNumero} · {p.cargo||"Sin cargo"} · {p.fechaExamen||"--"}</p>
+                          </div>
+                          <span className={`text-[10px] font-black px-2 py-1 rounded-lg flex-shrink-0 ${aptColor}`}>{apto.slice(0,30)}</span>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </>)}
+
+              {/* ── TAB: DESCARGAS ── */}
+              {portalTab === "descargas" && (<>
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <p className="font-black text-gray-800 text-sm mb-1">📥 Descarga de documentos</p>
+                  <p className="text-xs text-gray-500">Selecciona trabajadores y tipos de documento</p>
+                </div>
+                {/* Paso 1 */}
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="font-black text-gray-800 text-sm">Paso 1 — Seleccionar trabajadores</p>
+                    <div className="flex gap-2">
+                      <button onClick={()=>setPortalDescargaSeleccion(new Set(pacientesEmpresa.map(p=>p.id)))}
+                        className="text-xs bg-teal-50 text-teal-700 px-3 py-1 rounded-lg font-bold hover:bg-teal-100">✅ Todos</button>
+                      <button onClick={()=>setPortalDescargaSeleccion(new Set())}
+                        className="text-xs bg-gray-100 text-gray-600 px-3 py-1 rounded-lg font-bold hover:bg-gray-200">❌ Ninguno</button>
+                    </div>
+                  </div>
+                  <div className="relative mb-3">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs">🔍</span>
+                    <input value={portalDescargaFiltro} onChange={e=>setPortalDescargaFiltro(e.target.value)}
+                      placeholder="Filtrar trabajadores..."
+                      className="w-full pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:border-teal-400"/>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                    {(()=>{
+                      const f = portalDescargaFiltro.trim().toLowerCase();
+                      return (f ? pacientesEmpresa.filter(p=>(p.nombres||"").toLowerCase().includes(f)||(p.docNumero||"").includes(f)) : pacientesEmpresa)
+                        .map(p=>{
+                          const sel = portalDescargaSeleccion.has(p.id);
+                          return (
+                            <label key={p.id} className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer transition-colors ${sel?"bg-teal-50 border-teal-300":"border-gray-100 hover:bg-gray-50"}`}>
+                              <input type="checkbox" checked={sel} onChange={e=>{
+                                const s = new Set(portalDescargaSeleccion);
+                                if(e.target.checked) s.add(p.id); else s.delete(p.id);
+                                setPortalDescargaSeleccion(s);
+                              }} className="w-4 h-4 accent-teal-600 flex-shrink-0"/>
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-bold text-gray-800 truncate">{p.nombres}</p>
+                                <p className="text-[10px] text-gray-400">CC {p.docNumero}</p>
+                              </div>
+                            </label>
+                          );
+                        });
+                    })()}
+                  </div>
+                  <p className="text-xs text-teal-700 font-bold mt-2">{portalDescargaSeleccion.size} trabajador(es) seleccionado(s)</p>
+                </div>
+                {/* Paso 2 */}
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+                  <p className="font-black text-gray-800 text-sm mb-3">Paso 2 — Tipos de documento</p>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {[
+                      { k:"cert",         icon:"📋", label:"Certificado de Aptitud",    desc:"PDF firmado",                   color:"emerald" },
+                      { k:"deriv",        icon:"🔀", label:"Derivaciones",              desc:"Interconsultas / remisiones",   color:"blue"    },
+                      { k:"formula",      icon:"💊", label:"Fórmulas / Medicamentos",   desc:"Prescripciones médicas",        color:"purple"  },
+                      { k:"examen",       icon:"🧪", label:"Exámenes paraclínicos",     desc:"Laboratorios / imágenes",       color:"amber"   },
+                      { k:"interconsulta",icon:"🏥", label:"Interconsultas",            desc:"Especialistas requeridos",      color:"rose"    },
+                      { k:"informe",      icon:"📊", label:"Informe Epidemiológico",    desc:"Diagnóstico colectivo",         color:"teal"    },
+                    ].map(t=>{
+                      const on = portalDescargaTipos[t.k];
+                      return (
+                        <label key={t.k} className={`flex items-center gap-3 p-3 border-2 rounded-xl cursor-pointer hover:opacity-90 transition-all ${on?`border-${t.color}-300 bg-${t.color}-50`:"border-gray-200 bg-gray-50"}`}>
+                          <input type="checkbox" checked={!!on} onChange={e=>setPortalDescargaTipos(p=>({...p,[t.k]:e.target.checked}))} className="w-4 h-4 flex-shrink-0"/>
+                          <div>
+                            <p className="text-xs font-black text-gray-800">{t.icon} {t.label}</p>
+                            <p className="text-[10px] text-gray-500">{t.desc}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* Botón descarga */}
+                <button onClick={()=>showAlert(`✅ Descarga iniciada\n\n• ${portalDescargaSeleccion.size} trabajador(es) seleccionado(s)\n• Tipos: ${Object.entries(portalDescargaTipos).filter(([,v])=>v).map(([k])=>k).join(", ")}\n\nLos archivos se generarán según los documentos disponibles en cada historia clínica.`)}
+                  disabled={portalDescargaSeleccion.size===0}
+                  className="w-full bg-gradient-to-r from-teal-600 to-emerald-600 disabled:from-gray-300 disabled:to-gray-400 text-white py-4 rounded-2xl font-black text-sm shadow-lg hover:from-teal-700 hover:to-emerald-700 flex items-center justify-center gap-3 mb-6">
+                  <span className="text-lg">📥</span>
+                  DESCARGAR DOCUMENTOS SELECCIONADOS
+                </button>
+              </>)}
+
+              {/* ── TAB: DOCUMENTOS ── */}
+              {portalTab === "documentos" && (<>
+                <div className="space-y-3 pb-6">
+                  {/* Cuentas de cobro */}
+                  {cuentasEmpresa.length > 0 && <>
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Cuentas de cobro</p>
+                    {[...cuentasEmpresa].sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map((b,i)=>(
+                      <div key={b.id||i} className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">🧾</span>
+                          <div>
+                            <p className="font-black text-gray-800 text-sm">Cuenta No. {b.number||"—"}</p>
+                            <p className="text-xs text-gray-500">{b.date||"—"} · ${Number(b.amount||0).toLocaleString("es-CO")}</p>
+                          </div>
+                        </div>
+                        <span className={`text-[10px] font-black px-2 py-1 rounded-full ${b.pagada?"bg-emerald-100 text-emerald-700":"bg-red-100 text-red-700"}`}>{b.pagada?"✅ Pagada":"⏳ Pendiente"}</span>
+                      </div>
+                    ))}
+                  </>}
+                  {/* No aptos / restricciones */}
+                  {pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).length > 0 && <>
+                    <p className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider mt-2">Trabajadores con restricciones / no aptos</p>
+                    {pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).map((p,i)=>(
+                      <div key={p.id||i} className="bg-white rounded-2xl p-4 border border-amber-100 shadow-sm">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-black text-gray-800 text-sm">{p.nombres}</p>
+                            <p className="text-xs text-gray-500">{p.cargo||"--"} · {p.fechaExamen||"--"}</p>
+                          </div>
+                          <span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-lg">{(p.conceptoAptitud||"").slice(0,40)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </>}
+                  {cuentasEmpresa.length===0 && pacientesEmpresa.filter(p=>p.conceptoAptitud&&!p.conceptoAptitud.toUpperCase().startsWith("APTO SIN")).length===0 &&
+                    <p className="text-center text-gray-400 py-8 text-sm">Sin documentos adicionales disponibles.</p>
+                  }
+                </div>
+              </>)}
+            </div>
+          )}
+        </div>
+        <div className="text-center py-4 text-blue-300 text-[10px]">
+          SISO OcupaSalud · Portal confidencial · Art. 16 Res. 1843/2025
+        </div>
+      </div>
+    );
+  };
+
+  // ─── RENDER: EVOLUCIONES CLÍNICAS MODAL (B-F2-05 EXPANDIDO) ──────────────
+  const renderEvolucionModal = () => {
+    if (!showEvolucionModal) return null;
+    const evoluciones = data.evoluciones || [];
+    const evTab = evolucionForm.activeEvTab || "nota";
+    const _evTabCls = (t) =>
+      `px-3 py-1.5 text-[11px] font-bold rounded-lg transition ${
+        evTab === t
+          ? "bg-purple-700 text-white"
+          : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+      }`;
+
+    const guardarEvolucion = () => {
+      if (!evolucionForm.texto.trim() && !evolucionForm.motivoConsulta.trim()) {
+        showAlert("Ingrese al menos la nota clínica o el motivo de consulta.");
+        return;
+      }
+      const nuevaEv = {
+        ...evolucionForm,
+        id: Date.now(),
+        codigoEvolucion:
+          evolucionForm.codigoEvolucion ||
+          "EV-" + Date.now().toString(36).toUpperCase().slice(-6),
+        codigoHCMadre: data.codigoVerificacion || data.firmaDigital?.codigoQR || "",
+        medico: activeDoctorData?.nombre || currentUser?.name || "Dr.",
+        medicoRM: activeDoctorData?.licencia || "",
+        timestamp: new Date().toISOString(),
+        tipo: "evolucion_completa",
+      };
+      const evolsAct = [...(data.evoluciones || []), nuevaEv];
+      const updData = {
+        ...data,
+        evoluciones: evolsAct,
+        conceptoAptitud: evolucionForm.nuevoConcept || data.conceptoAptitud,
+      };
+      setData(updData);
+      const updPats = patientsList.map((p) =>
+        p.id === data.id
+          ? {
+              ...p,
+              evoluciones: evolsAct,
+              conceptoAptitud: updData.conceptoAptitud,
+            }
+          : p
+      );
+      setPatientsList(updPats);
+      const _suid = currentUser?.empresaId
+        ? "empresa_" + currentUser.empresaId
+        : currentUser?.user;
+      _ls.setItem(_patKey(_suid), JSON.stringify(updPats));
+      setEvolucionForm((prev) => ({
+        ...prev,
+        texto: "",
+        motivoConsulta: "",
+        planConducta: "",
+        recomendaciones: "",
+        formulaMedicamentos: [],
+        derivaciones: [],
+        incapacidad: {
+          aplica: false,
+          dias: 0,
+          origen: "Común",
+          diagnostico: "",
+          desde: "",
+          hasta: "",
+        },
+        diagnosticos: [{ cie10: "", descripcion: "", tipo: "Principal" }],
+        nuevoConcept: "",
+        codigoEvolucion:
+          "EV-" + Date.now().toString(36).toUpperCase().slice(-6),
+        fecha: new Date().toISOString().split("T")[0],
+        activeEvTab: "nota",
+      }));
+      showAlert(
+        `✅ Evolución ${nuevaEv.codigoEvolucion} guardada correctamente.`
+      );
+    };
+
+    return (
+      <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-3">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[94vh] flex flex-col overflow-hidden">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-purple-700 to-indigo-700 p-4 flex justify-between items-start flex-shrink-0">
+            <div>
+              <h2 className="text-white font-black text-base flex items-center gap-2">
+                <ClipboardList className="w-4 h-4" /> Evolución Clínica
+              </h2>
+              <p className="text-purple-200 text-xs mt-0.5">
+                {data.nombres} · HC:{" "}
+                <strong className="text-white">
+                  {data.codigoVerificacion || "—"}
+                </strong>
+                {evolucionForm.codigoEvolucion && (
+                  <>
+                    {" "}
+                    · Nuevo código:{" "}
+                    <strong className="text-yellow-300">
+                      {evolucionForm.codigoEvolucion}
+                    </strong>
+                  </>
+                )}
+              </p>
+            </div>
+            <button
+              onClick={() => setShowEvolucionModal(false)}
+              className="text-white hover:text-purple-200 text-xl font-black mt-0.5"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Historial previo */}
+          {evoluciones.length > 0 && (
+            <div className="px-4 pt-3 pb-0 flex-shrink-0 max-h-36 overflow-y-auto border-b border-gray-100">
+              <p className="text-[10px] font-black text-gray-500 uppercase mb-1.5">
+                📜 Historial ({evoluciones.length} evoluciones previas)
+              </p>
+              <div className="space-y-1.5">
+                {evoluciones
+                  .slice()
+                  .reverse()
+                  .map((ev, idx) => (
+                    <div
+                      key={ev.id || idx}
+                      className="bg-purple-50 border border-purple-100 rounded-lg px-3 py-2 text-xs"
+                    >
+                      <div className="flex justify-between items-center mb-0.5">
+                        <span className="font-black text-purple-800">
+                          {ev.fecha} — {ev.medico || "Dr."}
+                        </span>
+                        <div className="flex gap-1.5 items-center">
+                          {ev.codigoEvolucion && (
+                            <span className="bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded-full text-[9px] font-black">
+                              {ev.codigoEvolucion}
+                            </span>
+                          )}
+                          {ev.nuevoConcept && (
+                            <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full text-[9px] font-black">
+                              {ev.nuevoConcept}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-gray-700 text-[10px] leading-snug line-clamp-2">
+                        {ev.texto || ev.motivoConsulta || "—"}
+                      </p>
+                      {ev.formulaMedicamentos?.length > 0 && (
+                        <p className="text-[9px] text-blue-600 mt-0.5">
+                          💊 {ev.formulaMedicamentos.length} medicamento(s)
+                        </p>
+                      )}
+                      {ev.incapacidad?.aplica && (
+                        <p className="text-[9px] text-red-600 mt-0.5">
+                          🏥 Incapacidad: {ev.incapacidad.dias} días
+                        </p>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tabs navegación */}
+          <div className="flex gap-1 px-4 pt-3 pb-1 flex-shrink-0 flex-wrap">

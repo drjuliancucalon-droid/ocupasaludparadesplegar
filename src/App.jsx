@@ -3,6 +3,7 @@ import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import JSZip from "jszip";
 import CartaCustodia from "./pages/CartaCustodia";
+import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
 import {
   User,
   FileText,
@@ -16777,11 +16778,98 @@ function AppInner() {
   const [showEnvioIntegral, setShowEnvioIntegral] = useState(false);
   const [envioIntegralEmpresa, setEnvioIntegralEmpresa] = useState(null);
   const [volverAEnvioIntegral, setVolverAEnvioIntegral] = useState(null); // { empresaId, from: "reporte" }
+  // ─── AUTO-PUBLICACIÓN al portal de empresa ──────────────────────────────────
+  // Cada vez que se guarda un informe (sociodemográfico) o una carta de custodia,
+  // se publica automáticamente en `siso_portal_empresa_docs_{nit}.periodos[]`.
+  // El portal del trabajador/empresa leerá esa estructura y verá el documento
+  // disponible sin intervención manual.
+  // FIRE-AND-FORGET: nunca debe romper el guardado local. Si falla la
+  // publicación al portal, solo se loguea warning.
+  const _publicarAlPortalEmpresa = async (informe) => {
+    try {
+      const emp = companies.find(c => c.id === informe.empresaId);
+      if (!emp) return; // empresa no encontrada → no hay portal donde publicar
+      const nit = (emp.nit || "").toString().replace(/[^0-9]/g, "");
+      if (!nit || nit.length < 3) return; // NIT inválido
+      // Extraer año-mes del periodo (puede venir como "2026-05" o "2026-05 — 2026-05-07")
+      const ymMatch = (informe.periodo || "").match(/^(\d{4}-\d{2})/);
+      const ym = ymMatch ? ymMatch[1] : (informe.fecha || "").slice(0, 7);
+      if (!ym) return;
+      const [y, m] = ym.split("-");
+      const periodoLabel = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"][parseInt(m) - 1] + " " + y;
+
+      // Leer entrada existente del portal — probar variantes de NIT (con/sin DV)
+      let portalKey = `siso_portal_empresa_docs_${nit}`;
+      let portalData = null;
+      if (_WORKER_TOKEN) {
+        try { portalData = await _workerGet(portalKey); } catch {}
+        if (!portalData && nit.length > 6) {
+          const altKey = `siso_portal_empresa_docs_${nit.slice(0, -1)}`;
+          try {
+            const altData = await _workerGet(altKey);
+            if (altData) { portalKey = altKey; portalData = altData; }
+          } catch {}
+        }
+      }
+      // Si no existe, crear estructura inicial
+      if (!portalData) {
+        portalData = {
+          nit,
+          nombre: emp.nombre || "",
+          codigoAcceso: emp.portalCode || "",
+          periodos: [],
+        };
+      }
+      portalData.periodos = portalData.periodos || [];
+      // Buscar periodo existente o crear nuevo
+      let periodo = portalData.periodos.find(p => p.periodo === periodoLabel || (p.fecha || "").startsWith(ym));
+      if (!periodo) {
+        periodo = { periodo: periodoLabel, fecha: informe.fecha || `${ym}-01` };
+        portalData.periodos.push(periodo);
+      }
+      // Vincular según el tipo (custodia o informe sociodemográfico)
+      if (informe.tipo === "custodia") {
+        periodo.custodia = {
+          id: informe.id,
+          fecha: informe.fecha,
+          // mantener solo metadatos en portal — el documento completo vive en savedInformes
+        };
+      } else {
+        // Informe sociodemográfico (sin tipo)
+        periodo.informe = {
+          id: informe.id,
+          fecha: informe.fecha,
+          totalPacientes: informe.totalPacientes,
+          resumen: informe.resumen,
+        };
+      }
+      periodo.updatedAt = new Date().toISOString();
+      portalData.updatedAt = new Date().toISOString();
+      // Mantener el nombre/codigo actualizados
+      portalData.nombre = portalData.nombre || emp.nombre || "";
+      portalData.codigoAcceso = portalData.codigoAcceso || emp.portalCode || "";
+      // Persistir — D1 primero, Supabase fallback (best-effort)
+      const ok = await _workerSet(portalKey, portalData);
+      if (!ok) {
+        // Fallback a Supabase (puede fallar por cuota, no crítico)
+        try { await _sbSet(portalKey, portalData); } catch {}
+      } else {
+        try { _sbSet(portalKey, portalData); } catch {}
+      }
+    } catch (e) {
+      console.warn("[_publicarAlPortalEmpresa] error:", e?.message);
+    }
+  };
   const saveInforme = (informe) => {
-    const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo)), informe];
+    const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo && i.tipo === informe.tipo)), informe];
     setSavedInformes(updated);
     localStorage.setItem("siso_informes", JSON.stringify(updated));
     _sbSet("siso_informes_" + (currentUser?.user || "shared"), updated);
+    // AUTO-PUBLICAR al portal de empresa (informe sociodemográfico Y carta custodia)
+    // — fire-and-forget para no bloquear el save local
+    if (informe?.empresaId) {
+      _publicarAlPortalEmpresa(informe).catch(e => console.warn("[portal] publish failed:", e?.message));
+    }
   };
   const saveEmailConfig = (cfg) => {
     setEmailConfig(cfg);
@@ -31866,17 +31954,29 @@ Esta historia clínica debe conservarse mínimo 20 años.
       <div className="min-h-screen bg-gray-50 font-sans">
         {renderNavbar()}
         <div className="max-w-5xl mx-auto px-4 py-6">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
             <h2 className="text-xl font-black text-purple-900 flex items-center gap-2">
               <Building2 className="w-5 h-5" /> Empresas / Convenios (
               {_visibleCompanies.length})
             </h2>
-            <button
-              onClick={() => goBack()}
-              className="text-gray-500 font-bold text-sm flex items-center gap-1"
-            >
-              <LogOut className="rotate-180 w-4 h-4" /> Volver
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Botón Análisis Documentación — visible para médicos y admin */}
+              {(currentUser?.role === "administrador" || currentUser?.role === "medico" || currentUser?.role === "super_admin") && (
+                <button
+                  onClick={() => goTo("analisis_docs")}
+                  className="bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-xs font-black hover:bg-emerald-700 transition flex items-center gap-1.5"
+                  title="Analizar qué documentos del portal faltan por empresa"
+                >
+                  📊 Análisis Docs
+                </button>
+              )}
+              <button
+                onClick={() => goBack()}
+                className="text-gray-500 font-bold text-sm flex items-center gap-1"
+              >
+                <LogOut className="rotate-180 w-4 h-4" /> Volver
+              </button>
+            </div>
           </div>
           {/* Alerta convenios próximos a vencer */}
           {conveniosAlerta.length > 0 && (
@@ -54160,6 +54260,21 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
     }
     if (view === "propuestas") return renderPropuestas();
     if (view === "custodia") return renderCartaCustodia();
+    if (view === "analisis_docs") return (
+      <AnalisisDocsEmpresas
+        companies={companies}
+        patientsList={patientsList}
+        atencionesCerradas={atencionesCerradas}
+        savedInformes={savedInformes}
+        goTo={goTo}
+        goBack={goBack}
+        showAlert={showAlert}
+        currentUser={currentUser}
+        setSelectedCompanyReport={setSelectedCompanyReport}
+        setReportStartDate={setReportStartDate}
+        setReportEndDate={setReportEndDate}
+      />
+    );
     if (view === "historia") {
       // FIX: _billDocData necesario para incapacidad, fórmula, derivación
       const _billDocUser = billData.billDoctorId

@@ -1,0 +1,769 @@
+{
+  "createdAt": "2026-05-31T17:52:40.878Z",
+  "totales": {
+    "empresas": 31,
+    "empresasConHC": 19,
+    "empresasSinHC": 12,
+    "periodosCompletos": 0,
+    "periodosParciales": 32,
+    "atenciones": 228,
+    "informes": 2,
+    "cartas": 2,
+    "cuentas": 7,
+    "totalEmitidoCuentas": 783000
+  },
+  "empresas": [
+    {
+      "nit": "9008887146",
+      "nombre": "CENTRO DE INGENIERIA EN SERVICIOS FORESTALES Y AMBIENTALES S.A.S",
+      "codigoPortal": "EMP-8714-ZUDJ",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 8,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9004459965",
+      "nombre": "COMERCIALIZADORA FERROESTACION SAS",
+      "codigoPortal": "EMP-5996-OT8P",
+      "periodos": [
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 2,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "90012456049",
+      "nombre": "CONSORCIO INTERAMERICANA ESCOBAR Y ARIAS ",
+      "codigoPortal": "EMP-5604-L5TD",
+      "periodos": [
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 36,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9017717565",
+      "nombre": "CONSORCIO VPJ",
+      "codigoPortal": "EMP-1756-4UME",
+      "periodos": [
+        {
+          "anioMes": "2026-01",
+          "label": "Enero 2026",
+          "trabajadoresConHC": 8,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "8000977948",
+      "nombre": "CONSTRUCTORA MADECONS S.A",
+      "codigoPortal": "EMP-7794-89LF",
+      "periodos": [
+        {
+          "anioMes": "2026-01",
+          "label": "Enero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "8002372141",
+      "nombre": "CORPORACION PARA LA RECONSTRUCICON DE LA CUENCA DEL RIO PAEZ Y ZONAS ALEDAÑAS NASA KIWE",
+      "codigoPortal": "EMP-7214-X5BQ",
+      "periodos": [
+        {
+          "anioMes": "2026-01",
+          "label": "Enero 2026",
+          "trabajadoresConHC": 4,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9003744073",
+      "nombre": "DISTRIBUIDORA LA SUPERIOR TAT SAS",
+      "codigoPortal": "EMP-4407-I7QR",
+      "periodos": [
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 5,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 5,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": true,
+          "cuentaCobro": {
+            "monto": 35000,
+            "num": "004",
+            "fecha": "2026-03-11"
+          },
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia"
+          ]
+        },
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 33,
+          "tieneInforme": false,
+          "tieneCustodia": true,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9013084241",
+      "nombre": "ESTRUMETALICAS WR SAS ",
+      "codigoPortal": "EMP-8424-64C9",
+      "periodos": [
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 10,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9002419027",
+      "nombre": "GRUPO CONSTRUCTOR PRODIGYO S.A ",
+      "codigoPortal": "EMP-1902-GBCA",
+      "periodos": [
+        {
+          "anioMes": "2026-01",
+          "label": "Enero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9015847975",
+      "nombre": "GRUPO EMPRESARIAL FUNERALES LA ERMITA SAS",
+      "codigoPortal": "EMP-4797-3QY2",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 2,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": true,
+          "cuentaCobro": {
+            "monto": 70000,
+            "num": "003",
+            "fecha": "2026-03-11"
+          },
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia"
+          ]
+        },
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 5,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "763147722",
+      "nombre": "HOTEL BAROEE",
+      "codigoPortal": "EMP-4772-SK4F",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 2,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "345332276",
+      "nombre": "HOTEL LOS ANDES",
+      "codigoPortal": "EMP-3227-SKJ4",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9012963572",
+      "nombre": " KD MARKETING DIGITAL SAS",
+      "codigoPortal": "EMP-6357-WCKX",
+      "periodos": [
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 4,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "103013794",
+      "nombre": "NACIONAL DE DROGAS DEL CAUCA",
+      "codigoPortal": "EMP-1379-U7HC",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 19,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "8300849829",
+      "nombre": "NEOTECH ENGINEERING SAS",
+      "codigoPortal": "EMP-4982-7NCH",
+      "periodos": [
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 2,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "1",
+      "nombre": "PARTICULAR",
+      "codigoPortal": "EMP-1-YBCH",
+      "periodos": [
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 18,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "254176753",
+      "nombre": "PINTUCOLOR POPAYAN  ",
+      "codigoPortal": "EMP-7675-P71J",
+      "periodos": [
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 6,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "9014003531",
+      "nombre": "RECTIMOTORES CAMPOS S.A.S",
+      "codigoPortal": "EMP-0353-NFSA",
+      "periodos": [
+        {
+          "anioMes": "2026-01",
+          "label": "Enero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-02",
+          "label": "Febrero 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-03",
+          "label": "Marzo 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        },
+        {
+          "anioMes": "2026-04",
+          "label": "Abril 2026",
+          "trabajadoresConHC": 1,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    },
+    {
+      "nit": "875727656",
+      "nombre": "TECNIAGRO DEL SUR ",
+      "codigoPortal": "EMP-2765-MKVI",
+      "periodos": [
+        {
+          "anioMes": "2026-05",
+          "label": "Mayo 2026",
+          "trabajadoresConHC": 21,
+          "tieneInforme": false,
+          "tieneCustodia": false,
+          "tieneCuentaCobro": false,
+          "cuentaCobro": null,
+          "completo": false,
+          "falta": [
+            "informe",
+            "custodia",
+            "cuentaCobro"
+          ]
+        }
+      ]
+    }
+  ],
+  "empresasSinHC": [
+    {
+      "nit": "900027596",
+      "nombre": "RENTEC RENTABILIDAD Y TECNOLOGIA S.A.S",
+      "codigoPortal": "EMP-7596-KOM1"
+    },
+    {
+      "nit": "900188514",
+      "nombre": "FUNDAVIDA - FUNDACION PARA LA VIDA Y LA SALUD",
+      "codigoPortal": "EMP-8514-A3I9"
+    },
+    {
+      "nit": "900472345",
+      "nombre": "ESCUELA COLOMBOAMERICANA S.A.S",
+      "codigoPortal": "EMP-2345-PGWC"
+    },
+    {
+      "nit": "900500100",
+      "nombre": "CAFÃ‰ LOS SEIS SAS",
+      "codigoPortal": "EMP-0100-J674"
+    },
+    {
+      "nit": "900739198",
+      "nombre": "GRUPO CONSTRUCTOR CALIBIO SAS",
+      "codigoPortal": "EMP-9198-LE8P"
+    },
+    {
+      "nit": "900974006",
+      "nombre": "UNION TEMPORAL ALIANZA CALIBIO",
+      "codigoPortal": "EMP-4006-6IUN"
+    },
+    {
+      "nit": "901622693",
+      "nombre": "LA NUESTRA DISTRIBUIDORES SAS",
+      "codigoPortal": "EMP-2693-AJ44"
+    },
+    {
+      "nit": "900260224",
+      "nombre": "FUNDACION SABEMOS CUIDARTE",
+      "codigoPortal": "EMP-0224-LS2S"
+    },
+    {
+      "nit": "",
+      "nombre": "oso",
+      "codigoPortal": "EMP-7Z5G-H82K"
+    },
+    {
+      "nit": "901485534",
+      "nombre": "ACTIVA IPSO S.A.S",
+      "codigoPortal": "EMP-5534-QFG1"
+    },
+    {
+      "nit": "900309301",
+      "nombre": "FISIOSALUD DEL CAUCA IPS SAS",
+      "codigoPortal": "EMP-9301-7VMV"
+    },
+    {
+      "nit": "901736635",
+      "nombre": "DLINOX INNOVA SAS",
+      "codigoPortal": "EMP-6635-VKJT"
+    }
+  ],
+  "cuentasDetalle": [
+    {
+      "num": "002",
+      "fecha": "2026-03-11",
+      "cliente": "DISTRIBUIDORA LA SUPERIOR TAT SAS",
+      "nit": "9003744073",
+      "monto": 35000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 1 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773250213759,
+      "savedAt": "2026-03-11T17:30:13.759Z"
+    },
+    {
+      "num": "002",
+      "fecha": "2026-03-11",
+      "cliente": "DISTRIBUIDORA LA SUPERIOR TAT SAS",
+      "nit": "9003744073",
+      "monto": 35000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 1 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773250367607,
+      "savedAt": "2026-03-11T17:32:47.607Z"
+    },
+    {
+      "num": "002",
+      "fecha": "2026-03-11",
+      "cliente": "DISTRIBUIDORA LA SUPERIOR TAT SAS",
+      "nit": "9003744073",
+      "monto": 35000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 1 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773250442516,
+      "savedAt": "2026-03-11T17:34:02.516Z"
+    },
+    {
+      "num": "003",
+      "fecha": "2026-03-11",
+      "cliente": "GRUPO EMPRESARIAL FUNERALES LA ERMITA SAS",
+      "nit": "9015847975",
+      "monto": 70000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 2 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773250986583,
+      "savedAt": "2026-03-11T17:43:06.583Z"
+    },
+    {
+      "num": "003",
+      "fecha": "2026-03-11",
+      "cliente": "GRUPO EMPRESARIAL FUNERALES LA ERMITA SAS",
+      "nit": "9015847975",
+      "monto": 70000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 2 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773251006005,
+      "savedAt": "2026-03-11T17:43:26.005Z"
+    },
+    {
+      "num": "004",
+      "fecha": "2026-03-11",
+      "cliente": "DISTRIBUIDORA LA SUPERIOR TAT SAS",
+      "nit": "9003744073",
+      "monto": 35000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES — 1 trabajador(es) evaluado(s) · $35.000 c/u",
+      "id": 1773251444639,
+      "savedAt": "2026-03-11T17:50:44.639Z"
+    },
+    {
+      "num": "05",
+      "fecha": "2026-03-12",
+      "cliente": "ACTIVA IPSO S.A.S",
+      "nit": "9014855340",
+      "monto": 503000,
+      "concepto": "EXAMENES MEDICOS OCUPACIONALES E INFORME DE SALUD DE LOS TRABAJADORES",
+      "id": "bill_1773346611282",
+      "savedAt": "2026-03-12T20:16:51.282Z"
+    }
+  ]
+}
