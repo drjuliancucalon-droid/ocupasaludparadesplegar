@@ -4,8 +4,8 @@
 // (Informe sociodemográfico + Carta de custodia).
 // Reutiliza savedInformes y la navegación existente — no duplica lógica.
 
-import React, { useState, useMemo } from "react";
-import { Building2, FileText, FolderOpen, CheckCircle2, AlertTriangle, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import React, { useState, useMemo, useEffect } from "react";
+import { Building2, FileText, FolderOpen, CheckCircle2, AlertTriangle, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Upload, Loader2 } from "lucide-react";
 
 const nitNorm = (n) => (n || "").toString().replace(/[^0-9]/g, "");
 const nitMatch = (a, b) => {
@@ -44,8 +44,14 @@ export default function AnalisisDocsEmpresas({
   setSelectedCompanyReport,
   setReportStartDate,
   setReportEndDate,
+  publicarAlPortalFn,        // función _publicarAlPortalEmpresa expuesta desde App
+  workerUrl,                  // _WORKER_URL para verificar estado portal
+  workerToken,                // _WORKER_TOKEN
 }) {
   const [expanded, setExpanded] = useState(null); // "nit|ym"
+  const [portalStatus, setPortalStatus] = useState({}); // { "nit|ym": { tieneInformePortal, tieneCustodiaPortal, loaded } }
+  const [publishing, setPublishing] = useState({}); // { "nit|ym|tipo": true }
+  const [refreshTick, setRefreshTick] = useState(0);
 
   // ─── Lógica de detección de bloques ───────────────────────────────────────
   const { bloquesIncompletos, bloquesCompletos, individuales, stats } = useMemo(() => {
@@ -133,6 +139,89 @@ export default function AnalisisDocsEmpresas({
       }
     };
   }, [companies, patientsList, atencionesCerradas, savedInformes]);
+
+  // ─── Lectura del portal para detectar qué está YA PUBLICADO ──────────────
+  // Para cada bloque, consulta siso_portal_empresa_docs_{nit} y verifica si
+  // el periodo (yyyy-mm) ya tiene informe / custodia registrados.
+  useEffect(() => {
+    if (!workerUrl || !workerToken) return;
+    const todos = [...bloquesIncompletos, ...bloquesCompletos];
+    const pendientes = todos.filter(b => !portalStatus[`${b.nit}|${b.ym}`]?.loaded);
+    if (pendientes.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      // De-duplicar por NIT para no hacer fetch redundantes
+      const nitsUnicos = [...new Set(pendientes.map(b => b.nit))];
+      for (const nit of nitsUnicos) {
+        if (cancelled) return;
+        const tryKeys = [`siso_portal_empresa_docs_${nit}`];
+        if (nit.length > 6) tryKeys.push(`siso_portal_empresa_docs_${nit.slice(0, -1)}`);
+        let portalData = null;
+        for (const k of tryKeys) {
+          try {
+            const r = await fetch(`${workerUrl}/store/${encodeURIComponent(k)}`, {
+              headers: { "X-Siso-Token": workerToken }
+            });
+            if (r.ok) {
+              const d = await r.json();
+              if (d[0]?.value) { portalData = d[0].value; break; }
+            }
+          } catch {}
+        }
+        if (cancelled) return;
+        const periodosPortal = portalData?.periodos || [];
+        // Actualizar status para TODOS los bloques de este NIT
+        setPortalStatus(prev => {
+          const out = { ...prev };
+          for (const b of todos.filter(x => x.nit === nit)) {
+            const key = `${b.nit}|${b.ym}`;
+            const per = periodosPortal.find(p => (p.fecha || "").startsWith(b.ym) || (p.periodo || "").includes(b.ym));
+            out[key] = {
+              loaded: true,
+              tieneInformePortal: !!per?.informe,
+              tieneCustodiaPortal: !!per?.custodia,
+              tieneCuentaPortal: !!per?.cuenta,
+              portalDataRaw: portalData,
+            };
+          }
+          return out;
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [bloquesIncompletos, bloquesCompletos, workerUrl, workerToken, refreshTick]);
+
+  // ─── Publicar informe/custodia EXISTENTE al portal ───────────────────────
+  const publicarExistente = async (bloque, tipo /* 'informe' | 'custodia' */) => {
+    const doc = tipo === "custodia" ? bloque.custodia : bloque.informe;
+    if (!doc) {
+      showAlert?.("No hay documento para publicar.");
+      return;
+    }
+    if (!publicarAlPortalFn) {
+      showAlert?.("Función de publicación no disponible.");
+      return;
+    }
+    const pubKey = `${bloque.nit}|${bloque.ym}|${tipo}`;
+    setPublishing(prev => ({ ...prev, [pubKey]: true }));
+    try {
+      await publicarAlPortalFn(doc);
+      // Forzar releer portal status después de un breve delay para
+      // que el Worker termine de procesar la escritura.
+      setTimeout(() => {
+        setPortalStatus(prev => {
+          const out = { ...prev };
+          delete out[`${bloque.nit}|${bloque.ym}`];
+          return out;
+        });
+        setRefreshTick(t => t + 1);
+      }, 1500);
+    } catch (e) {
+      showAlert?.("Error publicando: " + (e?.message || "desconocido"));
+    } finally {
+      setPublishing(prev => ({ ...prev, [pubKey]: false }));
+    }
+  };
 
   // ─── Acciones — navegan a flujos existentes ────────────────────────────────
   const irAGenerarInforme = (bloque) => {
@@ -264,44 +353,100 @@ export default function AnalisisDocsEmpresas({
                           </div>
                         </details>
 
-                        {/* Acciones */}
-                        <div className="grid md:grid-cols-2 gap-2 pt-2">
-                          {/* Informe */}
-                          <div className={`rounded-xl p-3 border ${b.tieneInforme ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-amber-300'}`}>
-                            <p className="text-xs font-black mb-2 flex items-center gap-1">
-                              <FileText className="w-3.5 h-3.5" /> Informe sociodemográfico {b.tieneInforme && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
-                            </p>
-                            {b.tieneInforme ? (
-                              <p className="text-[10px] text-emerald-700">✓ Ya generado el {b.informe.fecha || "(sin fecha)"}</p>
-                            ) : (
-                              <button
-                                onClick={() => irAGenerarInforme(b)}
-                                className="w-full py-1.5 px-3 bg-blue-600 text-white rounded-lg text-xs font-black hover:bg-blue-700 transition flex items-center justify-center gap-1"
-                              >
-                                Generar con IA <ArrowRight className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-                          {/* Custodia */}
-                          <div className={`rounded-xl p-3 border ${b.tieneCustodia ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-amber-300'}`}>
-                            <p className="text-xs font-black mb-2 flex items-center gap-1">
-                              <FolderOpen className="w-3.5 h-3.5" /> Carta de custodia {b.tieneCustodia && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
-                            </p>
-                            {b.tieneCustodia ? (
-                              <p className="text-[10px] text-emerald-700">✓ Ya generada el {b.custodia.fecha || "(sin fecha)"}</p>
-                            ) : (
-                              <button
-                                onClick={() => irACrearCustodia(b)}
-                                className="w-full py-1.5 px-3 bg-purple-600 text-white rounded-lg text-xs font-black hover:bg-purple-700 transition flex items-center justify-center gap-1"
-                              >
-                                Generar carta <ArrowRight className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                        {/* Estado de publicación al portal */}
+                        {(() => {
+                          const statusKey = `${b.nit}|${b.ym}`;
+                          const status = portalStatus[statusKey];
+                          const infoPubKey = `${b.nit}|${b.ym}|informe`;
+                          const cusPubKey = `${b.nit}|${b.ym}|custodia`;
+                          return (
+                            <div className="grid md:grid-cols-2 gap-2 pt-2">
+                              {/* Informe */}
+                              <div className={`rounded-xl p-3 border ${b.tieneInforme ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-amber-300'}`}>
+                                <p className="text-xs font-black mb-2 flex items-center gap-1">
+                                  <FileText className="w-3.5 h-3.5" /> Informe sociodemográfico {b.tieneInforme && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                                </p>
+                                {b.tieneInforme ? (
+                                  <div className="space-y-1.5">
+                                    <p className="text-[10px] text-emerald-700">✓ Generado el {b.informe.fecha || "(sin fecha)"}</p>
+                                    {status?.loaded && (
+                                      status.tieneInformePortal ? (
+                                        <p className="text-[10px] text-emerald-700 flex items-center gap-1">
+                                          <CheckCircle2 className="w-3 h-3" /> Publicado en portal
+                                        </p>
+                                      ) : (
+                                        <button
+                                          onClick={() => publicarExistente(b, "informe")}
+                                          disabled={publishing[infoPubKey]}
+                                          className="w-full py-1 px-2 bg-orange-600 text-white rounded text-[10px] font-black hover:bg-orange-700 transition flex items-center justify-center gap-1 disabled:opacity-50"
+                                        >
+                                          {publishing[infoPubKey] ? (
+                                            <><Loader2 className="w-3 h-3 animate-spin" /> Publicando…</>
+                                          ) : (
+                                            <><Upload className="w-3 h-3" /> Publicar al portal</>
+                                          )}
+                                        </button>
+                                      )
+                                    )}
+                                    {!status?.loaded && (
+                                      <p className="text-[10px] text-gray-400 italic">Verificando portal…</p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => irAGenerarInforme(b)}
+                                    className="w-full py-1.5 px-3 bg-blue-600 text-white rounded-lg text-xs font-black hover:bg-blue-700 transition flex items-center justify-center gap-1"
+                                  >
+                                    Generar con IA <ArrowRight className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                              {/* Custodia */}
+                              <div className={`rounded-xl p-3 border ${b.tieneCustodia ? 'bg-emerald-50 border-emerald-300' : 'bg-white border-amber-300'}`}>
+                                <p className="text-xs font-black mb-2 flex items-center gap-1">
+                                  <FolderOpen className="w-3.5 h-3.5" /> Carta de custodia {b.tieneCustodia && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                                </p>
+                                {b.tieneCustodia ? (
+                                  <div className="space-y-1.5">
+                                    <p className="text-[10px] text-emerald-700">✓ Generada el {b.custodia.fecha || "(sin fecha)"}</p>
+                                    {status?.loaded && (
+                                      status.tieneCustodiaPortal ? (
+                                        <p className="text-[10px] text-emerald-700 flex items-center gap-1">
+                                          <CheckCircle2 className="w-3 h-3" /> Publicada en portal
+                                        </p>
+                                      ) : (
+                                        <button
+                                          onClick={() => publicarExistente(b, "custodia")}
+                                          disabled={publishing[cusPubKey]}
+                                          className="w-full py-1 px-2 bg-orange-600 text-white rounded text-[10px] font-black hover:bg-orange-700 transition flex items-center justify-center gap-1 disabled:opacity-50"
+                                        >
+                                          {publishing[cusPubKey] ? (
+                                            <><Loader2 className="w-3 h-3 animate-spin" /> Publicando…</>
+                                          ) : (
+                                            <><Upload className="w-3 h-3" /> Publicar al portal</>
+                                          )}
+                                        </button>
+                                      )
+                                    )}
+                                    {!status?.loaded && (
+                                      <p className="text-[10px] text-gray-400 italic">Verificando portal…</p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => irACrearCustodia(b)}
+                                    className="w-full py-1.5 px-3 bg-purple-600 text-white rounded-lg text-xs font-black hover:bg-purple-700 transition flex items-center justify-center gap-1"
+                                  >
+                                    Generar carta <ArrowRight className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         <p className="text-[10px] text-gray-500 italic text-center">
-                          📌 Al guardar el informe o la carta se publicará automáticamente en el portal de esta empresa.
+                          📌 Los documentos nuevos se publican automáticamente. Los existentes usa el botón naranja para publicar.
                         </p>
                       </div>
                     )}

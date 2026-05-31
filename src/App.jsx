@@ -54273,6 +54273,9 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
         setSelectedCompanyReport={setSelectedCompanyReport}
         setReportStartDate={setReportStartDate}
         setReportEndDate={setReportEndDate}
+        publicarAlPortalFn={_publicarAlPortalEmpresa}
+        workerUrl={_WORKER_URL}
+        workerToken={_WORKER_TOKEN}
       />
     );
     if (view === "historia") {

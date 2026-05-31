@@ -221,12 +221,36 @@ function classify(key) {
     for (const k of onlySb) console.log(`   + ${k}  [${kb(sbMap.get(k))}]`);
     console.log();
   }
+  // ─── REGLA DE GANADOR para claves PORTAL EMPRESA ──────────────────────────
+  // Para claves siso_portal_empresa_docs_* y siso_portal_empresa_<nit> el
+  // ganador es quien tenga updatedAt MÁS RECIENTE. Esto protege publicaciones
+  // hechas hoy en D1 de ser sobreescritas por versiones antiguas de Supabase.
+  const isPortalKey = (k) => k.startsWith("siso_portal_empresa_") || k.startsWith("siso_portal_doc_");
+  const tsOf = (val) => {
+    if (!val || typeof val !== "object") return "";
+    return val.updatedAt || val.updated_at || val.ts || "";
+  };
+  const portalWinner = new Map(); // key → "d1" | "sb"
+  for (const k of different) {
+    if (isPortalKey(k)) {
+      const tD1 = tsOf(d1Map.get(k));
+      const tSb = tsOf(sbMap.get(k));
+      // Si ambos tienen timestamp, gana el más reciente. Si solo D1 lo tiene
+      // (porque Supabase es legacy sin timestamp), gana D1. Si solo Sb lo tiene
+      // (porque D1 importó antes que se publicara), gana Sb.
+      const ganador = tD1 >= tSb ? "d1" : "sb";
+      portalWinner.set(k, ganador);
+    }
+  }
+
   if (different.length > 0) {
     console.log(`🔴 DISTINTOS (${different.length}):`);
     for (const k of different) {
       const vD1 = d1Map.get(k), vSb = sbMap.get(k);
-      console.log(`   ≠ ${k}`);
-      console.log(`     D1: ${kb(vD1)} hash:${hash(vD1)}  |  SB: ${kb(vSb)} hash:${hash(vSb)}`);
+      const tag = portalWinner.has(k) ? ` [portal-protect: gana ${portalWinner.get(k).toUpperCase()}]` : "";
+      console.log(`   ≠ ${k}${tag}`);
+      console.log(`     D1: ${kb(vD1)} hash:${hash(vD1)} ts:${tsOf(vD1)||"-"}`);
+      console.log(`     SB: ${kb(vSb)} hash:${hash(vSb)} ts:${tsOf(vSb)||"-"}`);
     }
     console.log();
   }
@@ -238,9 +262,12 @@ function classify(key) {
 
   // ─── SINCRONIZACIÓN ─────────────────────────────────────────────────────────
   if (SYNC_TO_SB) {
+    // D1 → Supabase: claves SOLO en D1 + claves diferentes donde D1 debe ganar
     const toSB = [
       ...onlyD1.map(k => ({ key: k, value: d1Map.get(k) })),
-      ...different.map(k => ({ key: k, value: d1Map.get(k) })), // D1 gana
+      ...different
+        .filter(k => !portalWinner.has(k) || portalWinner.get(k) === "d1")
+        .map(k => ({ key: k, value: d1Map.get(k) })),
     ];
     console.log(`\n⬆️  Sincronizando D1 → Supabase (${toSB.length} registros)...`);
     const res = await pushToSB(toSB);
@@ -248,9 +275,15 @@ function classify(key) {
   }
 
   if (SYNC_TO_D1) {
-    const toD1 = onlySb.map(k => ({ key: k, value: sbMap.get(k) }));
+    // Supabase → D1: claves SOLO en SB + claves portal donde SB gana por timestamp más reciente
+    const toD1 = [
+      ...onlySb.map(k => ({ key: k, value: sbMap.get(k) })),
+      ...different
+        .filter(k => portalWinner.get(k) === "sb")
+        .map(k => ({ key: k, value: sbMap.get(k) })),
+    ];
     if (toD1.length > 0) {
-      console.log(`\n⬇️  Sincronizando Supabase → D1 (${toD1.length} registros faltantes)...`);
+      console.log(`\n⬇️  Sincronizando Supabase → D1 (${toD1.length} registros)...`);
       const res = await pushToD1(toD1);
       console.log(`   Resultado: ✅ ${res.ok}  ✗ ${res.fail}`);
     }
