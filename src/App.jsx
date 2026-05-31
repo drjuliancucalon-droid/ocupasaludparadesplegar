@@ -4,6 +4,7 @@ import html2canvas from "html2canvas";
 import JSZip from "jszip";
 import CartaCustodia from "./pages/CartaCustodia";
 import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
+import ContabilidadV2 from "./pages/ContabilidadV2";
 import {
   User,
   FileText,
@@ -24380,6 +24381,26 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     </p>
                     <p className="text-[10px] text-gray-400 truncate">
                       Caja · Cuentas
+                    </p>
+                  </div>
+                </button>
+              )}
+              {/* Contabilidad V2 — solo admin drcucalon */}
+              {currentUser?.user === "drcucalon" && (
+                <button
+                  onClick={() => goTo("billing_v2")}
+                  className="bg-white border border-gray-100 rounded-xl p-3 flex items-center gap-2.5 hover:border-emerald-200 hover:bg-emerald-50/40 transition group shadow-sm"
+                  title="Contabilidad V2 — cuentas con consecutivo único y estados"
+                >
+                  <div className="bg-emerald-50 p-2 rounded-lg group-hover:bg-emerald-100 transition flex-shrink-0 text-base leading-none flex items-center justify-center w-8 h-8">
+                    📊
+                  </div>
+                  <div className="text-left min-w-0">
+                    <p className="font-black text-gray-800 text-xs leading-tight">
+                      Contabilidad V2
+                    </p>
+                    <p className="text-[10px] text-gray-400 truncate">
+                      Pagos · Pendientes
                     </p>
                   </div>
                 </button>
@@ -54276,6 +54297,17 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
         publicarAlPortalFn={_publicarAlPortalEmpresa}
         workerUrl={_WORKER_URL}
         workerToken={_WORKER_TOKEN}
+      />
+    );
+    if (view === "billing_v2") return (
+      <ContabilidadV2
+        currentUser={currentUser}
+        companies={companies}
+        savedBillsLegacy={savedBillsList}
+        goBack={goBack}
+        showAlert={showAlert}
+        workerGet={_workerGet}
+        workerSet={_workerSet}
       />
     );
     if (view === "historia") {
