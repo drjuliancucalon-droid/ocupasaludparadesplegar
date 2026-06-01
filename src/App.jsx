@@ -1413,17 +1413,58 @@ const _sbStorageDelete = async (path) => {
   }
 };
 let _syncStatusCallback = null;
+// Claves donde D1 (Worker) DEBE recibir la escritura además de Supabase.
+// D1 es nuestro storage autoritativo; Supabase es backup.
+// Esto evita que datos críticos (pacientes/empresas/atenciones/etc) queden
+// solo en localStorage cuando Supabase falla o está caído.
+const _D1_SYNC_PREFIXES = [
+  "siso_db_patients_",
+  "siso_patients_",
+  "siso_companies_",
+  "siso_atenciones_",
+  "siso_informes_",
+  "siso_caja_",
+  "siso_saved_bills_",
+  "siso_encuestas",
+  "siso_cartas_custodia",
+  "siso_audit_log",
+];
+const _D1_SYNC_EXACT_KEYS = new Set([
+  "siso_users",
+  "siso_atenciones_cerradas",
+  "siso_saved_reports",
+  "siso_cartas_custodia",
+  "siso_audit_log",
+  "siso_doctor_signature",
+]);
+const _shouldSyncToD1 = (key) =>
+  _D1_SYNC_EXACT_KEYS.has(key) ||
+  _D1_SYNC_PREFIXES.some((p) => key.startsWith(p));
+
 const _sync = (key, jsonValue) => {
   _ls.setItem(key, jsonValue);
-  const _sbMatch =
-    _SB_KEYS.includes(key) || _SB_KEY_PREFIXES.some((p) => key.startsWith(p));
-  if (!_sbMatch) return;
   let parsed;
   try {
     parsed = JSON.parse(jsonValue);
   } catch {
     parsed = jsonValue;
   }
+  // ── ESCRITURA A D1 (autoritativo) ─────────────────────────────────────
+  // FIX 2026-06-02: las importaciones desde encuestas/Excel y otros flujos
+  // que solo llamaban a _sync se quedaban únicamente en LS + Supabase. Si
+  // Supabase fallaba (cuota o caído), los datos NUNCA llegaban a D1 y al
+  // recargar la app desde D1 los pacientes "desaparecían". Ahora _sync
+  // escribe a D1 cuando la clave es operacional. Fire-and-forget para no
+  // bloquear la UI.
+  if (_shouldSyncToD1(key)) {
+    _workerSet(key, parsed).catch((e) => {
+      console.warn("[_sync] D1 write falló para", key, ":", e?.message);
+    });
+  }
+  // ── ESCRITURA A SUPABASE (backup) ─────────────────────────────────────
+  const _sbMatch =
+    _SB_KEYS.includes(key) || _SB_KEY_PREFIXES.some((p) => key.startsWith(p));
+  if (!_sbMatch) return;
   setTimeout(() => {
     if (_syncStatusCallback) _syncStatusCallback("syncing");
   }, 0);
