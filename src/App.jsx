@@ -447,6 +447,65 @@ const _workerGet = async (key) => {
   try { return JSON.parse(joined); }
   catch (e) { console.warn(`[_workerGet] JSON inválido para ${key}:`, e?.message); return null; }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _readSmart — Lectura comparativa D1 (autoritativo) + Supabase (backup).
+// Arquitectura:
+//   - D1 es FUENTE DE VERDAD PRINCIPAL.
+//   - Supabase es BACKUP/redundancia.
+//   - Al leer: si AMBOS responden, comparar updatedAt y devolver el MÁS RECIENTE.
+//     Si solo D1 responde → usar D1.
+//     Si solo SB responde → usar SB Y catch-up (escribir a D1).
+//     Si ninguno → null.
+// Solo se usa para claves CRÍTICAS (portal, informes, cartas, contabilidad).
+// Para claves normales se usa _workerGet directo (más rápido, menos cuota SB).
+// ─────────────────────────────────────────────────────────────────────────────
+const _tsOf = (v) => {
+  if (!v || typeof v !== "object") return "";
+  return v.updatedAt || v.updated_at || v.ts || "";
+};
+const _readSmart = async (key, options = {}) => {
+  const { catchUp = true, timeout = 6000 } = options;
+  // 1) Leer ambos en paralelo (con timeout)
+  const d1Promise = _workerGet(key).catch(() => null);
+  const sbPromise = (async () => {
+    try {
+      const r = await Promise.race([
+        fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.${encodeURIComponent(key)}&select=value,updated_at`, {
+          headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` },
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("sb-timeout")), timeout)),
+      ]);
+      if (!r.ok) return null;
+      const arr = await r.json();
+      if (!Array.isArray(arr) || arr.length === 0) return null;
+      const row = arr[0];
+      const v = typeof row.value === "string" ? (() => { try { return JSON.parse(row.value); } catch { return row.value; } })() : row.value;
+      return { value: v, ts: row.updated_at || _tsOf(v) || "" };
+    } catch { return null; }
+  })();
+  const [d1Val, sbResult] = await Promise.all([d1Promise, sbPromise]);
+  const d1Has = d1Val !== null && d1Val !== undefined;
+  const sbHas = sbResult !== null;
+  // 2) Decidir
+  if (d1Has && !sbHas) return d1Val;
+  if (!d1Has && sbHas) {
+    // Catch-up: escribir a D1 para próxima vez sea local
+    if (catchUp) _workerSet(key, sbResult.value).catch(() => {});
+    return sbResult.value;
+  }
+  if (!d1Has && !sbHas) return null;
+  // Ambos responden — comparar timestamps
+  const tD1 = _tsOf(d1Val);
+  const tSB = sbResult.ts || "";
+  if (tSB && tD1 && tSB > tD1) {
+    // SB es más reciente → catch-up a D1
+    if (catchUp) _workerSet(key, sbResult.value).catch(() => {});
+    return sbResult.value;
+  }
+  // D1 es más reciente o sin timestamps → D1 gana (autoritativo)
+  return d1Val;
+};
 const _workerGetAll = async (userId) => {
   if (!_WORKER_TOKEN) return null;
   try {
@@ -504,10 +563,13 @@ const _cfgSafeKey = (v) =>
   typeof v === "string" && v.length > 20 && v.length < 200 ? v : null;
 const _cfgSafeServiceKey = (v) =>
   typeof v === "string" && v.length > 20 && v.length < 600 ? v : null;
+// Proyecto Supabase activo desde 2026-06-01.
+// El anterior (morlvrofvzrlekkqxglc) fue eliminado por inactividad.
+// D1 es AUTORITATIVO; Supabase es BACKUP redundante.
 const _SB_URL =
-  _cfgSafeUrl(_cfgRaw.sbUrl) || "https://morlvrofvzrlekkqxglc.supabase.co";
+  _cfgSafeUrl(_cfgRaw.sbUrl) || "https://yqrrktrgoijgzccrxnpz.supabase.co";
 const _SB_KEY =
-  _cfgSafeKey(_cfgRaw.sbKey) || "sb_publishable_ZFMNDq1HMsBqrvhtREydiA_AT4lKyg_";
+  _cfgSafeKey(_cfgRaw.sbKey) || "sb_publishable_K88qYuJ9wsWjQqnIhLVK7Q_NroFvPI7";
 // FASE 2 — Service Role Key (JWT ~219 chars — inyectado via window.__SISO_CONFIG.sbServiceKey)
 // ⚠️  NUNCA hardcodear en producción. Inyectar via window.__SISO_CONFIG.sbServiceKey
 // Para configurar: en index.html agregar antes del bundle:
@@ -15052,16 +15114,11 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
     (async () => {
       for (const n of tryNits) {
         try {
-          // D1 primero, Supabase fallback
-          let val = null;
-          if (_WORKER_TOKEN) { try { val = await _workerGet(`siso_portal_empresa_docs_${n}`); } catch {} }
-          if (!val) {
-            const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${n}&select=value`, {
-              headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` },
-            });
-            const d = await r.json();
-            val = d[0]?.value || null;
-          }
+          // LECTURA COMPARATIVA D1↔SB: si AMBOS responden devuelve el más
+          // actualizado (por updatedAt). Si solo uno responde lo usa.
+          // D1 es autoritativo; SB es backup; cuando SB es más reciente se
+          // dispara catch-up para que D1 quede al día.
+          const val = await _readSmart(`siso_portal_empresa_docs_${n}`);
           if (val) { setPortalDocs(val); break; }
         } catch {}
       }
@@ -16849,13 +16906,18 @@ function AppInner() {
       // Mantener el nombre/codigo actualizados
       portalData.nombre = portalData.nombre || emp.nombre || "";
       portalData.codigoAcceso = portalData.codigoAcceso || emp.portalCode || "";
-      // Persistir — D1 primero, Supabase fallback (best-effort)
-      const ok = await _workerSet(portalKey, portalData);
-      if (!ok) {
-        // Fallback a Supabase (puede fallar por cuota, no crítico)
+      // Marcar timestamp para que lectura comparativa pueda ordenar
+      portalData.updatedAt = new Date().toISOString();
+      // ESCRITURA DUAL: D1 (autoritativo, blocking) + Supabase (backup, async)
+      // Garantiza redundancia: si Supabase está caído D1 funciona; al revés
+      // _readSmart catchea desde SB y catch-up a D1.
+      const okD1 = await _workerSet(portalKey, portalData);
+      if (!okD1) {
+        console.warn("[_publicarAlPortalEmpresa] D1 write falló, intentando SB...");
         try { await _sbSet(portalKey, portalData); } catch {}
       } else {
-        try { _sbSet(portalKey, portalData); } catch {}
+        // D1 OK → SB en background como backup (no espera ni rompe si falla)
+        _sbSet(portalKey, portalData).catch((e) => console.warn("[_publicarAlPortalEmpresa] SB backup falló:", e?.message));
       }
     } catch (e) {
       console.warn("[_publicarAlPortalEmpresa] error:", e?.message);

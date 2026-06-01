@@ -9,8 +9,8 @@ import { createHash } from "crypto";
 
 const WORKER_URL   = "https://siso-api.dr-juliancucalon.workers.dev";
 const WORKER_TOKEN = "gRxbhIfKs9ur86PDXZH7qdwjvnpQUOM2";
-const SB_URL       = "https://morlvrofvzrlekkqxglc.supabase.co";
-const SB_KEY       = "sb_publishable_ZFMNDq1HMsBqrvhtREydiA_AT4lKyg_";
+const SB_URL       = "https://yqrrktrgoijgzccrxnpz.supabase.co";
+const SB_KEY       = "sb_publishable_K88qYuJ9wsWjQqnIhLVK7Q_NroFvPI7";
 
 const args = process.argv.slice(2);
 const DO_SYNC     = args.includes("--sync") || args.includes("--sync-both");
