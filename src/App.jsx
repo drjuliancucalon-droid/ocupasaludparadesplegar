@@ -21042,24 +21042,77 @@ const handleLogin = (u, p) => {
   };
   // Guardar pacientes bajo la clave del usuario activo (aislamiento por médico)
   // ── IPS: si el usuario tiene empresaId, usar storage compartido de empresa ──
+  // PROTECCIÓN ANTI-REGRESIÓN para _syncPatients
+  // Umbral: si la lista local tiene MÁS de N pacientes MENOS que la versión en D1,
+  // se asume que el cliente está desactualizado y se hace MERGE en lugar de
+  // sobrescribir. Esto previene que un navegador con LS viejo borre pacientes
+  // recientes que existen en D1.
+  // Threshold conservador: 3 pacientes (permite borrados legítimos puntuales).
+  const _PAT_REGRESSION_THRESHOLD = 3;
   const _syncPatients = (list) => {
     const _suid = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
       : currentUser?.user || "shared";
     const key = _patKey(_suid);
     const cloudKey = _patKeyCloud(_suid);
+
+    // Comportamiento síncrono inmediato — preserva el contrato del caller:
+    // LS se escribe ya con `list`. Si después detectamos regresión vs D1
+    // hacemos merge y re-escribimos LS + estado React.
     _ls.setItem(key, JSON.stringify(list));
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
-    // Slim antes de enviar a D1/Supabase: evita exceder límite 1 MB/fila con imágenes base64
-    const slimList = list.map(_slimPatient);
-    _sbSet(cloudKey, slimList).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = slimList;
+    const slimListInicial = list.map(_slimPatient);
+    // Supabase backup (best-effort, no bloquea)
+    _sbSet(cloudKey, slimListInicial).then((ok) => {
+      if (!ok) _sbQueue.pending[cloudKey] = slimListInicial;
       setTimeout(() => {
         if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
       }, 0);
     });
+
+    // ── PROTECCIÓN ANTI-REGRESIÓN + escritura D1 ───────────────────────────
+    // FIX 2026-06-02: navegadores con bundle viejo escribían listas
+    // incompletas a D1, sobrescribiendo pacientes recién recuperados.
+    // Ahora: leemos D1 vigente; si tiene más pacientes que `list` por
+    // encima del umbral, hacemos MERGE preservando los faltantes (matcheando
+    // por id y docNumero, filtrando fantasmas sin id ni doc).
+    // Async fire-and-forget: no bloquea la UI ni el flujo principal.
+    if (_WORKER_TOKEN) {
+      (async () => {
+        try {
+          const remote = await _workerGet(key).catch(() => null);
+          let finalList = list;
+          if (Array.isArray(remote) && remote.length > 0) {
+            const diff = remote.length - list.length;
+            if (diff > _PAT_REGRESSION_THRESHOLD) {
+              const localIds  = new Set(list.filter(p => p?.id).map(p => p.id));
+              const localDocs = new Set(list.filter(p => p?.docNumero).map(p => p.docNumero.toString().trim()));
+              const extras = remote.filter(p => {
+                if (!p || (!p.id && !p.docNumero)) return false;
+                if (p.id && localIds.has(p.id)) return false;
+                if (p.docNumero && localDocs.has(p.docNumero.toString().trim())) return false;
+                return true;
+              });
+              if (extras.length > 0) {
+                finalList = [...list, ...extras];
+                console.warn(`[_syncPatients] anti-regresión: D1=${remote.length}, local=${list.length}, merged=${finalList.length} (+${extras.length})`);
+                // Persistir merge en LS y actualizar React state
+                _ls.setItem(key, JSON.stringify(finalList));
+                setPatientsList(finalList);
+              }
+            }
+          }
+          // Escribir versión final (mergeada o original) a D1
+          const slimFinal = finalList.map(_slimPatient);
+          await _workerSet(cloudKey, slimFinal).catch((e) => console.warn("[_syncPatients] D1 cloudKey:", e?.message));
+          await _workerSet(key,      slimFinal).catch((e) => console.warn("[_syncPatients] D1 key:", e?.message));
+        } catch (e) {
+          console.warn("[_syncPatients] async D1 falló:", e?.message);
+        }
+      })();
+    }
   };
   const _syncCompanies = (list) => {
     const _suid2 = currentUser?.empresaId
