@@ -1,0 +1,1 @@
+﻿export const validatePasswordStrength = (p) => { const e = []; if (!p || p.length < 8) e.push("8"); if (!/[A-Z]/.test(p)) e.push("A"); if (!/[a-z]/.test(p)) e.push("a"); if (!/[0-9]/.test(p)) e.push("0"); return { valid: e.length === 0, errors: e }; };

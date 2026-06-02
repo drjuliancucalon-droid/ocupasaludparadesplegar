@@ -1,0 +1,34 @@
+name = "ocupasalud-worker"
+main = "functions/[[path]].js"
+compatibility_date = "2024-01-01"
+
+# Variables de entorno
+[vars]
+ENVIRONMENT = "production"
+SUPABASE_URL = "https://tu-proyecto.supabase.co"
+# La clave de servicio de Supabase se inyectará de forma segura en producción
+# SUPABASE_SERVICE_KEY = "..." 
+
+# Binding a la base de datos D1
+[[d1_databases]]
+binding = "DB"
+database_name = "ocupasalud-db"
+database_id = "" # Se llenará después de crear la DB con wrangler d1 create
+
+# Configuración para almacenamiento de archivos (opcional, si se usa R2)
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "ocupasalud-files"
+
+# Configuración de CORS y seguridad
+[site]
+bucket = "./public"
+
+# Límites y optimizaciones
+[build]
+command = "" # No hay build step para JS simple, pero se puede agregar si usas TS
+
+# Definición de triggers para colas (si se implementa sincronización asíncrona avanzada)
+# [[queues.producers]]
+# queue = "supabase-sync-queue"
+# binding = "SYNC_QUEUE"

@@ -1,9 +1,14 @@
-node_modules/
-dist/
-.env
+```
+# Compressed archives
+*.tar.gz
+
+# Environment variables
 .env.local
-.env.*.local
-*.log
-npm-debug.log*
-.DS_Store
-coverage/
+
+# Dependencies
+node_modules/
+
+# Build outputs (inferred from package.json/package-lock.json)
+dist/
+build/
+```
