@@ -15866,7 +15866,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                 </div>
               )}
               <button
-                onClick={buscar}
+                onClick={() => buscar()}
                 disabled={cargando || !busqueda.trim() || Date.now() < bloqueadoHasta}
                 className="w-full py-3.5 bg-gradient-to-r from-teal-600 to-blue-600 hover:from-teal-700 hover:to-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-sm rounded-xl transition shadow-md flex items-center justify-center gap-2"
               >
@@ -16032,7 +16032,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                   </div>
                 )}
                 <button
-                  onClick={buscar}
+                  onClick={() => buscar()}
                   disabled={cargando || !busqueda.trim() || !codigoPortal.trim() || Date.now() < bloqueadoHasta}
                   className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-sm rounded-xl transition shadow-md flex items-center justify-center gap-2"
                 >
