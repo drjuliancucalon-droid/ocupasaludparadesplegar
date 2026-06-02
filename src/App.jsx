@@ -17261,6 +17261,8 @@ function AppInner() {
   const [postCierreHC, setPostCierreHC] = useState(null);  // { paciente, empresa, subtipo, monto, cajaMovId, code }
   // ── Prefill para ContabilidadV2 al navegar desde cierre HC ───────────────
   const [billingV2Prefill, setBillingV2Prefill] = useState(null);
+  // ── Modal selección de fecha de cierre HC (retroactivo) ──────────────────
+  const [cierreHCData, setCierreHCData] = useState(null); // { fecha, onConfirm }
   // ── B-F1-03 Portafolio de servicios ──────────────────────────────────
   const [portafolioItems, setPortafolioItems] = useState(() => {
     try {
@@ -21196,9 +21198,14 @@ const handleLogin = (u, p) => {
         "⚠️ Recuerde registrar la vigencia del concepto de aptitud (Res. 1843/2025). Puede editar la HC para añadirla."
       );
     }
-    showConfirm(
-      "¿Cerrar la historia clínica? No podrá editarla sin código de auditoría.",
-      async () => {
+    // Mostrar modal con selección de fecha de cierre (permite cierre retroactivo)
+    // Default = fechaExamen si está presente, sino hoy.
+    const _hoy = new Date().toISOString().split("T")[0];
+    const _fechaDefault = data.fechaExamen || _hoy;
+    setCierreHCData({
+      fecha: _fechaDefault,
+      onConfirm: async (fechaCierreElegida) => {
+        setCierreHCData(null);
         // NORMATIVO: Ley 527/1999 - Firma electrónica con hash SHA-256 para integridad del documento
         const hashHC = await _generarHashHC(data);
         const fechaFirma = new Date().toISOString();
@@ -21225,6 +21232,11 @@ const handleLogin = (u, p) => {
           estadoHistoria: "Cerrada",
           codigoVerificacion: code,
           firmaDigital,
+          // FECHA ELEGIDA POR EL USUARIO (permite cierre retroactivo)
+          fechaCierre: fechaCierreElegida,
+          // Si fechaExamen no estaba, usar la misma elegida
+          fechaExamen: data.fechaExamen || fechaCierreElegida,
+          _cierreRetroactivo: fechaCierreElegida !== _hoy ? true : undefined,
         };
         setData(closed);
         // patientsListRef.current tiene siempre el valor más reciente,
@@ -21257,7 +21269,8 @@ const handleLogin = (u, p) => {
           conceptoAptitud: closed.conceptoAptitud,
           codigoVerificacion: code,
           estadoHistoria: "Cerrada",
-          fechaCierre: new Date().toISOString().split("T")[0],
+          // FECHA ELEGIDA (permite cierre retroactivo)
+          fechaCierre: fechaCierreElegida,
           // ── Restricciones y recomendaciones completas ───────────────────────
           restricciones:
             closed.analisisRestricciones || closed.restricciones || "",
@@ -21502,7 +21515,7 @@ const handleLogin = (u, p) => {
         }
         logAccess("Cierre", data.id, dataType); // AUDIT: Res. 1888/2025 RDA
       }
-    );
+    });
   };
 
   // B-29: Resumen IA de HC (Claude API)
@@ -53762,13 +53775,15 @@ ${
               {evolucionForm.nuevoConcept && (
                 <button
                   onClick={() => {
+                    // Permite fecha retroactiva si evolucionForm.fechaCierre está seteada
+                    const _fEv = evolucionForm.fechaCierre || new Date().toISOString().split("T")[0];
                     const newCode = "SISO-EV-" + new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14) + "-" + Math.random().toString(36).substr(2, 8).toUpperCase();
                     const certData = {
                       ...data,
                       conceptoAptitud: evolucionForm.nuevoConcept,
                       recomendaciones: evolucionForm.recomendaciones || data.recomendaciones,
                       analisisRestricciones: evolucionForm.recomendaciones || data.analisisRestricciones,
-                      fechaCierre: new Date().toISOString().split("T")[0],
+                      fechaCierre: _fEv,
                       codigoVerificacion: newCode,
                       _codigoHCOriginal: data.codigoVerificacion || "",
                       _esEvolucion: true,
@@ -56172,6 +56187,76 @@ body{padding-top:52px;}
           </div>
         </div>
       )}
+      {/* MODAL: Selección fecha cierre HC (permite cierre retroactivo) */}
+      {cierreHCData && (() => {
+        const _hoyStr = new Date().toISOString().split("T")[0];
+        const _fSel = cierreHCData.fecha || _hoyStr;
+        const _diasAtras = Math.max(0, Math.floor((new Date(_hoyStr) - new Date(_fSel)) / 86400000));
+        const _esFutura = _fSel > _hoyStr;
+        return (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4">
+              <div className="text-center">
+                <div className="text-4xl mb-2">📅</div>
+                <p className="font-black text-lg text-gray-800">Cerrar Historia Clínica</p>
+                <p className="text-xs text-gray-500 mt-1">Seleccione la fecha REAL del examen</p>
+              </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                <label className="text-[10px] font-bold text-blue-800 uppercase block mb-1">
+                  Fecha de cierre / examen
+                </label>
+                <input type="date"
+                  value={_fSel}
+                  max={_hoyStr}
+                  onChange={(e) => setCierreHCData({ ...cierreHCData, fecha: e.target.value })}
+                  className="w-full border border-blue-300 rounded-lg px-3 py-2 text-sm font-bold text-blue-900"
+                />
+                <p className="text-[10px] text-blue-700 mt-1">
+                  Default: fecha del examen ({cierreHCData.fecha === _hoyStr ? "hoy" : cierreHCData.fecha})
+                </p>
+              </div>
+              {/* Advertencia retroactivo */}
+              {_diasAtras > 0 && !_esFutura && (
+                <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs">
+                  <p className="font-black text-amber-800">⚠️ Cierre RETROACTIVO</p>
+                  <p className="text-amber-700 mt-0.5">
+                    La HC se cerrará con fecha <b>{_diasAtras} día{_diasAtras > 1 ? 's' : ''} atrás</b>.
+                  </p>
+                  <p className="text-amber-600 mt-1 text-[10px]">
+                    Esto se usa cuando el examen se realizó en una fecha pasada y se documenta hoy.
+                    Quedará registro de auditoría con la fecha actual.
+                  </p>
+                </div>
+              )}
+              {/* Advertencia futura (bloqueante) */}
+              {_esFutura && (
+                <div className="bg-red-50 border border-red-300 rounded-xl p-3 text-xs">
+                  <p className="font-black text-red-800">❌ Fecha futura no permitida</p>
+                  <p className="text-red-700">No se puede cerrar una HC con fecha posterior a hoy.</p>
+                </div>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={() => setCierreHCData(null)}
+                  className="flex-1 py-2 bg-gray-100 text-gray-700 border border-gray-300 rounded-xl text-sm font-bold hover:bg-gray-200"
+                >
+                  Cancelar
+                </button>
+                <button
+                  disabled={_esFutura || !_fSel}
+                  onClick={() => cierreHCData.onConfirm(_fSel)}
+                  className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {_diasAtras > 0 ? '✅ Cerrar con fecha retroactiva' : '✅ Cerrar HC'}
+                </button>
+              </div>
+              <p className="text-[9px] text-gray-400 text-center pt-2 border-t border-gray-100">
+                Hash de integridad se calcula en este momento · Trazable por auditoría
+              </p>
+            </div>
+          </div>
+        );
+      })()}
       {renderMensajesOverlay()}
       {/* MODAL: Envío Integral por Empresa */}
       {showEnvioIntegral && envioIntegralEmpresa && (() => {
