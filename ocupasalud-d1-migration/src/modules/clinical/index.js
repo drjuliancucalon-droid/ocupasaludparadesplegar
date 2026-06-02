@@ -1,0 +1,9 @@
+export { OccupationalHC } from './components/OccupationalHC';
+export { GeneralHC } from './components/GeneralHC';
+export { PhysicalExam } from './components/PhysicalExam';
+export { VitalSigns } from './components/VitalSigns';
+export { ConsentModal } from './components/ConsentModal';
+export { RestrictionsPanel } from './components/RestrictionsPanel';
+export { RecommendationsPanel } from './components/RecommendationsPanel';
+export { PrescriptionTab } from './components/PrescriptionTab';
+export { useClinicalRecord } from './hooks/useClinicalRecord';

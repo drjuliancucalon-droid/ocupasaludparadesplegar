@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SISO - Sistema de Salud Ocupacional</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- SISO CONFIG — FASE 2: Credenciales Supabase + Service Role Key para super_admin -->
+    <!-- ⚠️  En producción: reemplazar sbServiceKey con la clave real desde el servidor -->
+    <!-- La sbServiceKey permite al super_admin crear organizaciones nuevas desde la app -->
+    <script>
+      window.__SISO_CONFIG = {
+        sbUrl: "https://yqrrktrgoijgzccrxnpz.supabase.co",
+        sbKey: "sb_publishable_K88qYuJ9wsWjQqnIhLVK7Q_NroFvPI7",
+        sbServiceKey:
+          "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxcnJrdHJnb2lqZ3pjY3J4bnB6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzAxNTI5NCwiZXhwIjoyMDg4NTkxMjk0fQ.SddPspBTrnu5MADG_SspaGVFxqyY7jmGrAt_3kOJ3Fg",
+      };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
