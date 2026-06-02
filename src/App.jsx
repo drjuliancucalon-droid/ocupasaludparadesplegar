@@ -15478,19 +15478,25 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         for (let dv = 0; dv <= 9; dv++) nitVariants.push(nitClean + dv);
         if (nitClean.length > 6) nitVariants.push(nitClean.slice(0, -1));
 
+        // Validar código de acceso contra siso_portal_empresa_docs_{nit}
+        // FIX 2026-06-02: probamos TODAS las variantes (no break prematuro).
+        // Con la unificación todas tienen el mismo código, pero esto es defensa
+        // adicional por si una variante quedó desactualizada.
         let codigoValido = false;
         let docsKeyFound = false;
+        let nitConCodigo = null;
         for (const nv of nitVariants) {
           const rd = await fetchKey("siso_portal_empresa_docs_" + nv);
           if (rd.ok && rd.data?.codigoAcceso) {
             docsKeyFound = true;
+            nitConCodigo = nv;
             if (rd.data.codigoAcceso.trim().toUpperCase() === codIngresado) {
               codigoValido = true;
+              break; // sólo paramos cuando coincide
             }
-            break;
           }
         }
-        // Si existe registro con código y no coincide → bloquear
+        // Si existe registro con código y NINGUNA variante coincide → bloquear
         if (docsKeyFound && !codigoValido) {
           setError("🔐 Código de acceso incorrecto.\n\nVerifique el código enviado al correo de la empresa.\nFormato: EMP-XXXX-XXXX");
           setCargando(false);
@@ -15548,28 +15554,34 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               } catch {}
             }
           }
-          // Diagnóstico: si la empresa existe pero aún no tiene HC cerradas, dar mensaje específico
-          if (empresaIdx && (!empresaIdx.documentos || empresaIdx.documentos.length === 0)) {
-            setError(
-              "ℹ️ Empresa encontrada (" + (empresaIdx.nombre || empresaIdx.nit || "sin nombre") + "), pero aún no tiene certificados disponibles.\n\n" +
-              "El portal solo muestra historias clínicas CERRADAS. Si ya atendió a sus trabajadores, verifique que la consulta esté finalizada y firmada en el sistema."
-            );
+          // FIX 2026-06-02: invertir flujo. ANTES de salir con "sin certificados",
+          // probar siso_portal_empresa_atenciones_<nit> (TODAS las variantes), que
+          // es la fuente de verdad de atenciones agrupadas multi-fecha. Solo si
+          // tampoco hay atenciones agrupadas Y documentos[] está vacío, mostrar
+          // el mensaje informativo.
+
+          // 1) Intentar atenciones agrupadas (con todas las variantes NIT)
+          let atencionesGrupo = null;
+          let nitConAtenciones = null;
+          for (const nv of nitVariants) {
+            const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nv);
+            if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
+              atencionesGrupo = rAt.data;
+              nitConAtenciones = nv;
+              break;
+            }
+          }
+          if (atencionesGrupo) {
+            setEmpresaAtenciones(atencionesGrupo);
+            setResultadosEmpresa(atencionesGrupo.atenciones);
+            setFechaFiltroEmpresa("");
+            setCertSeleccionados({});
             setCargando(false);
             return;
           }
+
+          // 2) Si tiene documentos[] cargarlos individualmente
           if (empresaIdx && empresaIdx.documentos && empresaIdx.documentos.length > 0) {
-            // ── Intentar cargar índice multi-fecha primero ─────────────────────
-            const nitFound = empresaIdx.nit || nitClean;
-            const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nitFound);
-            if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
-              setEmpresaAtenciones(rAt.data);
-              setResultadosEmpresa(rAt.data.atenciones);
-              setFechaFiltroEmpresa("");
-              setCertSeleccionados({});
-              setCargando(false);
-              return;
-            }
-            // ── Fallback: cargar individual por documento ──────────────────────
             const resultados = [];
             for (const doc of empresaIdx.documentos) {
               const rDoc = await fetchKey("siso_portal_doc_" + doc.replace(/\s/g, ""));
@@ -15583,6 +15595,17 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               setCargando(false);
               return;
             }
+          }
+
+          // 3) Si llegamos acá: el código fue válido (o no había código que validar)
+          // y la empresa existe pero NO encontramos atenciones ni documentos.
+          if (empresaIdx) {
+            setError(
+              "ℹ️ Empresa encontrada (" + (empresaIdx.nombre || empresaIdx.nit || "sin nombre") + "), pero aún no tiene certificados disponibles.\n\n" +
+              "El portal solo muestra historias clínicas CERRADAS. Si ya atendió a sus trabajadores, verifique que la consulta esté finalizada y firmada en el sistema."
+            );
+            setCargando(false);
+            return;
           }
         } catch (e) { console.warn("Portal empresa search error:", e); }
         setError("❌ No se encontraron certificados para esta empresa.\n\nVerifique el NIT o nombre. Solo aparecen empresas con historias clínicas cerradas.");
