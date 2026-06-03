@@ -13311,7 +13311,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     (data.empresaNombre || data.empresa || "PARTICULAR") +
     "</span></div>" +
     '<div class="pat-field"><span class="pat-label">Fecha</span><span class="pat-val">' +
-    (data.fechaExamen || "--") +
+    (data.fechaCierre || data.fechaExamen || "--") +
     "</span></div>" +
     '<div class="pat-field"><span class="pat-label">Vigencia</span><span class="pat-val">' +
     vigencia +
