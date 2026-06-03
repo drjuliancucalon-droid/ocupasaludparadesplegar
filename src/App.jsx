@@ -21328,8 +21328,22 @@ const handleLogin = (u, p) => {
             email: activeDoctorData?.email || "",
             cel: activeDoctorData?.cel || "",
           },
-          _firma: activeSignature || "",
+          // FALLBACK robusto: si activeSignature está vacío al cerrar
+          // (state perdido tras refresh, sesión nueva, etc.), leer
+          // directo de localStorage para garantizar firma en certificado.
+          _firma: activeSignature || (() => { try { return _ls.getItem("siso_doctor_signature") || ""; } catch { return ""; } })(),
         };
+        // VERIFICACIÓN: si seguimos sin firma, intentar D1 antes de subir
+        if (!portalData._firma) {
+          try {
+            const _firmaD1 = await _workerGet("siso_doctor_signature");
+            if (_firmaD1 && typeof _firmaD1 === "string" && _firmaD1.length > 100) {
+              portalData._firma = _firmaD1;
+              // Repoblar localStorage para próximos cierres
+              try { _ls.setItem("siso_doctor_signature", _firmaD1); } catch {}
+            }
+          } catch {}
+        }
         _sbSet("siso_portal_" + code, portalData);
         if (closed.docNumero)
           _sbSet(
