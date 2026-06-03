@@ -21126,36 +21126,39 @@ const handleLogin = (u, p) => {
       }, 0);
     });
 
-    // ── PROTECCIÓN ANTI-REGRESIÓN + escritura D1 ───────────────────────────
-    // FIX 2026-06-02: navegadores con bundle viejo escribían listas
-    // incompletas a D1, sobrescribiendo pacientes recién recuperados.
-    // Ahora: leemos D1 vigente; si tiene más pacientes que `list` por
-    // encima del umbral, hacemos MERGE preservando los faltantes (matcheando
-    // por id y docNumero, filtrando fantasmas sin id ni doc).
-    // Async fire-and-forget: no bloquea la UI ni el flujo principal.
+    // ── PROTECCIÓN ANTI-REGRESIÓN POR ID/docNumero + escritura D1 ─────────
+    // FIX 2026-06-03 (v2): el threshold por CANTIDAD permitía que cuando el
+    // cliente cerraba 1 HC nueva (local +1) y D1 tenía 1 paciente recuperado
+    // que el cliente NO conoce (FREIMAN), diff = 0 → no detectaba regresión
+    // → SOBREESCRIBÍA D1 y se perdían pacientes recuperados/atendidos en
+    // otras sesiones.
+    //
+    // AHORA: MERGE SIEMPRE por id/docNumero. Si D1 tiene CUALQUIER paciente
+    // que el cliente no conoce (independiente del delta total), se preserva.
+    // Garantía: ningún paciente histórico se pierde por una escritura desde
+    // un cliente con vista incompleta.
     if (_WORKER_TOKEN) {
       (async () => {
         try {
           const remote = await _workerGet(key).catch(() => null);
           let finalList = list;
           if (Array.isArray(remote) && remote.length > 0) {
-            const diff = remote.length - list.length;
-            if (diff > _PAT_REGRESSION_THRESHOLD) {
-              const localIds  = new Set(list.filter(p => p?.id).map(p => p.id));
-              const localDocs = new Set(list.filter(p => p?.docNumero).map(p => p.docNumero.toString().trim()));
-              const extras = remote.filter(p => {
-                if (!p || (!p.id && !p.docNumero)) return false;
-                if (p.id && localIds.has(p.id)) return false;
-                if (p.docNumero && localDocs.has(p.docNumero.toString().trim())) return false;
-                return true;
-              });
-              if (extras.length > 0) {
-                finalList = [...list, ...extras];
-                console.warn(`[_syncPatients] anti-regresión: D1=${remote.length}, local=${list.length}, merged=${finalList.length} (+${extras.length})`);
-                // Persistir merge en LS y actualizar React state
-                _ls.setItem(key, JSON.stringify(finalList));
-                setPatientsList(finalList);
+            const localIds  = new Set(list.filter(p => p?.id).map(p => p.id));
+            const localDocs = new Set(list.filter(p => p?.docNumero).map(p => p.docNumero.toString().trim()));
+            const extras = remote.filter(p => {
+              if (!p || (!p.id && !p.docNumero)) return false;
+              if (p.id && localIds.has(p.id)) return false;
+              if (p.docNumero && localDocs.has(p.docNumero.toString().trim())) return false;
+              return true;
+            });
+            if (extras.length > 0) {
+              finalList = [...list, ...extras];
+              console.warn(`[_syncPatients] MERGE anti-regresión: cliente=${list.length}, D1=${remote.length}, +${extras.length} preservados = ${finalList.length}`);
+              // Persistir merge en LS + React state — tolerante a quota
+              try { _ls.setItem(key, JSON.stringify(finalList)); } catch (e) {
+                console.warn("[_syncPatients] LS quota:", e?.message);
               }
+              try { setPatientsList(finalList); } catch {}
             }
           }
           // Escribir versión final (mergeada o original) a D1
@@ -21475,9 +21478,41 @@ const handleLogin = (u, p) => {
           const updAC = [nuevaAtencion, ...atencionesCerradas];
           setAtencionesCerradas(updAC);
           _sync(`siso_atenciones_${_hcSuf}`, JSON.stringify(updAC));
-          _sbSet("siso_atenciones_cerradas", updAC);
           _sbSet(`siso_atenciones_${_hcSuf}`, updAC);
           try { _ls.setItem("siso_atenciones_v", "2"); } catch {} // mantener marcador de versión
+          // ── ANTI-REGRESIÓN siso_atenciones_cerradas (fix 2026-06-03 v2) ──
+          // Antes de sobrescribir D1 + SB con `updAC`, leer remoto y MERGE
+          // por id para preservar atenciones recuperadas o de otros clientes
+          // que el navegador local desconoce. Fire-and-forget.
+          (async () => {
+            try {
+              let remote = null;
+              if (_WORKER_TOKEN) { try { remote = await _workerGet("siso_atenciones_cerradas"); } catch {} }
+              let finalAC = updAC;
+              if (Array.isArray(remote) && remote.length > 0) {
+                const localIds  = new Set(updAC.filter(a => a?.id).map(a => a.id));
+                const localDocs = new Set(updAC.filter(a => a?.docNumero).map(a => String(a.docNumero).trim()));
+                const extras = remote.filter(a => {
+                  if (!a || (!a.id && !a.docNumero)) return false;
+                  if (a.id && localIds.has(a.id)) return false;
+                  // No usar docNumero solo, porque un trabajador puede tener varias atenciones
+                  if (a.id) return true; // si tiene id distinto, preservar
+                  return false;
+                });
+                if (extras.length > 0) {
+                  finalAC = [nuevaAtencion, ...extras, ...atencionesCerradas];
+                  console.warn(`[cierreHC] MERGE atenciones: cliente=${updAC.length}, D1=${remote.length}, +${extras.length} preservadas = ${finalAC.length}`);
+                  try { setAtencionesCerradas(finalAC); } catch {}
+                }
+              }
+              if (_WORKER_TOKEN) {
+                try { await _workerSet("siso_atenciones_cerradas", finalAC); } catch {}
+              }
+              try { await _sbSet("siso_atenciones_cerradas", finalAC); } catch {}
+            } catch (e) {
+              console.warn("[cierreHC] anti-regresión atenciones falló:", e?.message);
+            }
+          })();
         }
         // ── PASO 3: Auto-facturación — generar movimiento en Caja ─────────────────
         try {
