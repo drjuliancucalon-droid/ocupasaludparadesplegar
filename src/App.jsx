@@ -14881,14 +14881,11 @@ function PortalInformeViewer({ informe, empresaNombre, sbUrl, sbKey }) {
     if (fullData || !informe.statsKey) return;
     setLoading(true);
     try {
-      // D1 primero (statsKey almacenado en Worker)
+      // D1 autoritativo (statsKey almacenado en Worker, con CORS para portal).
+      // NO usar Supabase fallback: el proyecto nuevo no tiene CORS para
+      // *.pages.dev y rompe con "blocked by CORS policy".
       let val = null;
       if (_WORKER_TOKEN) { try { val = await _workerGet(informe.statsKey); } catch {} }
-      if (!val) {
-        const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.${informe.statsKey}&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
-        const d = await r.json();
-        val = d[0]?.value || null;
-      }
       if (val) setFullData(val);
     } catch {}
     setLoading(false);
@@ -29831,7 +29828,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       tipoExamen: p.tipoExamen,
                     })),
                   };
-                  // Guardar stats en D1 primero, Supabase fallback (via _sbSet = _securePost)
+                  // ESCRITURA DUAL: D1 autoritativo (lectura desde portal
+                  // empresa funciona con CORS) + Supabase backup.
+                  // Antes solo escribía a Supabase, lo que dejaba el portal
+                  // sin poder leer los stats (CORS bloqueado en SB nuevo) y
+                  // los contadores APTOS/RESTRICCIONES salían en 0.
+                  try { await _workerSet(statsKey, fullData); } catch {}
                   try { await _sbSet(statsKey, fullData); } catch {}
                   const informe = {
                     id: "inf_" + Date.now(),
