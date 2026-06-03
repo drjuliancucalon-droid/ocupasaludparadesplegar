@@ -15410,27 +15410,23 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         Accept: "application/json",
       };
       const fetchKey = async (key) => {
-        // Worker D1 primario
+        // Worker D1 AUTORITATIVO. NO usar Supabase como fallback en el portal
+        // porque el proyecto SB nuevo no tiene CORS configurado para
+        // *.pages.dev y rompe con "blocked by CORS policy". Worker D1 sí
+        // permite el origen del portal. Si D1 falla, devolver null y dejar
+        // que el siguiente intento (otra variante NIT) tome el camino.
         if (_WORKER_TOKEN) {
           try {
             const val = await _workerGet(key);
             if (val !== null && val !== undefined) {
               return { ok: true, data: val };
             }
-          } catch {}
+            return { ok: true, data: null };
+          } catch (e) {
+            return { ok: false, status: 0, text: e?.message || "worker error" };
+          }
         }
-        // Supabase fallback
-        const url = `${sbUrl}/rest/v1/siso_store?key=eq.${encodeURIComponent(
-          key
-        )}&select=value`;
-        const r = await fetchConTimeout(url, { headers }, 12000);
-        if (!r.ok) return { ok: false, status: r.status, text: r.statusText };
-        const rows = await r.json();
-        const val2 = rows && rows.length > 0 ? rows[0].value : null;
-        return {
-          ok: true,
-          data: val2 ? (typeof val2 === "string" ? JSON.parse(val2) : val2) : null,
-        };
+        return { ok: false, status: 0, text: "no worker token" };
       };
 
       // Intentar todas las variantes de clave posibles
@@ -15528,11 +15524,13 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
             let matched = false;
             if (_WORKER_TOKEN) {
               try {
+                // Timeout 30s: payloads de portal_empresa_atenciones_* pueden
+                // ser grandes (cientos de KB) y tardar varios segundos.
                 const dRows = await Promise.race([
                   fetch(`${_WORKER_URL}/store/prefix/siso_portal_empresa_`, {
                     headers: { "X-Siso-Token": _WORKER_TOKEN },
                   }).then(r => r.ok ? r.json() : []),
-                  new Promise((_, rej) => setTimeout(() => rej(), 8000)),
+                  new Promise((_, rej) => setTimeout(() => rej(new Error("prefix timeout 30s")), 30000)),
                 ]);
                 if (Array.isArray(dRows) && dRows.length > 0) {
                   const m = dRows.find(r => r.value && (r.value.nombre || "").toLowerCase().includes(qLower));
@@ -15540,19 +15538,10 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                 }
               } catch {}
             }
-            if (!matched) {
-              try {
-                const rAll = await fetchConTimeout(`${sbUrl}/rest/v1/siso_store?select=key,value&key=like.siso_portal_empresa_%`, { headers }, 12000);
-                if (rAll.ok) {
-                  const rows = await rAll.json();
-                  const match = rows.find(r => {
-                    const v = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
-                    return v && (v.nombre || "").toLowerCase().includes(qLower);
-                  });
-                  if (match) empresaIdx = typeof match.value === "string" ? JSON.parse(match.value) : match.value;
-                }
-              } catch {}
-            }
+            // Supabase fallback DESHABILITADO: el proyecto SB nuevo no
+            // tiene CORS habilitado para *.pages.dev y rompe el portal con
+            // "blocked by CORS policy". Worker D1 es autoritativo.
+            // if (!matched) { try { ...fetch Supabase... } catch {} }
           }
           // FIX 2026-06-02: invertir flujo. ANTES de salir con "sin certificados",
           // probar siso_portal_empresa_atenciones_<nit> (TODAS las variantes), que
