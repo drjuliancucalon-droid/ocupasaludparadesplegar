@@ -15573,7 +15573,19 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           }
           if (atencionesGrupo) {
             setEmpresaAtenciones(atencionesGrupo);
-            setResultadosEmpresa(atencionesGrupo.atenciones);
+            // OPTIMIZACIÓN: la firma y datos del médico ahora viven en el ROOT
+            // del agregado (1 sola vez) en lugar de duplicarse por cada atención
+            // (antes inflaba a 1.8MB por empresa, ahora ~100KB). Hidratamos cada
+            // atención con la firma del root para que los flujos de descarga PDF
+            // sigan funcionando sin cambios (esperan _firma en cada item).
+            const _firmaRoot = atencionesGrupo._firma || "";
+            const _drRoot = atencionesGrupo._doctorData || {};
+            const _atsHidratadas = (atencionesGrupo.atenciones || []).map((a) => ({
+              ...a,
+              _firma: (a && a._firma) || _firmaRoot,
+              _doctorData: (a && a._doctorData) || _drRoot,
+            }));
+            setResultadosEmpresa(_atsHidratadas);
             setFechaFiltroEmpresa("");
             setCertSeleccionados({});
             setCargando(false);
