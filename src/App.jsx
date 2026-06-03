@@ -1442,7 +1442,38 @@ const _shouldSyncToD1 = (key) =>
   _D1_SYNC_PREFIXES.some((p) => key.startsWith(p));
 
 const _sync = (key, jsonValue) => {
-  _ls.setItem(key, jsonValue);
+  // CRITICAL FIX: localStorage tiene cuota ~5-10MB. Si _ls.setItem lanza
+  // QuotaExceededError aquí, toda _sync se rompe y NUNCA se escribe a D1,
+  // perdiendo silenciosamente pacientes/datos. Atrapar el error y CONTINUAR
+  // al guardado D1 (autoritativo) aunque LS falle. También intentar
+  // limpieza automática de claves obsoletas en quota.
+  try {
+    _ls.setItem(key, jsonValue);
+  } catch (e) {
+    if (e && (e.name === "QuotaExceededError" || /quota/i.test(e.message || ""))) {
+      console.warn("[_sync] localStorage QUOTA EXCEEDED para", key, "— continuando hacia D1");
+      // Intentar borrar claves obsoletas que ya viven seguras en D1
+      try {
+        const obsoletas = [];
+        for (const k of Object.keys(localStorage)) {
+          if (
+            /__new\d+__/.test(k) ||                          // chunks huérfanos
+            k.startsWith("siso_snapshot_") ||                // snapshots viejos
+            k.startsWith("siso_backup_") ||                  // backups
+            (k.includes("__c") && /__c\d+$/.test(k))         // chunks crudos
+          ) obsoletas.push(k);
+        }
+        for (const k of obsoletas.slice(0, 50)) {
+          try { localStorage.removeItem(k); } catch {}
+        }
+        if (obsoletas.length) console.warn("[_sync] limpieza auto:", obsoletas.length, "claves obsoletas removidas");
+        // Reintentar 1 vez
+        try { _ls.setItem(key, jsonValue); } catch {}
+      } catch {}
+    } else {
+      console.warn("[_sync] setItem error:", e?.message);
+    }
+  }
   let parsed;
   try {
     parsed = JSON.parse(jsonValue);
