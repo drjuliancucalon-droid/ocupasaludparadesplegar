@@ -13558,27 +13558,67 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
     }).catch(() => {});
   }, [token]);
 
-  // ── Helper: intentar escribir en Supabase con un JWT dado (o sin él) ──────
+  // ── FIX 2026-06-04: Supabase intermitentemente 522. Worker D1 primario. ──
+  // Helper: fetch con timeout para no colgar la UI eternamente.
+  const _fetchWithTimeout = async (url, opts, ms = 10000) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+    finally { clearTimeout(t); }
+  };
+
+  // ── Escribir respuestas. PRIMERO Worker D1, fallback Supabase. ────────────
   const _tryWrite = async (respuestas, jwt) => {
+    // 1° Worker D1 (CORS abierto, sin JWT, latencia <1s típica)
+    const workerUrl = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) || "https://siso-api.dr-juliancucalon.workers.dev";
+    const workerToken = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) || "";
+    if (workerToken) {
+      try {
+        const r = await _fetchWithTimeout(`${workerUrl}/store`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Siso-Token": workerToken },
+          body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, value: respuestas }),
+        }, 10000);
+        if (r.ok) return r; // éxito vía D1
+        console.warn("[Encuesta] D1 respondió", r.status, "— fallback a Supabase");
+      } catch (e) { console.warn("[Encuesta] D1 falló:", e.message, "— fallback a Supabase"); }
+    }
+    // 2° Supabase fallback con timeout corto (si SB cuelga 522, no esperar 30s)
     const headers = {
       apikey: sbKey,
       "Content-Type": "application/json",
       Prefer: "resolution=merge-duplicates,return=minimal",
     };
     if (jwt) headers.Authorization = `Bearer ${jwt}`;
-    return fetch(`${sbUrl}/rest/v1/siso_store`, {
+    return _fetchWithTimeout(`${sbUrl}/rest/v1/siso_store`, {
       method: "POST",
       headers,
       body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, value: respuestas, updated_at: new Date().toISOString() }),
-    });
+    }, 8000);
   };
 
-  // ── Helper: verificar que el dato quedó realmente guardado en Supabase ───
+  // ── Verificar persistencia: leer de Worker D1 primero, SB fallback ────────
   const _verifyWrite = async (respId) => {
+    const workerUrl = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) || "https://siso-api.dr-juliancucalon.workers.dev";
+    const workerToken = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) || "";
+    if (workerToken) {
+      try {
+        const r = await _fetchWithTimeout(`${workerUrl}/store/${encodeURIComponent(`siso_encuesta_resp_${token}`)}`, {
+          headers: { "X-Siso-Token": workerToken },
+        }, 8000);
+        if (r.ok) {
+          const d = await r.json();
+          const v = d[0]?.value;
+          const arr = Array.isArray(v) ? v : (typeof v === "string" ? JSON.parse(v) : []);
+          if (arr.some(x => x.id === respId)) return true;
+        }
+      } catch (e) { console.warn("[Encuesta] verify D1 falló:", e.message); }
+    }
+    // SB fallback con timeout corto
     try {
-      const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
+      const r = await _fetchWithTimeout(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
         headers: { apikey: sbKey },
-      });
+      }, 8000);
       const d = await r.json();
       const saved = Array.isArray(d[0]?.value) ? d[0].value : [];
       return saved.some(x => x.id === respId);
@@ -13596,12 +13636,33 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
     setError("");
     setLoading(true);
     try {
-      // ── 1. Leer respuestas existentes (lectura anónima siempre permitida) ──
-      const readResp = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
-        headers: { apikey: sbKey },
-      });
-      const existing = await readResp.json();
-      const respuestas = Array.isArray(existing[0]?.value) ? existing[0].value : [];
+      // ── 1. Leer respuestas existentes (D1 primario, SB fallback) ──
+      let respuestas = [];
+      const workerUrl = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) || "https://siso-api.dr-juliancucalon.workers.dev";
+      const workerToken = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) || "";
+      let leyoDeD1 = false;
+      if (workerToken) {
+        try {
+          const r = await _fetchWithTimeout(`${workerUrl}/store/${encodeURIComponent(`siso_encuesta_resp_${token}`)}`, {
+            headers: { "X-Siso-Token": workerToken },
+          }, 8000);
+          if (r.ok) {
+            const d = await r.json();
+            const v = d[0]?.value;
+            respuestas = Array.isArray(v) ? v : (typeof v === "string" ? JSON.parse(v) : []);
+            leyoDeD1 = true;
+          }
+        } catch (e) { console.warn("[Encuesta] read D1 falló:", e.message); }
+      }
+      if (!leyoDeD1) {
+        try {
+          const readResp = await _fetchWithTimeout(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${token}&select=value`, {
+            headers: { apikey: sbKey },
+          }, 6000);
+          const existing = await readResp.json();
+          respuestas = Array.isArray(existing[0]?.value) ? existing[0].value : [];
+        } catch (e) { console.warn("[Encuesta] read SB falló:", e.message, "— continuando con array vacío"); }
+      }
 
       // ── 2. Verificar duplicado por cédula ────────────────────────────────
       if (respuestas.find(r => r.docNumero === form.docNumero.trim())) {
