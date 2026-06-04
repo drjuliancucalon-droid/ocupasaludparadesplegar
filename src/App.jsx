@@ -33343,51 +33343,107 @@ Esta historia clínica debe conservarse mínimo 20 años.
                             } catch { showAlert("Error al cargar respuestas."); }
                           }} className="px-3 py-1.5 bg-purple-50 text-purple-700 text-[10px] font-black rounded-lg hover:bg-purple-100">👁️ Ver Respuestas</button>
                           <button onClick={async () => {
+                            // FIX 2026-06-04: importación quirúrgica con persistencia D1 confirmada.
+                            // BUGS arreglados:
+                            //   #1 respuestas marcadas importado=true SOLO en SB → ahora también D1
+                            //   #2 localStorage.setItem("siso_encuestas") sin try/catch → con try/catch
+                            //   #3 encuesta marcada "importada" SOLO en SB → ahora también D1
+                            //   #4 _sync fire-and-forget + marca importado sin esperar → ahora
+                            //      await _workerSet pacientes ANTES de marcar importado
+                            //   #5 errores silenciosos en callback de showConfirm → ahora visibles
+                            //   #6 currentUser?.user || "shared" puede fragmentar a otra clave →
+                            //      ahora valida currentUser.user antes de proceder
                             try {
-                              // D1 primero, Supabase fallback — guardar raw para allResps posterior
+                              // VALIDACIÓN sesión (fix #6) — sin user no se puede determinar clave correcta
+                              const patSuf = currentUser?.user;
+                              if (!patSuf) { showAlert("⚠️ Sesión expirada o sin usuario. Reinicie sesión antes de importar."); return; }
+
+                              // Lectura: D1 primero, Supabase fallback
                               let _rawVal = null;
                               if (_WORKER_TOKEN) { try { _rawVal = await _workerGet(`siso_encuesta_resp_${enc.token}`); } catch {} }
                               if (!_rawVal) { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_encuesta_resp_${enc.token}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); _rawVal = d[0]?.value || null; }
                               _rawVal = _rawVal || [];
                               const resps = _rawVal.filter(r2 => !r2.importado);
                               if (resps.length === 0) { showAlert("No hay respuestas pendientes de importar."); return; }
-                              showConfirm(`¿Importar ${resps.length} trabajador(es) como pacientes de "${enc.empresaNombre}"?\n\nDespués será redirigido a la lista de pacientes.`, () => {
-                                const comp = companies.find(c => c.id === enc.empresaId);
-                                const nuevos = resps.map(r2 => ({
-                                  id: "pac_enc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-                                  nombres: r2.nombres, docTipo: r2.docTipo || "CC", docNumero: r2.docNumero,
-                                  fechaNacimiento: r2.fechaNacimiento, edad: r2.edad || "",
-                                  genero: r2.genero, estadoCivil: r2.estadoCivil,
-                                  escolaridad: r2.escolaridad, grupoEtnico: r2.grupoEtnico || "",
-                                  lateralidad: r2.lateralidad || "Diestro",
-                                  celular: r2.celular, email: r2.email,
-                                  direccion: r2.direccion, ciudad: r2.ciudad,
-                                  zonaResidencia: r2.zonaResidencia,
-                                  eps: r2.eps, arl: r2.arl || comp?.arl || "", afp: r2.afp,
-                                  estrato: r2.estrato,
-                                  cargo: r2.cargo, area: r2.area,
-                                  antiguedadEmpresa: r2.antiguedad, tipoContrato: r2.tipoContrato,
-                                  turnoTrabajo: r2.turnoTrabajo,
-                                  empresaId: enc.empresaId, empresaNombre: enc.empresaNombre,
-                                  empresaNit: comp?.nit || "", tipoExamen: enc.tipoExamen,
-                                  fechaRegistro: new Date().toISOString(), estadoHistoria: "Pre-registrado",
-                                  _medicoId: currentUser?.user, _fromEncuesta: enc.token,
-                                }));
-                                const updatedPats = [...patientsList, ...nuevos];
-                                setPatientsList(updatedPats);
-                                const patSuf = currentUser?.user || "shared";
-                                _sync(`siso_db_patients_${patSuf}`, JSON.stringify(updatedPats));
-                                _sync(`siso_patients_${patSuf}`, JSON.stringify(updatedPats));
-                                const allResps = (_rawVal || []).map(r2 => ({...r2, importado: true}));
-                                _sbSet(`siso_encuesta_resp_${enc.token}`, allResps);
-                                const updEnc3 = encuestas.map(e => e.id === enc.id ? {...e, estado: "importada"} : e);
-                                setEncuestas(updEnc3);
-                                localStorage.setItem("siso_encuestas", JSON.stringify(updEnc3));
-                                _sbSet("siso_encuestas", updEnc3);
-                                showAlert(`✅ ${nuevos.length} trabajador(es) importados como pacientes.\n\n→ Redirigiendo a la lista de pacientes...`);
-                                setTimeout(() => goTo("pacientes"), 1500);
+
+                              showConfirm(`¿Importar ${resps.length} trabajador(es) como pacientes de "${enc.empresaNombre}"?\n\nDespués será redirigido a la lista de pacientes.`, async () => {
+                                // ASYNC callback con try/catch interno (fix #5)
+                                try {
+                                  const comp = companies.find(c => c.id === enc.empresaId);
+                                  const nuevos = resps.map(r2 => ({
+                                    id: "pac_enc_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+                                    nombres: r2.nombres, docTipo: r2.docTipo || "CC", docNumero: r2.docNumero,
+                                    fechaNacimiento: r2.fechaNacimiento, edad: r2.edad || "",
+                                    genero: r2.genero, estadoCivil: r2.estadoCivil,
+                                    escolaridad: r2.escolaridad, grupoEtnico: r2.grupoEtnico || "",
+                                    lateralidad: r2.lateralidad || "Diestro",
+                                    celular: r2.celular, email: r2.email,
+                                    direccion: r2.direccion, ciudad: r2.ciudad,
+                                    zonaResidencia: r2.zonaResidencia,
+                                    eps: r2.eps, arl: r2.arl || comp?.arl || "", afp: r2.afp,
+                                    estrato: r2.estrato,
+                                    cargo: r2.cargo, area: r2.area,
+                                    antiguedadEmpresa: r2.antiguedad, tipoContrato: r2.tipoContrato,
+                                    turnoTrabajo: r2.turnoTrabajo,
+                                    empresaId: enc.empresaId, empresaNombre: enc.empresaNombre,
+                                    empresaNit: comp?.nit || "", tipoExamen: enc.tipoExamen,
+                                    fechaRegistro: new Date().toISOString(), estadoHistoria: "Pre-registrado",
+                                    _medicoId: currentUser?.user, _fromEncuesta: enc.token,
+                                  }));
+                                  // Usar patientsListRef.current si está disponible para evitar stale closure
+                                  const baseList = (typeof patientsListRef !== "undefined" && patientsListRef?.current) ? patientsListRef.current : patientsList;
+                                  const updatedPats = [...baseList, ...nuevos];
+
+                                  // 1. ESCRITURA D1 BLOQUEANTE (fix #4) — confirmar antes de marcar importado
+                                  let pacientesEnD1 = false;
+                                  if (_WORKER_TOKEN) {
+                                    try {
+                                      const ok1 = await _workerSet(`siso_db_patients_${patSuf}`, updatedPats);
+                                      const ok2 = await _workerSet(`siso_patients_${patSuf}`, updatedPats);
+                                      pacientesEnD1 = ok1 && ok2;
+                                    } catch (e) { console.warn("[importar] D1 patients write:", e?.message); }
+                                  }
+
+                                  // 2. Estado React + LS + SB (fire-and-forget, no bloquea importación si LS quota)
+                                  setPatientsList(updatedPats);
+                                  _sync(`siso_db_patients_${patSuf}`, JSON.stringify(updatedPats));
+                                  _sync(`siso_patients_${patSuf}`, JSON.stringify(updatedPats));
+
+                                  // 3. SI Y SOLO SI D1 confirmó pacientes → marcar respuestas importadas
+                                  //    (fix #1 + #4) — D1 PRIMERO, SB después
+                                  if (pacientesEnD1) {
+                                    const allResps = (_rawVal || []).map(r2 => ({ ...r2, importado: true }));
+                                    if (_WORKER_TOKEN) {
+                                      try { await _workerSet(`siso_encuesta_resp_${enc.token}`, allResps); } catch (e) { console.warn("[importar] D1 resp:", e?.message); }
+                                    }
+                                    _sbSet(`siso_encuesta_resp_${enc.token}`, allResps);
+
+                                    // 4. Marcar encuesta como importada en D1 + LS (try/catch quota) + SB
+                                    //    (fix #2 + #3)
+                                    const updEnc3 = encuestas.map(e => e.id === enc.id ? { ...e, estado: "importada" } : e);
+                                    setEncuestas(updEnc3);
+                                    if (_WORKER_TOKEN) {
+                                      try { await _workerSet("siso_encuestas", updEnc3); } catch (e) { console.warn("[importar] D1 encuestas:", e?.message); }
+                                    }
+                                    try { localStorage.setItem("siso_encuestas", JSON.stringify(updEnc3)); } catch (e) { console.warn("[importar] LS quota encuestas:", e?.message); }
+                                    _sbSet("siso_encuestas", updEnc3);
+
+                                    showAlert(`✅ ${nuevos.length} trabajador(es) importados como pacientes.\n\n→ Redirigiendo a la lista de pacientes...`);
+                                    setTimeout(() => goTo("pacientes"), 1500);
+                                  } else {
+                                    // D1 NO confirmó: NO marcamos importado para permitir reintento
+                                    showAlert(`⚠️ Pacientes guardados localmente pero NO se confirmó la nube.\n\nLas respuestas NO se marcaron como importadas para que puedas reintentar.\n\nVerifica tu conexión y vuelve a intentarlo.`);
+                                  }
+                                } catch (innerErr) {
+                                  // Errores DENTRO del callback (fix #5)
+                                  console.error("[importar] error en confirmación:", innerErr);
+                                  showAlert(`❌ Error durante la importación: ${innerErr?.message || "desconocido"}\n\nLos datos pre-existentes NO fueron afectados.`);
+                                }
                               });
-                            } catch { showAlert("Error al importar."); }
+                            } catch (outerErr) {
+                              console.error("[importar] error externo:", outerErr);
+                              showAlert(`❌ Error al iniciar importación: ${outerErr?.message || "desconocido"}`);
+                            }
                           }} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 text-[10px] font-black rounded-lg hover:bg-emerald-100">⬆️ Importar Pacientes</button>
                           {/* BOTÓN PDF */}
                           <button onClick={async () => {
