@@ -268,6 +268,27 @@ const _WORKER_TOKEN =
   import.meta.env?.VITE_WORKER_TOKEN ||
   "";
 // ─────────────────────────────────────────────────────────────────────────────
+// FIX 2026-06-04: dominio estable para links compartidos (encuestas, portal, etc).
+// Cloudflare Pages crea 2 tipos de URL:
+//   - Dominio principal estable: ocupasaludparadesplegar-f4q.pages.dev (último deploy)
+//   - Subdominio por deploy inmutable: <hash>.ocupasaludparadesplegar-f4q.pages.dev (snapshot fijo)
+// window.location.origin captura el subdominio inmutable si el médico está viéndolo
+// desde uno. Resultado: links enviados a trabajadores apuntan a bundles viejos
+// SIN los últimos fixes (causando "se queda enviando", botones rotos, etc).
+// Esta función SIEMPRE devuelve el dominio estable cuando detecta un preview.
+const _SISO_STABLE_HOST = "https://ocupasaludparadesplegar-f4q.pages.dev";
+const _sisoStableOrigin = () => {
+  if (typeof window === "undefined") return _SISO_STABLE_HOST;
+  try {
+    const origin = window.location.origin || "";
+    // Detectar subdominios de Cloudflare Pages preview: <hash>.ocupasaludparadesplegar-f4q.pages.dev
+    if (/^https:\/\/[a-z0-9]+\.ocupasaludparadesplegar-f4q\.pages\.dev$/i.test(origin)) {
+      return _SISO_STABLE_HOST;
+    }
+    return origin || _SISO_STABLE_HOST;
+  } catch { return _SISO_STABLE_HOST; }
+};
+// ─────────────────────────────────────────────────────────────────────────────
 // Acceso bajo nivel al Worker D1 (sin chunking) — NO usar fuera de este módulo.
 const _workerSetRaw = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
@@ -13994,7 +14015,7 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
 // Solo requiere: código de verificación de HC O número de cédula
 // Consulta DIRECTA a Supabase (no usa estado del App)
 // SEC-13: Sin acceso a datos de otros pacientes
-const PORTAL_URL = (typeof window !== "undefined" ? window.location.origin + window.location.pathname : "") + "#portaltrabajador";
+const PORTAL_URL = (typeof window !== "undefined" ? _sisoStableOrigin() + window.location.pathname : "") + "#portaltrabajador";
 // ══════════════════════════════════════════════════════════════════════════
 // PORTAL PÚBLICO DEL TRABAJADOR - v2 - Acceso sin login
 // URL: https://fw5fnt.csb.app/#portaltrabajador
@@ -17202,7 +17223,7 @@ function AppInner() {
       setShowEmailConfig(true);
       return { enviados: 0, fallidos: [] };
     }
-    const portalUrl = window.location.origin + window.location.pathname + "#portaltrabajador";
+    const portalUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
     const remitente = emailConfig.nombre || activeDoctorData?.nombre || "OcupaSalud";
     const enviados = [];
     const fallidos = [];
@@ -23706,7 +23727,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           }} className="flex-1 px-2 py-1.5 bg-emerald-600 text-white text-[9px] font-black rounded-lg hover:bg-emerald-700">🖨️ PDF</button>
                           <button onClick={() => {
                             const nombre = data.nombres || "";
-                            const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                            const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                             const docD = activeDoctorData || {};
                             const subject = `Documentos Médicos — ${nombre}`;
                             const body = `Estimado/a ${nombre},\n\nSus documentos médicos están listos.\n\nPortal:\n${portalLink}\n→ Cédula: ${data.docNumero || ""}\n\nCordialmente,\n${docD.nombre || ""}\n${docD.titulo || ""}\n${docD.licencia ? "Lic: " + docD.licencia : ""}\n${docD.email || emailConfig?.email || ""}`;
@@ -23719,7 +23740,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           <button onClick={() => {
                             const nombre = data.nombres || "";
                             const tel = (data.celular || data.telefono || "").replace(/\D/g, "");
-                            const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                            const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                             const msg = encodeURIComponent(`${nombre}, sus documentos médicos están listos.\n📥 ${portalLink}\n→ Cédula: ${data.docNumero || ""}\n${activeDoctorData?.nombre || ""}`);
                             if (tel.length >= 10) { window.open(`https://wa.me/${tel.startsWith("57") ? tel : "57" + tel}?text=${msg}`, "_blank"); }
                             else { showPrompt("Celular:", (n) => { if (n) window.open(`https://wa.me/57${n.replace(/\D/g,"")}?text=${msg}`, "_blank"); }); }
@@ -23842,7 +23863,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     }} className="flex-1 px-2 py-1.5 bg-emerald-600 text-white text-[9px] font-black rounded-lg hover:bg-emerald-700">🖨️ PDF</button>
                     <button onClick={() => {
                       const nombre = data.nombres || "";
-                      const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                      const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                       const selDocs = Object.entries(enviarChecklist).filter(([,v]) => v).map(([k]) => ({certificado:"Certificado",historia:"Historia Clínica",formula:"Fórmula Médica",derivacion:"Derivación",examenes:"Exámenes"}[k])).join(", ");
                       const docD = activeDoctorData || {};
                       const subject = `Documentos Médicos — ${nombre}`;
@@ -23856,7 +23877,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     <button onClick={() => {
                       const nombre = data.nombres || "";
                       const tel = (data.celular || data.telefono || "").replace(/\D/g, "");
-                      const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                      const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                       const msg = encodeURIComponent(`${nombre}, sus documentos médicos están listos.\n📥 ${portalLink}\n→ Cédula: ${data.docNumero || ""}\n${activeDoctorData?.nombre || ""}`);
                       if (tel.length >= 10) { window.open(`https://wa.me/${tel.startsWith("57") ? tel : "57" + tel}?text=${msg}`, "_blank"); }
                       else { showPrompt("Celular:", (n) => { if (n) window.open(`https://wa.me/57${n.replace(/\D/g,"")}?text=${msg}`, "_blank"); }); }
@@ -31988,7 +32009,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
     // Helper para envío de certificado
     const _enviarCertEmail = (pac) => {
       const nombre = pac.nombres || "";
-      const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+      const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
       const subject = encodeURIComponent(`Certificado Médico Ocupacional - ${nombre}`);
       const body = encodeURIComponent(`Estimado/a ${nombre},\n\nSu certificado de aptitud médica ocupacional ha sido emitido.\n\n━━━ DESCARGUE SU CERTIFICADO ━━━\n\n📥 Ingrese al Portal de Certificados:\n${portalLink}\n\n→ Seleccione "🪪 Cédula"\n→ Ingrese su número de documento: ${pac.docNumero || ""}\n→ Podrá ver y descargar su certificado en PDF\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nCordialmente,\n${emailConfig?.nombre || activeDoctorData?.nombre || "OcupaSalud"}\nMédico Ocupacional\n${emailConfig?.email || ""}`);
       if (pac.email) {
@@ -32002,7 +32023,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
     const _enviarCertWhatsApp = (pac) => {
       const nombre = pac.nombres || "";
       const tel = (pac.celular || pac.telefono || "").replace(/\D/g, "");
-      const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+      const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
       const msg = encodeURIComponent(`Estimado/a ${nombre}, su certificado de aptitud médica ocupacional está listo.\n\n📥 Descárguelo aquí:\n${portalLink}\n→ Seleccione "Cédula" e ingrese: ${pac.docNumero || ""}\n\n${emailConfig?.nombre || activeDoctorData?.nombre || "OcupaSalud"} - Médico Ocupacional`);
       if (tel.length >= 10) {
         const telFull = tel.startsWith("57") ? tel : "57" + tel;
@@ -33323,7 +33344,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     setEncuestas(updated);
                     localStorage.setItem("siso_encuestas", JSON.stringify(updated));
                     _sbSet("siso_encuestas", updated);
-                    const url = window.location.origin + window.location.pathname + "#encuesta?token=" + token;
+                    // FIX 2026-06-04: usar dominio estable (ver _sisoStableOrigin)
+                    // para evitar links a subdominios inmutables con bundles viejos
+                    const url = _sisoStableOrigin() + window.location.pathname + "#encuesta?token=" + token;
                     showAlert("✅ Encuesta creada!\n\n📋 Link para compartir:\n" + url + "\n\nEnvíe este link al encargado de la empresa para que los trabajadores llenen sus datos.");
                     // Copiar al portapapeles
                     navigator.clipboard?.writeText(url);
@@ -33389,7 +33412,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         </div>
                         {/* Botones de acción */}
                         <div className="flex flex-wrap gap-2 mb-2">
-                          <button onClick={() => { const url = window.location.origin + window.location.pathname + "#encuesta?token=" + enc.token; navigator.clipboard?.writeText(url); showAlert("📋 Link copiado al portapapeles:\n\n" + url + "\n\nEnvíelo por WhatsApp o email al encargado de la empresa."); }} className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-black rounded-lg hover:bg-blue-100">📋 Copiar Link</button>
+                          <button onClick={() => { const url = _sisoStableOrigin() + window.location.pathname + "#encuesta?token=" + enc.token; navigator.clipboard?.writeText(url); showAlert("📋 Link copiado al portapapeles:\n\n" + url + "\n\nEnvíelo por WhatsApp o email al encargado de la empresa."); }} className="px-3 py-1.5 bg-blue-50 text-blue-700 text-[10px] font-black rounded-lg hover:bg-blue-100">📋 Copiar Link</button>
                           <button onClick={async () => {
                             try {
                               // D1 primero, Supabase fallback
@@ -36154,12 +36177,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 🔗 Link de acceso para el trabajador
               </p>
               <p className="text-[10px] text-teal-600 font-mono break-all select-all mb-2">
-                {window.location.origin + window.location.pathname}#portaltrabajador
+                {_sisoStableOrigin() + window.location.pathname}#portaltrabajador
               </p>
               <div className="flex gap-2 flex-wrap">
                 <button
                   onClick={() => {
-                    const _pUrl = window.location.origin + window.location.pathname + "#portaltrabajador";
+                    const _pUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                     navigator.clipboard?.writeText(_pUrl)
                       .then(() => showAlert("✅ Enlace copiado.\nComparta: " + _pUrl + "\n\nEl trabajador ingresa con su código, cédula o NIT de empresa."))
                       .catch(() => showAlert("URL: " + _pUrl));
@@ -55741,7 +55764,7 @@ body{padding-top:52px;}
                                   }} className="flex-1 px-2 py-1.5 bg-emerald-600 text-white text-[9px] font-black rounded-lg hover:bg-emerald-700">🖨️ PDF</button>
                                   <button onClick={() => {
                                     const nombre = data.nombres || "";
-                                    const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                                    const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                                     const docD = activeDoctorData || {};
                                     const subject = `Documentos Médicos — ${nombre}`;
                                     const body = `Estimado/a ${nombre},\n\nSus documentos médicos han sido emitidos.\n\nPortal de Certificados:\n${portalLink}\n→ Cédula: ${data.docNumero || ""}\n\nCordialmente,\n${docD.nombre || ""}\n${docD.titulo || ""}\n${docD.licencia ? "Lic: " + docD.licencia : ""}\n${docD.email || emailConfig?.email || ""}`;
@@ -55754,7 +55777,7 @@ body{padding-top:52px;}
                                   <button onClick={() => {
                                     const nombre = data.nombres || "";
                                     const tel = (data.celular || data.telefono || "").replace(/\D/g, "");
-                                    const portalLink = window.location.origin + window.location.pathname + "#portaltrabajador";
+                                    const portalLink = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                                     const msg = encodeURIComponent(`${nombre}, sus documentos médicos están listos.\n📥 ${portalLink}\n→ Cédula: ${data.docNumero || ""}\n${activeDoctorData?.nombre || ""}`);
                                     if (tel.length >= 10) { window.open(`https://wa.me/${tel.startsWith("57") ? tel : "57" + tel}?text=${msg}`, "_blank"); }
                                     else { showPrompt("Celular:", (n) => { if (n) window.open(`https://wa.me/57${n.replace(/\D/g,"")}?text=${msg}`, "_blank"); }); }
@@ -56621,7 +56644,7 @@ body{padding-top:52px;}
               {/* Botón enviar */}
               {todoListo ? (
                 <button onClick={async () => {
-                  const portalUrl = window.location.origin + window.location.pathname + "#portaltrabajador";
+                  const portalUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                   const docD = activeDoctorData || {};
                   const nitEmp = comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit;
                   const nitClean = (nitEmp || "").replace(/[^0-9]/g, "");
