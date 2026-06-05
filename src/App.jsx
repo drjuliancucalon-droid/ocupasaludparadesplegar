@@ -18516,56 +18516,85 @@ function AppInner() {
       setUsersList(fixed);
       setUsersReady(true);
       // ── RESTAURACIÓN EN ARRANQUE: aunque siso_users esté en localStorage,
-      // si pacientes/empresas están vacíos hay que traerlos de Supabase ──────
+      // si pacientes/empresas están vacíos hay que traerlos de la nube.
+      // FIX 2026-06-05: D1 AUTORITATIVO. Lee D1 PRIMERO. Supabase es fallback
+      // solo si D1 falla. Antes el código leía siempre de Supabase ignorando D1
+      // aunque tuviera datos más nuevos. Ahora el flujo respeta la arquitectura
+      // D1=primario, SB=backup.
       if (sessionUser) {
         const _localPatsNow = sp(_patKey(sessionUser), []);
         const _localCompsNow = sp(_compKey(sessionUser), []);
         if (_localPatsNow.length === 0 || _localCompsNow.length === 0) {
-          // Traer de Supabase en background sin bloquear la UI
           (async () => {
+            // ── 1° Intentar D1 (autoritativo) ──────────────────────────────
+            let _patsRaw = null;
+            let _comps = null;
+            let _fuente = "";
+            if (_WORKER_TOKEN) {
+              try {
+                if (_localPatsNow.length === 0) {
+                  _patsRaw = await _workerGet(`siso_db_patients_${sessionUser}`)
+                    || await _workerGet(`siso_patients_${sessionUser}`);
+                  if (_patsRaw) _fuente = "D1";
+                }
+                if (_localCompsNow.length === 0) {
+                  _comps = await _workerGet(`siso_companies_${sessionUser}`)
+                    || await _workerGet("siso_companies_shared");
+                  if (_comps) _fuente = _fuente || "D1";
+                }
+              } catch (e) {
+                console.warn("[SISO] D1 lectura arranque falló:", e?.message);
+              }
+            }
+            // ── 2° Fallback Supabase si D1 no devolvió nada ────────────────
+            if ((!_patsRaw && _localPatsNow.length === 0) || (!_comps && _localCompsNow.length === 0)) {
+              try {
+                const cloud = await Promise.race([
+                  _sbGetMany([
+                    `siso_patients_${sessionUser}`,
+                    `siso_db_patients_${sessionUser}`,
+                    `siso_companies_${sessionUser}`,
+                    "siso_companies_shared",
+                  ]),
+                  new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+                ]);
+                if (cloud) {
+                  if (!_patsRaw && _localPatsNow.length === 0) {
+                    _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
+                      || cloud?.["siso_db_patients_" + sessionUser]?.value;
+                    if (_patsRaw) _fuente = _fuente || "Supabase (fallback)";
+                  }
+                  if (!_comps && _localCompsNow.length === 0) {
+                    _comps = cloud?.["siso_companies_" + sessionUser]?.value
+                      || cloud?.["siso_companies_shared"]?.value;
+                    if (_comps) _fuente = _fuente || "Supabase (fallback)";
+                  }
+                }
+              } catch (err) {
+                console.warn("[SISO] Restauración en arranque Supabase falló:", err.message);
+              }
+            }
+            // ── 3° Aplicar pacientes y empresas ─────────────────────────────
             try {
-              const cloud = await Promise.race([
-                _sbGetMany([
-                  `siso_patients_${sessionUser}`,
-                  `siso_db_patients_${sessionUser}`,
-                  `siso_companies_${sessionUser}`,
-                  "siso_companies_shared",
-                ]),
-                new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-              ]);
-              if (!cloud) return;
-              if (_localPatsNow.length === 0) {
-                const _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
-                  || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                // ANTI-FANTASMA: filtrar entries sin id que vienen desde la nube
+              if (_localPatsNow.length === 0 && _patsRaw) {
+                // ANTI-FANTASMA: filtrar entries sin id
                 const _pats = Array.isArray(_patsRaw) ? _patsRaw.filter(p => p && p.id) : [];
                 if (_pats.length > 0) {
                   setPatientsList(_pats);
-                  _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats));
+                  try { _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats)); } catch (e) { console.warn("[SISO] LS quota arranque:", e?.message); }
                   dataReadyRef.current = true;
-                  console.log("[SISO] ✅ Pacientes restaurados desde Supabase en arranque:", _pats.length);
-                  // Normalizar clave cloud
-                  if (!cloud?.["siso_patients_" + sessionUser]?.value || cloud["siso_patients_" + sessionUser].value.length === 0) {
-                    _sbSet("siso_patients_" + sessionUser, _pats);
-                  }
+                  console.log(`[SISO] ✅ Pacientes restaurados desde ${_fuente} en arranque: ${_pats.length}`);
                 }
-              } else {
+              } else if (_localPatsNow.length > 0) {
                 dataReadyRef.current = true;
               }
-              if (_localCompsNow.length === 0) {
-                const _comps = cloud?.["siso_companies_" + sessionUser]?.value
-                  || cloud?.["siso_companies_shared"]?.value;
-                if (Array.isArray(_comps) && _comps.length > 0) {
-                  setCompanies(_comps);
-                  _ls.setItem(_compKey(sessionUser), JSON.stringify(_comps));
-                  console.log("[SISO] ✅ Empresas restauradas desde Supabase en arranque:", _comps.length);
-                  if (!cloud?.["siso_companies_" + sessionUser]?.value || cloud["siso_companies_" + sessionUser].value.length === 0) {
-                    _sbSet("siso_companies_" + sessionUser, _comps);
-                  }
-                }
+              if (_localCompsNow.length === 0 && Array.isArray(_comps) && _comps.length > 0) {
+                setCompanies(_comps);
+                try { _ls.setItem(_compKey(sessionUser), JSON.stringify(_comps)); } catch {}
+                console.log(`[SISO] ✅ Empresas restauradas desde ${_fuente} en arranque: ${_comps.length}`);
               }
-            } catch (err) {
-              console.warn("[SISO] Restauración en arranque falló:", err.message);
+            } catch (e) {
+              console.warn("[SISO] Aplicación de datos en arranque falló:", e?.message);
             }
           })();
         } else {
