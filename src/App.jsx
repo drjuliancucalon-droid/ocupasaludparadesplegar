@@ -17018,18 +17018,26 @@ function AppInner() {
   // disponible sin intervención manual.
   // FIRE-AND-FORGET: nunca debe romper el guardado local. Si falla la
   // publicación al portal, solo se loguea warning.
+  // FIX 2026-06-05 (FASE 3): retorna {ok, error} en lugar de void.
+  // Permite que el caller (saveInforme, cierre HC) sepa si la publicación
+  // realmente persistió en D1 antes de mostrar "✅ Guardado".
   const _publicarAlPortalEmpresa = async (informe) => {
     try {
       const emp = companies.find(c => c.id === informe.empresaId);
-      if (!emp) return; // empresa no encontrada → no hay portal donde publicar
+      if (!emp) return { ok: false, error: "empresa no encontrada" };
       const nit = (emp.nit || "").toString().replace(/[^0-9]/g, "");
-      if (!nit || nit.length < 3) return; // NIT inválido
+      if (!nit || nit.length < 3) return { ok: false, error: "NIT inválido" };
       // Extraer año-mes del periodo (puede venir como "2026-05" o "2026-05 — 2026-05-07")
       const ymMatch = (informe.periodo || "").match(/^(\d{4}-\d{2})/);
       const ym = ymMatch ? ymMatch[1] : (informe.fecha || "").slice(0, 7);
-      if (!ym) return;
+      if (!ym) return { ok: false, error: "sin año-mes" };
       const [y, m] = ym.split("-");
-      const periodoLabel = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"][parseInt(m) - 1] + " " + y;
+      // FIX 2026-06-05 (FASE 3): usar formato ym ("2026-06") como periodo canónico
+      // en lugar de "Junio 2026". Esto evita la duplicación de periodos que el
+      // comparador find() no detectaba ("2026-06" !== "Junio 2026").
+      // mantenemos el label legible como propiedad adicional para UI.
+      const periodoLabel = ym; // formato canónico
+      const periodoNombreLargo = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"][parseInt(m) - 1] + " " + y;
 
       // Leer entrada existente del portal — probar variantes de NIT (con/sin DV)
       let portalKey = `siso_portal_empresa_docs_${nit}`;
@@ -17054,11 +17062,33 @@ function AppInner() {
         };
       }
       portalData.periodos = portalData.periodos || [];
-      // Buscar periodo existente o crear nuevo
-      let periodo = portalData.periodos.find(p => p.periodo === periodoLabel || (p.fecha || "").startsWith(ym));
+      // FIX 2026-06-05 (FASE 3): comparación robusta de periodos.
+      // Buscar por periodo exacto, por ym o por fecha (cualquier formato).
+      // Antes encontraba sólo si periodo === "Junio 2026" exacto, causando
+      // duplicación cuando otro flujo creaba "2026-06".
+      let periodo = portalData.periodos.find(p => {
+        if (!p) return false;
+        if (p.periodo === periodoLabel) return true; // mismo "2026-06"
+        if (p.periodo === periodoNombreLargo) return true; // "Junio 2026" legado
+        if ((p.fecha || "").startsWith(ym)) return true; // misma fecha año-mes
+        // Detectar legacy: "Mes YYYY" formato viejo
+        const legacyMatch = (p.periodo || "").match(/^(\w+) (\d{4})$/);
+        if (legacyMatch) {
+          const idx = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].indexOf(legacyMatch[1]);
+          if (idx >= 0) {
+            const ymLegacy = `${legacyMatch[2]}-${String(idx+1).padStart(2,"0")}`;
+            if (ymLegacy === ym) return true;
+          }
+        }
+        return false;
+      });
       if (!periodo) {
-        periodo = { periodo: periodoLabel, fecha: informe.fecha || `${ym}-01` };
+        periodo = { periodo: periodoLabel, periodoLabel: periodoNombreLargo, fecha: informe.fecha || `${ym}-01` };
         portalData.periodos.push(periodo);
+      } else {
+        // Normalizar el formato del periodo existente al canónico
+        periodo.periodo = periodoLabel;
+        periodo.periodoLabel = periodo.periodoLabel || periodoNombreLargo;
       }
       // Vincular según el tipo (custodia o informe sociodemográfico)
       if (informe.tipo === "custodia") {
@@ -17083,19 +17113,27 @@ function AppInner() {
       portalData.codigoAcceso = portalData.codigoAcceso || emp.portalCode || "";
       // Marcar timestamp para que lectura comparativa pueda ordenar
       portalData.updatedAt = new Date().toISOString();
-      // ESCRITURA DUAL: D1 (autoritativo, blocking) + Supabase (backup, async)
-      // Garantiza redundancia: si Supabase está caído D1 funciona; al revés
-      // _readSmart catchea desde SB y catch-up a D1.
-      const okD1 = await _workerSet(portalKey, portalData);
-      if (!okD1) {
-        console.warn("[_publicarAlPortalEmpresa] D1 write falló, intentando SB...");
-        try { await _sbSet(portalKey, portalData); } catch {}
-      } else {
-        // D1 OK → SB en background como backup (no espera ni rompe si falla)
-        _sbSet(portalKey, portalData).catch((e) => console.warn("[_publicarAlPortalEmpresa] SB backup falló:", e?.message));
+      // ESCRITURA D1 BLOQUEANTE (autoritativo). Verificación post-escritura.
+      // FIX 2026-06-05 (FASE 3): si D1 falla, retorna error explícito al caller.
+      // El caller (saveInforme) decide si mostrar éxito o alerta al usuario.
+      let okD1 = false;
+      if (_WORKER_TOKEN) {
+        try {
+          okD1 = await _workerSet(portalKey, portalData);
+        } catch (e) {
+          console.warn("[_publicarAlPortalEmpresa] D1 write excepción:", e?.message);
+        }
       }
+      // SB en background como backup (siempre intenta, no rompe si falla)
+      _sbSet(portalKey, portalData).catch((e) => console.warn("[_publicarAlPortalEmpresa] SB backup falló:", e?.message));
+      if (!okD1) {
+        console.warn("[_publicarAlPortalEmpresa] D1 write falló para", portalKey);
+        return { ok: false, error: "D1 write falló", portalKey };
+      }
+      return { ok: true, portalKey, periodoLabel };
     } catch (e) {
       console.warn("[_publicarAlPortalEmpresa] error:", e?.message);
+      return { ok: false, error: e?.message };
     }
   };
   // ─── Helpers vinculación cajaMov (V1) ↔ Cuenta V2 ───────────────────────
@@ -17124,15 +17162,50 @@ function AppInner() {
     });
   };
 
-  const saveInforme = (informe) => {
+  // FIX 2026-06-05 (FASE 3): saveInforme async con D1 bloqueante.
+  // Antes solo escribía a LS + SB. Si el sync periódico traía SB viejo,
+  // el informe se perdía. Ahora escribe a D1 PRIMERO con verificación,
+  // después LS (try/catch quota) y SB en background.
+  const saveInforme = async (informe) => {
     const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo && i.tipo === informe.tipo)), informe];
     setSavedInformes(updated);
-    localStorage.setItem("siso_informes", JSON.stringify(updated));
-    _sbSet("siso_informes_" + (currentUser?.user || "shared"), updated);
-    // AUTO-PUBLICAR al portal de empresa (informe sociodemográfico Y carta custodia)
-    // — fire-and-forget para no bloquear el save local
+
+    // 1° D1 BLOQUEANTE (autoritativo)
+    let okD1 = false;
+    const sufKey = "siso_informes_" + (currentUser?.user || "shared");
+    if (_WORKER_TOKEN) {
+      try {
+        // Escribir AMBAS variantes para compatibilidad
+        await _workerSet("siso_informes", updated);
+        okD1 = await _workerSet(sufKey, updated);
+      } catch (e) {
+        console.warn("[saveInforme] D1 escritura excepción:", e?.message);
+      }
+    }
+    if (!okD1) {
+      console.warn("[saveInforme] D1 write falló — el informe puede perderse en próxima sync");
+    }
+
+    // 2° LS con try/catch (quota)
+    try { localStorage.setItem("siso_informes", JSON.stringify(updated)); }
+    catch (e) { console.warn("[saveInforme] LS quota:", e?.message); }
+
+    // 3° SB en background (backup, no bloquea)
+    _sbSet(sufKey, updated).catch((e) => console.warn("[saveInforme] SB falló:", e?.message));
+    _sbSet("siso_informes", updated).catch(() => {}); // segundo backup
+
+    // 4° AUTO-PUBLICAR al portal (ahora await + verificación)
     if (informe?.empresaId) {
-      _publicarAlPortalEmpresa(informe).catch(e => console.warn("[portal] publish failed:", e?.message));
+      try {
+        const result = await _publicarAlPortalEmpresa(informe);
+        if (!result?.ok) {
+          console.warn("[saveInforme] portal publish falló:", result?.error);
+          // Alert no-bloqueante al usuario
+          try { showAlert(`⚠️ Informe guardado pero NO se publicó al portal: ${result?.error || "desconocido"}\n\nReintente publicar manualmente.`); } catch {}
+        }
+      } catch (e) {
+        console.warn("[saveInforme] publish excepción:", e?.message);
+      }
     }
   };
   const saveEmailConfig = (cfg) => {
