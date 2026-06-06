@@ -24,6 +24,63 @@ import {
   _sbSet, _sbGetAll, _sbDelete, _SB_URL, _SB_KEY,
 } from './supabase.js';
 
+// ─────────────────────────────────────────────────────────────────
+// FIX 2026-06-05: D1 AUTORITATIVO en sync periódico
+// Antes este módulo descargaba TODO de Supabase y sobreescribía
+// IndexedDB + localStorage. Cuando D1 tenía datos más nuevos que SB
+// (por cierres de HC recientes), el sync de SB devolvía datos viejos
+// y SOBREESCRIBÍA los nuevos. Esto causaba pérdida sistemática de
+// pacientes, atenciones, informes y publicaciones al portal.
+// AHORA: sync periódico lee de D1. SB queda como backup de escritura
+// pero NUNCA como fuente de lectura para sobrescribir local.
+// ─────────────────────────────────────────────────────────────────
+const _D1_WORKER_URL = () =>
+  (typeof window !== 'undefined' && window.__SISO_CONFIG?.workerUrl) || '';
+const _D1_WORKER_TOKEN = () =>
+  (typeof window !== 'undefined' && window.__SISO_CONFIG?.workerToken) || '';
+
+// Descarga TODAS las claves siso_* de Worker D1.
+// Devuelve formato compatible con _sbGetAll: { key: { value, updatedAt } }
+const _d1GetAll = async () => {
+  const W = _D1_WORKER_URL();
+  const TOK = _D1_WORKER_TOKEN();
+  if (!W || !TOK) return null;
+  try {
+    const r = await fetch(`${W}/store/prefix/siso_`, {
+      headers: { 'X-Siso-Token': TOK },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    const out = {};
+    for (const row of (rows || [])) {
+      out[row.key] = {
+        value: row.value,
+        updatedAt:
+          (row.value && typeof row.value === 'object' && row.value.updatedAt) ||
+          row.ts ||
+          row.updatedAt ||
+          new Date().toISOString(),
+      };
+    }
+    return out;
+  } catch { return null; }
+};
+
+// Lee una clave específica de D1 (para refresh en background)
+const _d1Get = async (key) => {
+  const W = _D1_WORKER_URL();
+  const TOK = _D1_WORKER_TOKEN();
+  if (!W || !TOK) return null;
+  try {
+    const r = await fetch(`${W}/store/${encodeURIComponent(key)}`, {
+      headers: { 'X-Siso-Token': TOK },
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d[0]?.value ?? null;
+  } catch { return null; }
+};
+
 // ── Estado interno del sync manager ──────────────────────────────
 const _state = {
   isSyncing:     false,
@@ -63,9 +120,10 @@ export const hybridGet = async (key, fallback = null) => {
   try {
     const idbVal = await idbGet(key);
     if (idbVal !== null) {
-      // En background, verificar si Supabase tiene algo más reciente
+      // En background, verificar si D1 tiene algo más reciente
+      // FIX 2026-06-05: cambio _refreshFromSupabase → _refreshFromD1
       if (navigator.onLine) {
-        _refreshFromSupabase(key).catch(() => {});
+        _refreshFromD1(key).catch(() => {});
       }
       return idbVal;
     }
@@ -82,9 +140,15 @@ export const hybridGet = async (key, fallback = null) => {
     }
   } catch {}
 
-  // 3. Sin datos locales → intentar Supabase (si hay internet)
+  // 3. Sin datos locales → intentar D1 primero (autoritativo), SB fallback
   if (navigator.onLine) {
     try {
+      const d1Val = await _d1Get(key);
+      if (d1Val !== null) {
+        await idbSet(key, d1Val);
+        return d1Val;
+      }
+      // Fallback Supabase si D1 vacío
       const sbData = await _fetchFromSupabase(key);
       if (sbData !== null) {
         await idbSet(key, sbData);
@@ -183,27 +247,36 @@ export const syncNow = async () => {
       }
     }
 
-    // FASE 2: Descargar novedades de Supabase → IndexedDB
-    const sbData = await _sbGetAll().catch(() => null);
-    if (sbData) {
+    // FASE 2: Descargar novedades de D1 → IndexedDB (D1 PRIMARIO)
+    // FIX 2026-06-05: cambio de _sbGetAll() a _d1GetAll() — D1 autoritativo.
+    // Esto elimina el bug de sobrescritura donde SB tenía datos viejos y
+    // los metía sobre datos nuevos en local.
+    let cloudData = await _d1GetAll().catch(() => null);
+    let fuente = 'D1';
+    if (!cloudData) {
+      // Fallback Supabase SOLO si D1 cae (continuidad)
+      cloudData = await _sbGetAll().catch(() => null);
+      fuente = 'Supabase (fallback)';
+    }
+    if (cloudData) {
       const localData = await idbGetAll();
       let updated = 0;
 
-      for (const [key, sbEntry] of Object.entries(sbData)) {
+      for (const [key, cloudEntry] of Object.entries(cloudData)) {
         const localEntry = localData[key];
-        const sbTs  = new Date(sbEntry.updatedAt || 0).getTime();
-        const locTs = new Date(localEntry?.updatedAt || 0).getTime();
+        const cloudTs = new Date(cloudEntry.updatedAt || 0).getTime();
+        const locTs   = new Date(localEntry?.updatedAt || 0).getTime();
 
-        // Supabase más reciente → actualizar local
-        if (!localEntry || sbTs > locTs) {
-          await idbSet(key, sbEntry.value, sbEntry.updatedAt);
-          try { localStorage.setItem(key, JSON.stringify(sbEntry.value)); } catch {}
+        // Cloud más reciente → actualizar local
+        if (!localEntry || cloudTs > locTs) {
+          await idbSet(key, cloudEntry.value, cloudEntry.updatedAt);
+          try { localStorage.setItem(key, JSON.stringify(cloudEntry.value)); } catch {}
           updated++;
         }
       }
 
       if (updated > 0) {
-        console.log(`[SISO SYNC] ${updated} claves actualizadas desde Supabase`);
+        console.log(`[SISO SYNC] ${updated} claves actualizadas desde ${fuente}`);
         _notify('updated', { count: updated });
       }
     }
@@ -263,13 +336,23 @@ export const hybridAuditLog = async (action, user, detail = '', extra = {}) => {
 
 // ── HELPERS INTERNOS ──────────────────────────────────────────────
 
-// Refresca una clave específica desde Supabase en background
+// Refresca una clave específica desde D1 en background (D1 PRIMARIO).
+// FIX 2026-06-05: antes _refreshFromSupabase descargaba SB y sobreescribía
+// local. Ahora descarga D1 y SOLO actualiza local si D1 tiene datos.
+const _refreshFromD1 = async (key) => {
+  const d1Val = await _d1Get(key);
+  if (d1Val === null) return;
+  await idbSet(key, d1Val);
+  try { localStorage.setItem(key, JSON.stringify(d1Val)); } catch {}
+};
+
+// Legacy: mantenido por compatibilidad con código que pueda referenciarlo.
+// Ya NO se usa en hybridGet (reemplazado por _refreshFromD1).
 const _refreshFromSupabase = async (key) => {
   const sbData = await _fetchFromSupabase(key);
   if (sbData === null) return;
 
   const meta = await getSyncMeta(key);
-  // Solo actualizar si Supabase tiene datos más recientes
   if (!meta || !meta.serverTs) {
     await idbSet(key, sbData);
     try { localStorage.setItem(key, JSON.stringify(sbData)); } catch {}
