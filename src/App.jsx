@@ -17170,14 +17170,15 @@ function AppInner() {
     const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo && i.tipo === informe.tipo)), informe];
     setSavedInformes(updated);
 
-    // 1° D1 BLOQUEANTE (autoritativo)
+    // 1° D1 BLOQUEANTE (autoritativo) con MERGE anti-regresión por id de informe
+    // FIX 2026-06-09 (Opción B): _writeArrayMergeD1 preserva informes en D1 que
+    // el cliente local no conoce. Antes _workerSet directo podía sobreescribir.
     let okD1 = false;
     const sufKey = "siso_informes_" + (currentUser?.user || "shared");
     if (_WORKER_TOKEN) {
       try {
-        // Escribir AMBAS variantes para compatibilidad
-        await _workerSet("siso_informes", updated);
-        okD1 = await _workerSet(sufKey, updated);
+        await _writeArrayMergeD1("siso_informes", updated, "id");
+        okD1 = await _writeArrayMergeD1(sufKey, updated, "id");
       } catch (e) {
         console.warn("[saveInforme] D1 escritura excepción:", e?.message);
       }
@@ -21355,13 +21356,59 @@ const handleLogin = (u, p) => {
       })();
     }
   };
+  // FIX 2026-06-09 (Opción B): helper genérico para escribir arrays con MERGE
+  // anti-regresión por ID. Lee D1 PRIMERO, preserva items que estén en remoto
+  // pero NO en local (cliente puede tener vista incompleta). Defensa total contra
+  // sobreescritura por clientes con bundle viejo u otros dispositivos desincronizados.
+  //
+  // Garantía: si D1 tiene 33 empresas y el cliente local tiene 31, al escribir
+  // se hace MERGE → D1 queda con 33+ (nunca pierde las 2 extras).
+  const _writeArrayMergeD1 = async (key, list, idField = "id") => {
+    if (!_WORKER_TOKEN) return false;
+    try {
+      const remote = await _workerGet(key);
+      let finalList = list;
+      if (Array.isArray(remote) && remote.length > 0) {
+        const localIds = new Set(
+          (list || []).filter(x => x && x[idField] != null).map(x => String(x[idField]))
+        );
+        const extras = remote.filter(x => {
+          if (!x || x[idField] == null) return false;
+          return !localIds.has(String(x[idField]));
+        });
+        if (extras.length > 0) {
+          finalList = [...(list || []), ...extras];
+          console.warn(`[_writeArrayMergeD1] ${key}: MERGE +${extras.length} preservados, total ${finalList.length}`);
+        }
+      }
+      return await _workerSet(key, finalList);
+    } catch (e) {
+      console.warn(`[_writeArrayMergeD1] ${key} error:`, e?.message);
+      return false;
+    }
+  };
+
   const _syncCompanies = (list) => {
     const _suid2 = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
       : currentUser?.user || "shared";
     const key = _compKey(_suid2);
     const cloudKey = _compKeyCloud(_suid2);
-    _ls.setItem(key, JSON.stringify(list));
+    // LS con try/catch (quota)
+    try { _ls.setItem(key, JSON.stringify(list)); }
+    catch (e) { console.warn("[_syncCompanies] LS quota:", e?.message); }
+    // FIX 2026-06-09: D1 bloqueante con MERGE (anti-regresión por id de empresa)
+    // Antes solo escribía a SB → cliente con bundle viejo sobreescribía D1 con
+    // versión vieja sin empresas nuevas (caso AMEZQUITA + CONSORCIO).
+    if (_WORKER_TOKEN) {
+      (async () => {
+        const okD1Local  = await _writeArrayMergeD1(key, list, "id");
+        const okD1Cloud  = await _writeArrayMergeD1(cloudKey, list, "id");
+        if (!okD1Local || !okD1Cloud) {
+          console.warn("[_syncCompanies] D1 escritura parcial — verificar conectividad");
+        }
+      })();
+    }
     // _sbSetSafe: strip logos base64 antes de enviar a D1 (evita exceder 1MB/fila)
     _sbSetSafe(cloudKey, list).then((ok) => {
       if (!ok) _sbQueue.pending[cloudKey] = list;
@@ -33444,7 +33491,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     // Guardar en estado local
                     const updated = [...encuestas, newEnc];
                     setEncuestas(updated);
-                    localStorage.setItem("siso_encuestas", JSON.stringify(updated));
+                    // FIX 2026-06-09: LS con try/catch + D1 MERGE anti-regresión
+                    try { localStorage.setItem("siso_encuestas", JSON.stringify(updated)); }
+                    catch (e) { console.warn("[crear-encuesta] LS quota:", e?.message); }
+                    if (_WORKER_TOKEN) { _writeArrayMergeD1("siso_encuestas", updated, "id").catch(()=>{}); }
                     _sbSet("siso_encuestas", updated);
                     // FIX 2026-06-04: usar dominio estable (ver _sisoStableOrigin)
                     // para evitar links a subdominios inmutables con bundles viejos
