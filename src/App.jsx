@@ -19283,7 +19283,10 @@ function AppInner() {
           _sbSet("siso_mensajes",                         mensajes),
           _sbSet(`siso_agendados_${_asSuf}`,              agendados),
           // SYNC-FIX: doble escritura atenciones — cerradas (autoritativa) + por usuario
-          _sbSet("siso_atenciones_cerradas",               atencionesCerradas),
+          // ANTI-REGRESIÓN: usar MERGE para preservar atenciones reparadas o de otros dispositivos
+          _writeArrayMergeD1("siso_atenciones_cerradas", atencionesCerradas).then(() =>
+            _sbSet("siso_atenciones_cerradas",          atencionesCerradas)
+          ),
           _sbSet(`siso_atenciones_${_asSuf}`,              atencionesCerradas),
           _sbSet("siso_ai_config_provider", { activeProvider: aiConfig.activeProvider }),
         ];
@@ -20305,7 +20308,10 @@ JSON REQUERIDO (estructura exacta):
       // siso_atenciones_cerradas = fuente autoritativa (leída en login)
       // siso_atenciones_${_bkSuf} = clave por usuario (también leída en algunos flujos)
       "Atenciones cerradas": Promise.all([
-        _sbSet("siso_atenciones_cerradas", _atencionesCerradasSlim),
+        // ANTI-REGRESIÓN: MERGE D1 antes de escribir SB para preservar reparaciones manuales
+        _writeArrayMergeD1("siso_atenciones_cerradas", _atencionesCerradasSlim).then(() =>
+          _sbSet("siso_atenciones_cerradas", _atencionesCerradasSlim)
+        ),
         _sbSet(`siso_atenciones_${_bkSuf}`, _atencionesCerradasSlim),
       ]).then(([r1, r2]) => r1 && r2),
       "Configuración IA (proveedor)": _sbSet("siso_ai_config_provider", {
