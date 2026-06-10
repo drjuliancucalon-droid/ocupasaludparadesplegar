@@ -32294,21 +32294,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <div className="flex justify-center gap-1">
                         <button
                           onClick={() => {
+                            // FIX URGENTE: spread completo del paciente para cargar
+                            // TODOS los campos sociodemográficos (incluidos los importados de encuesta)
                             const newHC = {
                               ...initialOccupPatientState,
+                              ...p,
+                              // Sobreescribir control de HC
                               id: Date.now().toString(),
-                              nombres: p.nombres,
-                              docNumero: p.docNumero,
-                              edad: p.edad,
-                              genero: p.genero,
-                              estadoCivil: p.estadoCivil,
-                              escolaridad: p.escolaridad,
-                              telefono: p.telefono || "",
-                              eps: p.eps || "",
-                              arl: p.arl || "",
-                              cargo: p.cargo,
+                              type: "ocupacional",
+                              estadoHistoria: "Abierta",
+                              fechaRegistro: new Date().toISOString(),
+                              fechaExamen: new Date().toISOString().split("T")[0],
+                              codigoVerificacion: "",
+                              conteoEdiciones: 0,
+                              motivoEdicion: "",
+                              folioHC: "",
+                              versionDocumento: 1,
                               empresaId: p.empresaId || "particular",
-                              empresaNombre: p.empresaNombre || "PARTICULAR",
+                              empresaNombre: p.empresaNombre || "PARTICULAR / INDEPENDIENTE",
                               empresaNit: p.empresaNit || "",
                               actividadEconomica: p.actividadEconomica || "",
                               riesgos: p.riesgos
@@ -45515,60 +45518,97 @@ th{background:#fee2e2;font-weight:900;text-align:left;color:#7f1d1d;}
       setHcChoiceAgenda(ag);
     };
     const abrirHCDesdeAgenda = (ag, tipo) => {
-      const newId = "pac_" + Date.now();
+      // FIX URGENTE: buscar paciente existente (importado de encuesta o creado previo)
+      // por docNumero para cargar TODOS sus datos (no solo los del agendamiento).
+      const docKey = String(ag.docNumero || "").trim();
+      const baseListPac = (typeof patientsListRef !== "undefined" && patientsListRef?.current)
+        ? patientsListRef.current : patientsList;
+      const pacExist = docKey
+        ? baseListPac.find(p => String(p.docNumero || "").trim() === docKey)
+        : null;
+      const newId = pacExist?.id || ("pac_" + Date.now());
       if (tipo === "ocupacional") {
+        // Spread paciente completo + sobreescribir control de HC
+        const baseFromPac = pacExist ? { ...pacExist } : {};
         setData({
           ...initialOccupPatientState,
+          ...baseFromPac,
+          // Datos del agendamiento sobre el paciente (por si actualizó algo en agenda)
+          nombres: ag.nombre || baseFromPac.nombres || "",
+          docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
+          docNumero: ag.docNumero || baseFromPac.docNumero || "",
+          fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
+          edad: ag.edad || baseFromPac.edad || "",
+          genero: ag.genero || baseFromPac.genero || "",
+          estadoCivil: ag.estadoCivil || baseFromPac.estadoCivil || "",
+          escolaridad: ag.escolaridad || baseFromPac.escolaridad || "",
+          celular: ag.celular || baseFromPac.celular || "",
+          telefono: ag.telefono || baseFromPac.telefono || "",
+          email: ag.email || baseFromPac.email || "",
+          residencia: ag.residencia || baseFromPac.residencia || "",
+          zonaResidencia: ag.zonaResidencia || baseFromPac.zonaResidencia || "",
+          estrato: ag.estrato || baseFromPac.estrato || "",
+          eps: ag.eps || baseFromPac.eps || "",
+          arl: ag.arl || baseFromPac.arl || "",
+          afp: ag.afp || baseFromPac.afp || "",
+          nivelRiesgoARL: ag.nivelRiesgoARL || baseFromPac.nivelRiesgoARL || "",
+          cargo: ag.cargo || baseFromPac.cargo || "",
+          dependencia: ag.dependencia || baseFromPac.dependencia || "",
+          tipoContrato: ag.tipoContrato || baseFromPac.tipoContrato || "",
+          turnoTrabajo: ag.turnoTrabajo || baseFromPac.turnoTrabajo || "",
+          antiguedadEmpresa: ag.antiguedadEmpresa || baseFromPac.antiguedadEmpresa || "",
+          grupoSanguineo: ag.grupoSanguineo || baseFromPac.grupoSanguineo || "",
+          empresaId: baseFromPac.empresaId || ag.empresaId || "particular",
+          empresaNombre: baseFromPac.empresaNombre || ag.empresa || "PARTICULAR / INDEPENDIENTE",
+          empresaNit: baseFromPac.empresaNit || ag.empresaNit || "",
+          actividadEconomica: baseFromPac.actividadEconomica || "",
+          motivoConsulta: ag.tipoConsulta || baseFromPac.motivoConsulta || "",
+          // Control HC
           id: newId,
+          type: "ocupacional",
           _medicoId: ag.medicoId,
-          nombres: ag.nombre,
-          docTipo: ag.docTipo,
-          docNumero: ag.docNumero,
-          fechaNacimiento: ag.fechaNacimiento,
-          edad: ag.edad,
-          genero: ag.genero,
-          estadoCivil: ag.estadoCivil,
-          escolaridad: ag.escolaridad,
-          celular: ag.celular,
-          telefono: ag.telefono,
-          email: ag.email,
-          residencia: ag.residencia,
-          zonaResidencia: ag.zonaResidencia,
-          estrato: ag.estrato,
-          eps: ag.eps,
-          arl: ag.arl,
-          afp: ag.afp,
-          nivelRiesgoARL: ag.nivelRiesgoARL,
-          cargo: ag.cargo,
-          dependencia: ag.dependencia,
-          tipoContrato: ag.tipoContrato,
-          turnoTrabajo: ag.turnoTrabajo,
-          antiguedadEmpresa: ag.antiguedadEmpresa,
-          grupoSanguineo: ag.grupoSanguineo,
-          motivoConsulta: ag.tipoConsulta || "",
           _agendaId: ag.id,
+          estadoHistoria: "Abierta",
+          fechaRegistro: new Date().toISOString(),
+          fechaExamen: new Date().toISOString().split("T")[0],
+          codigoVerificacion: "",
+          conteoEdiciones: 0,
+          motivoEdicion: "",
+          folioHC: "",
+          versionDocumento: 1,
+          riesgos: baseFromPac.riesgos
+            ? { ...baseFromPac.riesgos }
+            : { ...initialOccupPatientState.riesgos },
+          antecedentesAgrupados: baseFromPac.antecedentesAgrupados
+            ? JSON.parse(JSON.stringify(baseFromPac.antecedentesAgrupados))
+            : initialOccupPatientState.antecedentesAgrupados,
         });
         setDataType("ocupacional");
         setActiveTab("form");
       } else {
+        const baseFromPac = pacExist ? { ...pacExist } : {};
         setData({
           ...initialGeneralPatientState,
+          ...baseFromPac,
+          nombres: ag.nombre || baseFromPac.nombres || "",
+          docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
+          docNumero: ag.docNumero || baseFromPac.docNumero || "",
+          fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
+          edad: ag.edad || baseFromPac.edad || "",
+          genero: ag.genero || baseFromPac.genero || "",
+          celular: ag.celular || baseFromPac.celular || "",
+          telefono: ag.telefono || baseFromPac.telefono || "",
+          email: ag.email || baseFromPac.email || "",
+          residencia: ag.residencia || baseFromPac.residencia || "",
+          eps: ag.eps || baseFromPac.eps || "",
+          arl: ag.arl || baseFromPac.arl || "",
+          cargo: ag.cargo || baseFromPac.cargo || "",
           id: newId,
+          type: "general",
           _medicoId: ag.medicoId,
-          nombres: ag.nombre,
-          docTipo: ag.docTipo,
-          docNumero: ag.docNumero,
-          fechaNacimiento: ag.fechaNacimiento,
-          edad: ag.edad,
-          genero: ag.genero,
-          celular: ag.celular,
-          telefono: ag.telefono,
-          email: ag.email,
-          residencia: ag.residencia,
-          eps: ag.eps,
-          arl: ag.arl,
-          cargo: ag.cargo,
           _agendaId: ag.id,
+          estadoHistoria: "Abierta",
+          fechaRegistro: new Date().toISOString(),
         });
         setDataType("general");
         setActiveTab("formGeneral");
