@@ -11483,7 +11483,11 @@ body{padding-top:52px;}
     const _blob = new Blob([_html], {type:'text/html;charset=utf-8'});
     const _burl = URL.createObjectURL(_blob);
     const w = window.open(_burl, "_blank", "width=600,height=700");
-    if (!w) { URL.revokeObjectURL(_burl); return; }
+    if (!w) {
+      URL.revokeObjectURL(_burl);
+      alert("⚠️ El navegador bloqueó la ventana de impresión.\n\nPermita ventanas emergentes para este sitio:\n1. Clic en el ícono de pop-up bloqueado en la barra de direcciones\n2. 'Permitir ventanas emergentes'\n3. Reintentar imprimir");
+      return;
+    }
     setTimeout(() => URL.revokeObjectURL(_burl), 60000);
   };
 
@@ -11637,6 +11641,38 @@ body{padding-top:52px;}
             }</p>
           </div>
         </div>`;
+    } else if (section === "examenes") {
+      const exs = data.solicitudExamenes || [];
+      const exsHtml = exs.length > 0
+        ? exs.map((e, i) => `
+          <div style="display:flex;gap:10px;align-items:flex-start;padding:6px 8px;border-bottom:1px solid #ccfbf1;">
+            <span style="background:#0d9488;color:white;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:9pt;font-weight:900;">${i + 1}</span>
+            <div style="flex:1;">
+              <p style="font-size:10pt;font-weight:900;color:#134e4a;margin:0 0 2px 0;">${_sanitize(typeof e === "string" ? e : (e.nombre || e.examen || e.descripcion || ""))}</p>
+              ${(typeof e === "object" && e.observaciones) ? `<p style="font-size:8.5pt;color:#374151;margin:1px 0;">${_sanitize(e.observaciones)}</p>` : ""}
+              ${(typeof e === "object" && e.urgencia) ? `<p style="font-size:8pt;color:#92400e;font-style:italic;margin:2px 0;">Prioridad: ${_sanitize(e.urgencia)}</p>` : ""}
+            </div>
+          </div>`).join("")
+        : '<p style="color:#9ca3af;font-style:italic;text-align:center;padding:12px 0;">Sin exámenes solicitados.</p>';
+      bodyHtml = `
+        <div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:4px;padding:10px 12px;margin-bottom:12px;">
+          <p class="section-title" style="color:#134e4a;">&#129514; Solicitud de Exámenes Paraclínicos</p>
+          ${exsHtml}
+          <p style="font-size:8pt;color:#6b7280;margin-top:10px;padding-top:6px;border-top:1px solid #ccfbf1;">
+            <b>Diagnóstico:</b> ${_sanitize(data.diagnosticoPrincipal || (data.diagnosticos || [])[0]?.descripcion || "--")}
+          </p>
+        </div>
+        <div class="sig-block">
+          <div class="sig-line">
+            <div class="sig-line-top">Firma del Paciente / Responsable</div>
+            <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Nombre: _______________________</p>
+          </div>
+          <div class="sig-line" style="text-align:center;">
+            ${activeSignature ? `<img src="${activeSignature}" style="max-height:55px;max-width:150px;object-fit:contain;" alt="Firma"/>` : '<div style="height:55px;border-bottom:2px solid #222;"></div>'}
+            <p style="font-size:8.5pt;font-weight:900;margin:3px 0;">${activeDoctorData?.nombre || ""}</p>
+            <p style="font-size:7.5pt;color:#555;margin:1px 0;">${activeDoctorData?.titulo || ""}</p>
+          </div>
+        </div>`;
     }
     const _html2 = `<!DOCTYPE html><html lang="es"><head><title>${_sanitize(titleDoc)} - ${_sanitize(data.nombres)}</title><meta charset="UTF-8"/><style>
 ${baseWindowStyle}
@@ -11662,7 +11698,11 @@ body{padding-top:52px;}
     const _blob2 = new Blob([_html2], {type:'text/html;charset=utf-8'});
     const _burl2 = URL.createObjectURL(_blob2);
     const w = window.open(_burl2, "_blank", "width=870,height=1100");
-    if (!w) { URL.revokeObjectURL(_burl2); return; }
+    if (!w) {
+      URL.revokeObjectURL(_burl2);
+      alert("⚠️ El navegador bloqueó la ventana de impresión.\n\nPermita ventanas emergentes para este sitio:\n1. Clic en el ícono de pop-up bloqueado en la barra de direcciones\n2. 'Permitir ventanas emergentes'\n3. Reintentar imprimir");
+      return;
+    }
     setTimeout(() => URL.revokeObjectURL(_burl2), 60000);
     // No auto-print - el usuario edita y luego hace clic en "Imprimir ahora"
   };
@@ -11746,7 +11786,7 @@ body{padding-top:52px;}
           )}
           {activeSubTab === "examenes" && (
             <button
-              onClick={() => window.print()}
+              onClick={() => openPrintWindow("examenes", "Solicitud de Exámenes")}
               className="flex items-center gap-1 bg-teal-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-teal-700"
             >
               <Printer className="w-3 h-3" /> Imprimir Exámenes
@@ -21613,14 +21653,28 @@ const handleLogin = (u, p) => {
             }
           } catch {}
         }
-        _sbSet("siso_portal_" + code, portalData);
-        if (closed.docNumero)
-          _sbSet(
-            "siso_portal_doc_" + closed.docNumero.replace(/\s/g, ""),
-            portalData
-          );
-        // Guardar HC completa para acceso del paciente en el portal
-        if (closed.docNumero) {
+        // ═════════════════════════════════════════════════════════════════════
+        // PUBLICACIÓN AL PORTAL — BLOQUEANTE A D1 + BACKUP SB
+        // (fix 2026-06-10: garantiza que cada HC cerrada aparezca en portal
+        //  trabajador y portal empresa apenas se cierre, sin tardanza)
+        // ═════════════════════════════════════════════════════════════════════
+        const _docCC = (closed.docNumero || "").replace(/\s/g, "");
+        // 1° siso_portal_<code> — D1 bloqueante + SB backup
+        if (_WORKER_TOKEN) {
+          try { await _workerSet("siso_portal_" + code, portalData); }
+          catch (e) { console.warn("[cierre] D1 portal_<code>:", e?.message); }
+        }
+        _sbSet("siso_portal_" + code, portalData).catch(() => {});
+        // 2° siso_portal_doc_<cc> — D1 bloqueante + SB backup
+        if (_docCC) {
+          if (_WORKER_TOKEN) {
+            try { await _workerSet("siso_portal_doc_" + _docCC, portalData); }
+            catch (e) { console.warn("[cierre] D1 portal_doc:", e?.message); }
+          }
+          _sbSet("siso_portal_doc_" + _docCC, portalData).catch(() => {});
+        }
+        // 3° siso_hc_completa_<cc> — D1 bloqueante + SB backup
+        if (_docCC) {
           const _hcCompleta = {
             ...closed,
             _doctorData: portalData._doctorData,
@@ -21628,35 +21682,93 @@ const handleLogin = (u, p) => {
             _ipsName: (typeof activeDoctorData !== "undefined" && activeDoctorData) ? (activeDoctorData.ipsNombre || activeDoctorData.nombre || "") : "",
             _dataType: (typeof dataType !== "undefined") ? dataType : "ocupacional",
           };
-          _sbSet("siso_hc_completa_" + closed.docNumero.replace(/\s/g, ""), _hcCompleta);
-          if (code) _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta);
+          if (_WORKER_TOKEN) {
+            try { await _workerSet("siso_hc_completa_" + _docCC, _hcCompleta); }
+            catch (e) { console.warn("[cierre] D1 hc_completa:", e?.message); }
+          }
+          _sbSet("siso_hc_completa_" + _docCC, _hcCompleta).catch(() => {});
+          if (code) {
+            if (_WORKER_TOKEN) {
+              try { await _workerSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta); } catch {}
+            }
+            _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta).catch(() => {});
+          }
         }
-        // FIX: también guardar con formato alternativo para compatibilidad con códigos viejos
+        // 4° compat códigos viejos
         if (code && !code.startsWith("CV-")) {
-          _sbSet("siso_portal_CV-" + code, portalData);
+          if (_WORKER_TOKEN) {
+            try { await _workerSet("siso_portal_CV-" + code, portalData); } catch {}
+          }
+          _sbSet("siso_portal_CV-" + code, portalData).catch(() => {});
         }
-        // Actualizar índice de empresa para búsqueda en portal
+        // 5° Portal empresa — TRES claves coordinadas
         if (closed.empresaNit && closed.empresaId && closed.empresaId !== "particular") {
           const _nitIdx = (closed.empresaNit || "").replace(/[^0-9]/g, "");
           if (_nitIdx.length >= 3) {
-            // D1 primero, Supabase fallback — async fire-and-forget
-            (async () => {
-              let existing = null;
-              if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_${_nitIdx}`); } catch {} }
-              if (!existing) {
-                try {
-                  const _r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_${_nitIdx}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY || _SB_KEY}` } });
-                  const _d = await _r.json();
-                  existing = _d[0]?.value || null;
-                } catch {}
+            try {
+              // 5a) portal_empresa_<NIT>.documentos
+              let pe = null;
+              if (_WORKER_TOKEN) { try { pe = await _workerGet(`siso_portal_empresa_${_nitIdx}`); } catch {} }
+              if (!pe) pe = { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
+              pe.documentos = pe.documentos || [];
+              if (_docCC && !pe.documentos.includes(_docCC)) pe.documentos.push(_docCC);
+              pe.updatedAt = new Date().toISOString();
+              pe.nombre = closed.empresaNombre || pe.nombre;
+              if (_WORKER_TOKEN) {
+                try { await _workerSet(`siso_portal_empresa_${_nitIdx}`, pe); } catch {}
               }
-              if (!existing) existing = { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
-              const docNum = (closed.docNumero || "").replace(/\s/g, "");
-              if (docNum && !existing.documentos.includes(docNum)) existing.documentos.push(docNum);
-              existing.updatedAt = new Date().toISOString();
-              existing.nombre = closed.empresaNombre || existing.nombre;
-              _sbSet(`siso_portal_empresa_${_nitIdx}`, existing);
-            })();
+              _sbSet(`siso_portal_empresa_${_nitIdx}`, pe).catch(() => {});
+              // 5b) portal_empresa_atenciones_<NIT> — MERGE por docNumero + fecha
+              let pa = null;
+              if (_WORKER_TOKEN) { try { pa = await _workerGet(`siso_portal_empresa_atenciones_${_nitIdx}`); } catch {} }
+              if (!pa) pa = { nit: _nitIdx, nombre: closed.empresaNombre || "", atenciones: [], fechas: [], _firma: portalData._firma, _doctorData: portalData._doctorData };
+              pa.atenciones = pa.atenciones || [];
+              const fechaHoy = new Date().toISOString().split("T")[0];
+              const yaExiste = pa.atenciones.some(a =>
+                String(a?.docNumero || "").trim() === _docCC &&
+                (a?.fechaCierre || a?.fechaExamen || "").slice(0,10) === fechaHoy
+              );
+              if (!yaExiste) {
+                const { _firma: _f, _doctorData: _d, ...rest } = closed;
+                pa.atenciones.push({
+                  ...rest,
+                  fechaCierre: fechaHoy,
+                  fechaExamen: closed.fechaExamen || fechaHoy,
+                  estadoHistoria: "Cerrada",
+                  codigoVerificacion: code,
+                });
+                pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0,10)).filter(Boolean))].sort();
+                pa.updatedAt = new Date().toISOString();
+                if (!pa._firma) pa._firma = portalData._firma;
+                if (!pa._doctorData) pa._doctorData = portalData._doctorData;
+                if (_WORKER_TOKEN) {
+                  try { await _workerSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa); } catch (e) { console.warn("[cierre] D1 portal_empresa_atenciones:", e?.message); }
+                }
+                _sbSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa).catch(() => {});
+              }
+              // 5c) portal_empresa_docs_<NIT> — contador del periodo actual
+              let pd = null;
+              if (_WORKER_TOKEN) { try { pd = await _workerGet(`siso_portal_empresa_docs_${_nitIdx}`); } catch {} }
+              if (!pd) pd = { nit: _nitIdx, nombre: closed.empresaNombre || "", codigoAcceso: "", periodos: [], updatedAt: new Date().toISOString() };
+              pd.periodos = pd.periodos || [];
+              const periodoYM = fechaHoy.slice(0, 7);
+              let periodo = pd.periodos.find(p => p.periodo === periodoYM || (p.fecha || "").startsWith(periodoYM));
+              if (!periodo) {
+                periodo = { periodo: periodoYM, fecha: periodoYM + "-01", certificados: { count: 0, updatedAt: new Date().toISOString() } };
+                pd.periodos.push(periodo);
+              }
+              if (!periodo.certificados) periodo.certificados = { count: 0 };
+              if (!yaExiste) periodo.certificados.count = (periodo.certificados.count || 0) + 1;
+              periodo.certificados.updatedAt = new Date().toISOString();
+              periodo.updatedAt = new Date().toISOString();
+              pd.updatedAt = new Date().toISOString();
+              if (_WORKER_TOKEN) {
+                try { await _workerSet(`siso_portal_empresa_docs_${_nitIdx}`, pd); } catch (e) { console.warn("[cierre] D1 portal_empresa_docs:", e?.message); }
+              }
+              _sbSet(`siso_portal_empresa_docs_${_nitIdx}`, pd).catch(() => {});
+            } catch (e) {
+              console.warn("[cierre] portal empresa publish error:", e?.message);
+            }
           }
         }
         // ── Auto-marcar paciente agendado como "Visto" (tiempo real) ──────────
