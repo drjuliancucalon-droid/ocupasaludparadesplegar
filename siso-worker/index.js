@@ -52,12 +52,16 @@ export default {
 
     try {
       // ── GET /store/:key ──────────────────────────────────────────────
+      // Devuelve también `ts` (updated_at) para soporte de If-Match en POST
       if (request.method === "GET" && path.startsWith("/store/") && !path.startsWith("/store/prefix/")) {
         const key = decodeURIComponent(path.slice(7));
-        const row = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key).first();
+        const row = await env.DB.prepare("SELECT value, updated_at FROM siso_store WHERE key = ?").bind(key).first();
         if (!row) return new Response(JSON.stringify([]), { headers });
         const value = JSON.parse(row.value);
-        return new Response(JSON.stringify([{ key, value }]), { headers });
+        const ts = row.updated_at;
+        // Exponer también el etag en header para uso fácil del cliente
+        const respHeaders = { ...headers, "ETag": ts ? `"${ts}"` : '""', "X-Siso-Ts": ts || "" };
+        return new Response(JSON.stringify([{ key, value, ts }]), { headers: respHeaders });
       }
 
       // ── GET /store/prefix/:prefix — buscar por prefijo ───────────────
@@ -92,9 +96,29 @@ export default {
       }
 
       // ── POST /store — upsert uno o varios {key, value} ───────────────
+      // Soporta header If-Match: <ts> para escritura optimista (FASE 3):
+      //   • Si el ts del row actual != If-Match → 409 con el nuevo ts
+      //   • Si coincide o no envió header → ejecuta normal
       if (request.method === "POST" && path === "/store") {
         const body = await request.json();
         const rows = Array.isArray(body) ? body : [body];
+        const ifMatch = (request.headers.get("If-Match") || request.headers.get("X-Siso-If-Match") || "").replace(/"/g, "").trim();
+
+        // Validación If-Match: solo aplica a escrituras de UNA clave
+        if (ifMatch && rows.length === 1 && rows[0]?.key) {
+          const currentRow = await env.DB.prepare("SELECT updated_at FROM siso_store WHERE key = ?").bind(rows[0].key).first();
+          const currentTs = currentRow?.updated_at || "";
+          // Si la clave existe Y su ts no coincide con If-Match → conflicto
+          if (currentTs && currentTs !== ifMatch) {
+            return new Response(JSON.stringify({
+              ok: false,
+              error: "etag_mismatch",
+              currentTs,
+              expectedTs: ifMatch,
+            }), { status: 409, headers: { ...headers, "X-Siso-Current-Ts": currentTs } });
+          }
+        }
+
         const stmt = env.DB.prepare(
           "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
         );
@@ -106,6 +130,32 @@ export default {
           await env.DB.batch(batch);
         }
         return new Response(JSON.stringify({ ok: true, count: rows.length }), { headers });
+      }
+
+      // ── GET /health — endpoint de healthcheck para FASE 4 monitoring ──
+      if (request.method === "GET" && path === "/health") {
+        const t0 = Date.now();
+        const counts = {};
+        try {
+          const r1 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store").first();
+          counts.total = r1?.c ?? 0;
+          const r2 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store WHERE key LIKE 'siso_db_patients_%' OR key LIKE 'siso_patients_%'").first();
+          counts.patients_keys = r2?.c ?? 0;
+          const r3 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store WHERE key LIKE 'siso_portal_doc_%'").first();
+          counts.portal_docs = r3?.c ?? 0;
+          const r4 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store WHERE key LIKE 'siso_hc_completa_%'").first();
+          counts.hc_completas = r4?.c ?? 0;
+          const r5 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store WHERE key LIKE 'siso_portal_empresa_%'").first();
+          counts.portal_empresa_keys = r5?.c ?? 0;
+        } catch (e) {
+          return new Response(JSON.stringify({ ok: false, error: e.message, latencyMs: Date.now() - t0 }), { status: 500, headers });
+        }
+        return new Response(JSON.stringify({
+          ok: true,
+          counts,
+          latencyMs: Date.now() - t0,
+          ts: new Date().toISOString(),
+        }), { headers });
       }
 
       // ── DELETE /store/:key ───────────────────────────────────────────

@@ -7,6 +7,7 @@ import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
 import ContabilidadV2 from "./pages/ContabilidadV2";
 import VersionWatcher from "./components/VersionWatcher";
 import D1ChangesWatcher from "./components/D1ChangesWatcher";
+import StorageHealth from "./components/StorageHealth";
 import {
   User,
   FileText,
@@ -58343,6 +58344,12 @@ body{padding-top:52px;}
           onGenerate={generateAIRecomendaciones}
         />
       )}
+      {/* FASE 4+5 — Monitor de salud + auto-limpieza LS */}
+      <StorageHealth
+        workerUrl={_WORKER_URL}
+        token={_WORKER_TOKEN}
+        currentUser={currentUser}
+      />
       {/* FASE 2 — Watcher de cambios remotos (otros dispositivos) */}
       <D1ChangesWatcher
         workerUrl={_WORKER_URL}
