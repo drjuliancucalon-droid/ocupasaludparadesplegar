@@ -13,6 +13,24 @@
   # hace inviable una CSP estricta mientras se use la versión CDN.
   # TODO: npm install tailwindcss → compilar CSS estático → activar CSP.
 
+# index.html: NUNCA cachear — siempre cargar la versión más reciente
+# (los assets con hash se invalidan correctamente con esto)
+/
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+
+/index.html
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+
+# version.json: detector de versión nueva — siempre fresco
+/version.json
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+
 # Service Worker: sin caché para recibir actualizaciones del SW
 /sw.js
   Cache-Control: no-cache, no-store, must-revalidate

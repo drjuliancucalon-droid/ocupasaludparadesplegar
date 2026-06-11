@@ -5,6 +5,7 @@ import JSZip from "jszip";
 import CartaCustodia from "./pages/CartaCustodia";
 import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
 import ContabilidadV2 from "./pages/ContabilidadV2";
+import VersionWatcher from "./components/VersionWatcher";
 import {
   User,
   FileText,
@@ -58345,7 +58346,12 @@ body{padding-top:52px;}
   );
 }
 
-// ── Export: App envuelta en ErrorBoundary ──
+// ── Export: App envuelta en ErrorBoundary + VersionWatcher ──
 export default function App() {
-  return React.createElement(AppErrorBoundary, null, React.createElement(AppInner));
+  return React.createElement(
+    AppErrorBoundary,
+    null,
+    React.createElement(VersionWatcher),
+    React.createElement(AppInner)
+  );
 }
