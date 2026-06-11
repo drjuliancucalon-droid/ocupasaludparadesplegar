@@ -6,6 +6,7 @@ import CartaCustodia from "./pages/CartaCustodia";
 import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
 import ContabilidadV2 from "./pages/ContabilidadV2";
 import VersionWatcher from "./components/VersionWatcher";
+import D1ChangesWatcher from "./components/D1ChangesWatcher";
 import {
   User,
   FileText,
@@ -58342,6 +58343,30 @@ body{padding-top:52px;}
           onGenerate={generateAIRecomendaciones}
         />
       )}
+      {/* FASE 2 — Watcher de cambios remotos (otros dispositivos) */}
+      <D1ChangesWatcher
+        workerUrl={_WORKER_URL}
+        token={_WORKER_TOKEN}
+        currentUser={currentUser}
+        onChangesDetected={async (changedKeys) => {
+          try {
+            for (const k of changedKeys) {
+              if (k === "siso_atenciones_cerradas") {
+                const v = await _workerGet(k);
+                if (Array.isArray(v)) setAtencionesCerradas(v);
+              } else if (k === "siso_companies_drcucalon" || k === "siso_companies_shared") {
+                const v = await _workerGet(k);
+                if (Array.isArray(v) && v.length > 0) setCompanies(v);
+              } else if (k === "siso_encuestas") {
+                const v = await _workerGet(k);
+                if (Array.isArray(v)) setEncuestas(v);
+              }
+            }
+          } catch (e) {
+            console.warn("[D1ChangesWatcher refresh]", e?.message);
+          }
+        }}
+      />
     </>
   );
 }
