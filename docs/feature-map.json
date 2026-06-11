@@ -1,0 +1,185 @@
+{
+  "repo": "drjuliancucalon-droid/ocupasaludparadesplegar",
+  "generated_at": "2026-06-11T00:00:00Z",
+  "features": [
+    {
+      "name": "Historia clínica ocupacional / Historia clínica general",
+      "description": "Gestión, visualización y persistencia de historias clínicas de pacientes (ocupacional y general).",
+      "primary_files": [
+        { "path": "src/pages/Historia.jsx", "note": "Entrada de la vista de historia clínica (page)." },
+        { "path": "src/components/CartaCustodia.jsx", "note": "Visualización/impresión/descarga de documentos asociados (carta de custodia)." },
+        { "path": "src/pages/CartaCustodia.jsx", "note": "Página/documento relacionado a Carta de Custodia." },
+        { "path": "src/App.jsx", "note": "Helpers globales usados por Historia (ej. _contarHC, getAllMeds, plantillas HTML, sanitización)." },
+        { "path": "src/utils/doctorHelpers.js", "note": "Funciones de apoyo y lógica médica." },
+        { "path": "src/utils/formatters.js", "note": "Formatos de fecha/número para visualización e impresión." }
+      ],
+      "storage": [
+        { "path": "src/utils/offlineDB.js", "note": "Persistencia local (IndexedDB)." },
+        { "path": "src/utils/storage.js", "note": "Wrapper de almacenamiento ligero (localStorage/IndexedDB)." },
+        { "path": "src/utils/supabase.js", "note": "Cliente Supabase para sincronización/Storage en la nube." },
+        { "path": "src/utils/syncManager.js", "note": "Orquestador de sincronización local ↔ remoto." }
+      ],
+      "known_functions_in_App_jsx": [
+        { "name": "_contarHC", "approx_line": 929, "purpose": "Contar historias clínicas asociadas a un médico." },
+        { "name": "getAllMeds", "approx_line": 5302, "purpose": "Obtener lista combinada de medicamentos base y personalizados." },
+        { "name": "_sanitize", "approx_line": 2145, "purpose": "Sanitizar strings antes de incluir en plantillas HTML." }
+      ],
+      "risks": [
+        "Plantillas HTML inline en App.jsx pueden elevar riesgo XSS si no se sanitiza en todos los puntos.",
+        "Uso de localStorage para objetos grandes — riesgo de falta de persistencia robusta y límites de cuota."
+      ],
+      "recommendations": [
+        "Extraer plantillas a archivos dedicados y centralizar sanitización.",
+        "Migrar persistencia de objetos grandes a IndexedDB (localForage) y usar cola de sincronización." 
+      ]
+    },
+    {
+      "name": "Interacción con Inteligencia Artificial (IA)",
+      "description": "Adaptadores y uso de modelos para generación de texto/ayudas en la app.",
+      "primary_files": [
+        { "path": "src/utils/aiProviders.js", "note": "Módulo central de providers/abstracción de IA (cliente)." }
+      ],
+      "integration_points": [
+        { "path": "src/App.jsx", "note": "Posibles llamadas a providers para generación de texto, análisis o plantillas." },
+        { "path": "src/pages/AnalisisDocsEmpresas.jsx", "note": "Página pesada que probablemente invoque análisis/IA para documentos." }
+      ],
+      "risks": [
+        "aiProviders.js en frontend puede exponer claves si están embebidas o llamadas directas desde cliente.",
+        "Manejo de contexto/token insuficiente puede llevar a prompts largos y costes elevados." 
+      ],
+      "recommendations": [
+        "Mover llamadas sensibles a un backend o funciones serverless (proxy) para proteger claves.",
+        "Implementar abstracción unificada (sendPrompt, embed, stream) y manejar contexto con chunking + embeddings + top-K retrieval.",
+        "Implementar caching y políticas de fallback (modelos económicos)."
+      ]
+    },
+    {
+      "name": "Reportes / Plantillas / Impresión",
+      "description": "Generación de reportes clínicos y documentos imprimibles.",
+      "primary_files": [
+        { "path": "src/pages/Reporte.jsx", "note": "Página de reportes (entry)." },
+        { "path": "src/App.jsx", "note": "Contiene plantillas HTML (sec, r1, r2, tb), PrintStyles y helpers para formateo)." }
+      ],
+      "risks": [
+        "Plantillas inline dificultan mantenimiento y elevan riesgo de XSS si no sanitizan consistentemente.",
+        "Estilos inline dispersos complican uniformidad visual y pruebas de impresión." 
+      ],
+      "recommendations": [
+        "Separar plantillas en archivos de plantilla y usar funciones seguras de render.",
+        "Centralizar estilos de impresión en PrintStyles y colocarlos en archivos estáticos/SCSS." 
+      ]
+    },
+    {
+      "name": "Contabilidad / Facturación",
+      "description": "Módulos de facturación, caja y registros contables.",
+      "primary_files": [
+        { "path": "src/pages/ContabilidadV2.jsx", "note": "Módulo contable principal (archivo grande, lógico para extraer servicios)." },
+        { "path": "src/pages/Bill.jsx", "note": "Vista de factura" },
+        { "path": "src/pages/Caja.jsx", "note": "Caja / flujo monetario" }
+      ],
+      "recommendations": [
+        "Extraer lógica de negocio contable a src/services/accounting.js y exponer una API clara para UI.",
+        "Agregar pruebas unitarias a cálculos financieros críticos." 
+      ]
+    },
+    {
+      "name": "Portal de certificados (trabajador / empresa)",
+      "description": "Descarga y generación de certificados laborales/clinicos para trabajadores y empresas.",
+      "primary_files": [
+        { "path": "src/pages/PortalCertificadosEmpresa.jsx", "note": "Portal empresarial para certificados." },
+        { "path": "portal-mockup.html", "note": "Mockup/visual del portal" },
+        { "path": "src/components/CartaCustodia.jsx", "note": "Componente documento que puede reutilizarse para certificados." }
+      ],
+      "storage": [
+        { "path": "src/utils/supabase.js", "note": "Subida/descarga de documentos y certificados a storage en la nube." }
+      ],
+      "recommendations": [
+        "Asegurar URLs de descarga con signed-URLs y controlar accesos (roles).",
+        "Crear endpoints backend que validen permisos antes de entregar archivos." 
+      ]
+    },
+    {
+      "name": "Agenda / Agendamiento",
+      "description": "Gestión de citas y calendarios.",
+      "primary_files": [
+        { "path": "src/pages/Agenda.jsx", "note": "Página de agenda" },
+        { "path": "src/hooks/useAppState.js", "note": "Estado global que probablemente contiene agenda y lógica de citas." },
+        { "path": "src/utils/syncManager.js", "note": "Persistencia y sincronización de citas." }
+      ],
+      "recommendations": [
+        "Implementar persistencia en IndexedDB y cola de sincronización para citas creadas offline.",
+        "Garantizar notificaciones/recordatorios via backend o servicios programados." 
+      ]
+    },
+    {
+      "name": "Videollamada",
+      "description": "Funcionalidad de videollamada (no detectada en repo — requiere integración).",
+      "status": "NO_IMPLEMENTED",
+      "recommendations": [
+        "Integrar provider (Jitsi/Twilio/Agora) con tokens emitidos desde backend.",
+        "Agregar src/services/videoCall.js y componente src/components/ui/VideoCall.jsx.",
+        "Planificar requisitos de infraestructura (STUN/TURN) y seguridad de sesiones." 
+      ]
+    },
+    {
+      "name": "UI / Temas / Botones / Estilos",
+      "description": "Componentes visuales y tema global.",
+      "primary_files": [
+        { "path": "src/components/ui", "note": "Carpeta con componentes UI base (buttons, inputs, modals)." },
+        { "path": "src/styles.css", "note": "Archivo de estilos global (pequeño)." },
+        { "path": "index.html", "note": "Punto de entrada HTML y referenciar CSS global" }
+      ],
+      "observations": [
+        "Muchos estilos inline en App.jsx y plantillas — dificulta mantenimiento.",
+        "No hay un sistema centralizado de tokens/variables de color detectado." 
+      ],
+      "recommendations": [
+        "Extraer paleta a CSS variables o Tailwind config.",
+        "Crear componentes UI estándar y migrar botones/inputs existentes." 
+      ]
+    },
+    {
+      "name": "Almacenamiento y sincronización",
+      "description": "Mecanismo offline-first y sincronización con Supabase/remote.",
+      "primary_files": [
+        { "path": "src/utils/offlineDB.js", "note": "IndexedDB wrapper y modelos locales." },
+        { "path": "src/utils/supabase.js", "note": "Cliente para DB y Storage en la nube." },
+        { "path": "src/utils/syncManager.js", "note": "Lógica y reglas de sincronización." },
+        { "path": "src/App.jsx", "note": "Claves locales y helpers de sincronización (ej. _shouldSyncToD1)." }
+      ],
+      "risks": [
+        "Uso mixto de localStorage y IndexedDB que puede provocar inconsistencias.",
+        "Posible exposición de credenciales si el cliente contiene claves de servicio." 
+      ],
+      "recommendations": [
+        "Estandarizar en localForage/IndexedDB para datos grandes y metadatos en localStorage sólo si es necesario.",
+        "Implementar cola persistente de operaciones sincronizables y versionado de registros (updatedAt + clientId)."
+      ]
+    },
+    {
+      "name": "Hooks y Estado Global",
+      "description": "Manejo de estado y hooks reutilizables.",
+      "primary_files": [
+        { "path": "src/hooks/useAppState.js", "note": "Hook principal (estado global)." },
+        { "path": "src/hooks/useCompanyDocuments.js", "note": "Hook para documentos empresariales." }
+      ],
+      "recommendations": [
+        "Dividir useAppState en hooks especializados: useAuth, usePatients, useSync, useUI.",
+        "Mantener API estable durante refactor para minimizar cambios en UI." 
+      ]
+    },
+    {
+      "name": "Seguridad / Autenticación / MFA",
+      "description": "Mecanismos de autenticación y seguridad (TOTP, CSP, sanitización).",
+      "primary_files": [
+        { "path": "src/utils/security.js", "note": "Utilidades de seguridad y políticas." },
+        { "path": "src/utils/totp.js", "note": "Helpers TOTP (generación QR y OTP)." },
+        { "path": "src/App.jsx", "note": "Manejo de intentos de login (siso_rl_login), totp helpers y seguridad global." }
+      ],
+      "recommendations": [
+        "Revisar CSP, sanitización completa y movimientos de secciones que construyen HTML desde strings.",
+        "Asegurar que credenciales y claves no estén embebidas en el bundle cliente." 
+      ]
+    }
+  ]
+}
