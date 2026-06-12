@@ -395,11 +395,16 @@ const _workerSet = async (key, value) => {
   if (serialized.length <= _CHUNK_THRESHOLD) {
     const ok = await _workerSetRaw(key, value);
     if (!ok) return false;
-    // Verify-after-write: re-leer y validar hash
-    const back = await _workerGetRaw(key);
+    // Verify-after-write con retry: D1 puede tener latencia de propagación.
+    // Si el primer intento falla, espera 350ms y reintenta una vez.
+    let back = await _workerGetRaw(key);
     if (back === null || _hash64(JSON.stringify(back)) !== expectedHash) {
-      console.warn(`[_workerSet] verify-after-write falló para ${key}`);
-      return false;
+      await new Promise(r => setTimeout(r, 350));
+      back = await _workerGetRaw(key);
+      if (back === null || _hash64(JSON.stringify(back)) !== expectedHash) {
+        console.warn(`[_workerSet] verify-after-write falló para ${key}`);
+        return false;
+      }
     }
     // Limpieza diferida de chunks viejos (la clave directa ya es la fuente buena)
     (async () => {
@@ -17243,15 +17248,16 @@ function AppInner() {
     const updated = [...savedInformes.filter(i => !(i.empresaId === informe.empresaId && i.periodo === informe.periodo && i.tipo === informe.tipo)), informe];
     setSavedInformes(updated);
 
-    // 1° D1 BLOQUEANTE (autoritativo) con MERGE anti-regresión por id de informe
-    // FIX 2026-06-09 (Opción B): _writeArrayMergeD1 preserva informes en D1 que
-    // el cliente local no conoce. Antes _workerSet directo podía sobreescribir.
+    // 1° D1 — ambas claves EN PARALELO (antes eran secuenciales: ~4s → ahora ~2s)
     let okD1 = false;
     const sufKey = "siso_informes_" + (currentUser?.user || "shared");
     if (_WORKER_TOKEN) {
       try {
-        await _writeArrayMergeD1("siso_informes", updated, "id");
-        okD1 = await _writeArrayMergeD1(sufKey, updated, "id");
+        const [ok1, ok2] = await Promise.all([
+          _writeArrayMergeD1("siso_informes", updated, "id").catch(() => false),
+          _writeArrayMergeD1(sufKey, updated, "id").catch(() => false),
+        ]);
+        okD1 = ok1 || ok2;
       } catch (e) {
         console.warn("[saveInforme] D1 escritura excepción:", e?.message);
       }
@@ -17265,21 +17271,18 @@ function AppInner() {
     catch (e) { console.warn("[saveInforme] LS quota:", e?.message); }
 
     // 3° SB en background (backup, no bloquea)
-    _sbSet(sufKey, updated).catch((e) => console.warn("[saveInforme] SB falló:", e?.message));
-    _sbSet("siso_informes", updated).catch(() => {}); // segundo backup
+    _sbSet(sufKey, updated).catch(() => {});
+    _sbSet("siso_informes", updated).catch(() => {});
 
-    // 4° AUTO-PUBLICAR al portal (ahora await + verificación)
+    // 4° Portal en BACKGROUND — no bloquea el retorno al usuario.
+    // El informe ya quedó guardado. La publicación al portal es independiente.
     if (informe?.empresaId) {
-      try {
-        const result = await _publicarAlPortalEmpresa(informe);
+      _publicarAlPortalEmpresa(informe).then(result => {
         if (!result?.ok) {
           console.warn("[saveInforme] portal publish falló:", result?.error);
-          // Alert no-bloqueante al usuario
           try { showAlert(`⚠️ Informe guardado pero NO se publicó al portal: ${result?.error || "desconocido"}\n\nReintente publicar manualmente.`); } catch {}
         }
-      } catch (e) {
-        console.warn("[saveInforme] publish excepción:", e?.message);
-      }
+      }).catch(e => console.warn("[saveInforme] publish excepción:", e?.message));
     }
   };
   const saveEmailConfig = (cfg) => {
