@@ -18714,31 +18714,30 @@ function AppInner() {
       if (sessionUser) {
         const _localPatsNow = sp(_patKey(sessionUser), []);
         const _localCompsNow = sp(_compKey(sessionUser), []);
-        // FIX 2026-06-12: SIEMPRE hacer merge con D1 en background al arrancar.
-        // Antes solo se leía D1 cuando localStorage estaba vacío, lo que causaba
-        // que pacientes guardados en otras sesiones/dispositivos nunca aparecieran.
-        // Ahora: si D1 tiene MÁS pacientes que LS, se hace MERGE (no reemplaza).
-        if (_WORKER_TOKEN) {
+        if (_localPatsNow.length === 0 || _localCompsNow.length === 0) {
           (async () => {
+            // ── 1° Intentar D1 (autoritativo) ──────────────────────────────
             let _patsRaw = null;
             let _comps = null;
             let _fuente = "";
-            try {
-              // Siempre leer pacientes de D1 (merge, no solo cuando LS vacío)
-              _patsRaw = await _workerGet(`siso_db_patients_${sessionUser}`)
-                || await _workerGet(`siso_patients_${sessionUser}`);
-              if (_patsRaw) _fuente = "D1";
-              // Empresas: solo si LS vacío (son menos críticas y más livianas)
-              if (_localCompsNow.length === 0) {
-                _comps = await _workerGet(`siso_companies_${sessionUser}`)
-                  || await _workerGet("siso_companies_shared");
-                if (_comps) _fuente = _fuente || "D1";
+            if (_WORKER_TOKEN) {
+              try {
+                if (_localPatsNow.length === 0) {
+                  _patsRaw = await _workerGet(`siso_db_patients_${sessionUser}`)
+                    || await _workerGet(`siso_patients_${sessionUser}`);
+                  if (_patsRaw) _fuente = "D1";
+                }
+                if (_localCompsNow.length === 0) {
+                  _comps = await _workerGet(`siso_companies_${sessionUser}`)
+                    || await _workerGet("siso_companies_shared");
+                  if (_comps) _fuente = _fuente || "D1";
+                }
+              } catch (e) {
+                console.warn("[SISO] D1 lectura arranque falló:", e?.message);
               }
-            } catch (e) {
-              console.warn("[SISO] D1 lectura arranque falló:", e?.message);
             }
-            // ── Fallback Supabase solo si D1 devolvió null Y LS está vacío ──
-            if (!_patsRaw && _localPatsNow.length === 0) {
+            // ── 2° Fallback Supabase si D1 no devolvió nada ────────────────
+            if ((!_patsRaw && _localPatsNow.length === 0) || (!_comps && _localCompsNow.length === 0)) {
               try {
                 const cloud = await Promise.race([
                   _sbGetMany([
@@ -18750,99 +18749,46 @@ function AppInner() {
                   new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
                 ]);
                 if (cloud) {
-                  _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
-                    || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                  if (_patsRaw) _fuente = "Supabase (fallback)";
+                  if (!_patsRaw && _localPatsNow.length === 0) {
+                    _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
+                      || cloud?.["siso_db_patients_" + sessionUser]?.value;
+                    if (_patsRaw) _fuente = _fuente || "Supabase (fallback)";
+                  }
                   if (!_comps && _localCompsNow.length === 0) {
                     _comps = cloud?.["siso_companies_" + sessionUser]?.value
                       || cloud?.["siso_companies_shared"]?.value;
+                    if (_comps) _fuente = _fuente || "Supabase (fallback)";
                   }
                 }
               } catch (err) {
-                console.warn("[SISO] Restauración arranque Supabase falló:", err.message);
+                console.warn("[SISO] Restauración en arranque Supabase falló:", err.message);
               }
             }
-            // ── Aplicar pacientes: replace si vacío, MERGE si D1 tiene más ──
+            // ── 3° Aplicar pacientes y empresas ─────────────────────────────
             try {
-              if (Array.isArray(_patsRaw) && _patsRaw.length > 0) {
-                const _pats = _patsRaw.filter(p => p && p.id);
-                const currentPats = sp(_patKey(sessionUser), []);
-                if (currentPats.length === 0) {
-                  // LS vacío: usar D1 directamente
+              if (_localPatsNow.length === 0 && _patsRaw) {
+                // ANTI-FANTASMA: filtrar entries sin id
+                const _pats = Array.isArray(_patsRaw) ? _patsRaw.filter(p => p && p.id) : [];
+                if (_pats.length > 0) {
                   setPatientsList(_pats);
                   try { _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats)); } catch (e) { console.warn("[SISO] LS quota arranque:", e?.message); }
-                  console.log(`[SISO] ✅ Pacientes restaurados desde ${_fuente}: ${_pats.length}`);
-                } else if (_pats.length > currentPats.length) {
-                  // D1 tiene más: MERGE para recuperar pacientes de otras sesiones
-                  const localIds  = new Set(currentPats.filter(p => p?.id).map(p => p.id));
-                  const localDocs = new Set(currentPats.filter(p => p?.docNumero).map(p => String(p.docNumero).trim()));
-                  const extras = _pats.filter(p => {
-                    if (!p || (!p.id && !p.docNumero)) return false;
-                    if (p.id && localIds.has(p.id)) return false;
-                    if (p.docNumero && localDocs.has(String(p.docNumero).trim())) return false;
-                    return true;
-                  });
-                  if (extras.length > 0) {
-                    const merged = [...currentPats, ...extras];
-                    setPatientsList(merged);
-                    try { _ls.setItem(_patKey(sessionUser), JSON.stringify(merged)); } catch (e) { console.warn("[SISO] LS quota merge arranque:", e?.message); }
-                    console.warn(`[SISO] MERGE arranque D1: local=${currentPats.length} + D1 extra=${extras.length} = ${merged.length}`);
-                  }
+                  dataReadyRef.current = true;
+                  console.log(`[SISO] ✅ Pacientes restaurados desde ${_fuente} en arranque: ${_pats.length}`);
                 }
+              } else if (_localPatsNow.length > 0) {
+                dataReadyRef.current = true;
               }
               if (_localCompsNow.length === 0 && Array.isArray(_comps) && _comps.length > 0) {
                 setCompanies(_comps);
                 try { _ls.setItem(_compKey(sessionUser), JSON.stringify(_comps)); } catch {}
-                console.log(`[SISO] ✅ Empresas restauradas desde ${_fuente}: ${_comps.length}`);
+                console.log(`[SISO] ✅ Empresas restauradas desde ${_fuente} en arranque: ${_comps.length}`);
               }
             } catch (e) {
               console.warn("[SISO] Aplicación de datos en arranque falló:", e?.message);
             }
-            dataReadyRef.current = true;
           })();
         } else {
-          // Sin token D1: fallback a Supabase solo cuando LS vacío
-          if (_localPatsNow.length === 0 || _localCompsNow.length === 0) {
-            (async () => {
-              try {
-                const cloud = await Promise.race([
-                  _sbGetMany([
-                    `siso_patients_${sessionUser}`,
-                    `siso_db_patients_${sessionUser}`,
-                    `siso_companies_${sessionUser}`,
-                    "siso_companies_shared",
-                  ]),
-                  new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-                ]);
-                if (cloud) {
-                  if (_localPatsNow.length === 0) {
-                    const _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
-                      || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                    if (Array.isArray(_patsRaw) && _patsRaw.length > 0) {
-                      const _pats = _patsRaw.filter(p => p && p.id);
-                      if (_pats.length > 0) {
-                        setPatientsList(_pats);
-                        try { _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats)); } catch {}
-                      }
-                    }
-                  }
-                  if (_localCompsNow.length === 0) {
-                    const _comps = cloud?.["siso_companies_" + sessionUser]?.value
-                      || cloud?.["siso_companies_shared"]?.value;
-                    if (Array.isArray(_comps) && _comps.length > 0) {
-                      setCompanies(_comps);
-                      try { _ls.setItem(_compKey(sessionUser), JSON.stringify(_comps)); } catch {}
-                    }
-                  }
-                }
-              } catch (err) {
-                console.warn("[SISO] Restauración arranque sin token falló:", err.message);
-              }
-              dataReadyRef.current = true;
-            })();
-          } else {
-            dataReadyRef.current = true;
-          }
+          dataReadyRef.current = true;
         }
       }
     } else {
