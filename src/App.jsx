@@ -308,16 +308,36 @@ const _sisoStableOrigin = () => {
 };
 // ─────────────────────────────────────────────────────────────────────────────
 // Acceso bajo nivel al Worker D1 (sin chunking) — NO usar fuera de este módulo.
+// FIX 2026-06-12: El indicador "Nube" refleja SOLO D1, nunca Supabase.
+// _syncStatusCallback se llama aquí (escritura real a D1) y en el health-check.
+// Debounce de 400ms para no parpadear en operaciones chunked (N llamadas seguidas).
+let _d1StatusDebounceTimer = null;
+const _notifyD1Status = (status) => {
+  if (!_syncStatusCallback) return;
+  clearTimeout(_d1StatusDebounceTimer);
+  if (status === "syncing") {
+    // "syncing" se muestra inmediato
+    _syncStatusCallback("syncing");
+  } else {
+    // "ok" y "error" se debounce 400ms (evita parpadeo en chunked)
+    _d1StatusDebounceTimer = setTimeout(() => _syncStatusCallback(status), 400);
+  }
+};
 const _workerSetRaw = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
+  _notifyD1Status("syncing");
   try {
     const r = await fetch(`${_WORKER_URL}/store`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
       body: JSON.stringify({ key, value }),
     });
+    _notifyD1Status(r.ok ? "ok" : "error");
     return r.ok;
-  } catch { return false; }
+  } catch {
+    _notifyD1Status("error");
+    return false;
+  }
 };
 const _workerGetRaw = async (key) => {
   if (!_WORKER_TOKEN) return null;
@@ -1531,21 +1551,13 @@ const _sync = (key, jsonValue) => {
       console.warn("[_sync] D1 write falló para", key, ":", e?.message);
     });
   }
-  // ── ESCRITURA A SUPABASE (backup secundario) ─────────────────────────
-  // FIX 2026-06-12: Supabase es backup — su fallo NO debe mostrar "Sin nube".
-  // D1 ya guardó los datos (líneas anteriores). El indicador refleja D1, no SB.
+  // ── ESCRITURA A SUPABASE (backup secundario, sin efecto en indicador) ───
   const _sbMatch =
     _SB_KEYS.includes(key) || _SB_KEY_PREFIXES.some((p) => key.startsWith(p));
   if (!_sbMatch) return;
-  setTimeout(() => {
-    if (_syncStatusCallback) _syncStatusCallback("syncing");
-  }, 0);
   _sbSet(key, parsed).then((ok) => {
     if (!ok) _sbQueue.pending[key] = parsed;
-    // Si SB falla pero D1 ya guardó → mostrar "ok" de todas formas
-    setTimeout(() => {
-      if (_syncStatusCallback) _syncStatusCallback("ok");
-    }, 0);
+    // Supabase NO controla el indicador — solo D1 lo hace
   });
 };
 // Clave de storage de pacientes por usuario (aislamiento total)
@@ -16958,8 +16970,8 @@ function AppInner() {
       return nuevo;
     });
   };
-  // SUPABASE: estado del indicador de sincronización en la nube
-  const [syncStatus, setSyncStatus] = useState("idle");
+  // Estado del indicador — refleja SOLO D1 (Supabase desconectado del indicador)
+  const [syncStatus, setSyncStatus] = useState("loading");
   // OFFLINE: estado de conexión y pendientes
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [offlinePending, setOfflinePending] = useState(0);
@@ -18047,7 +18059,7 @@ function AppInner() {
           signal: AbortSignal.timeout(8000),
         });
         if (r.ok) {
-          setSyncStatus((prev) => (prev === "error" ? "ok" : prev));
+          setSyncStatus("ok");
           lastErrorTs = 0;
         } else {
           setSyncStatus("error");
@@ -19326,7 +19338,7 @@ function AppInner() {
         return;
       }
       try {
-        if (_syncStatusCallback) _syncStatusCallback("syncing");
+        // Supabase auto-sync — sin efecto en indicador (D1 lo controla)
         // Sincronizar todas las colecciones a Supabase
         // PASO 6: usar claves aisladas por empresa/usuario
         const _asSuf = currentUser?.empresaId
@@ -19455,13 +19467,13 @@ function AppInner() {
         if (currentUser?.user)
           tasks.push(_sbSet(`siso_ai_keys_${currentUser.user}`, currentKeys));
         const results = await Promise.all(tasks);
-        const allOk = results.every(Boolean);
-        if (_syncStatusCallback) _syncStatusCallback(allOk ? "ok" : "error");
+        // Supabase auto-sync no controla el indicador — D1 lo hace
+        void results;
         // Vaciar cola de pendientes
         await _sbQueue.flush();
       } catch (err) {
-        console.warn("[OCUPASALUD] Auto-sync falló:", err.message);
-        if (_syncStatusCallback) _syncStatusCallback("error");
+        console.warn("[OCUPASALUD] Auto-sync SB falló:", err.message);
+        // No cambiar syncStatus — D1 es el indicador real
       }
     };
     const timer = setInterval(doAutoBackup, AUTO_INTERVAL_MS);
@@ -21409,16 +21421,11 @@ const handleLogin = (u, p) => {
     // LS se escribe ya con `list`. Si después detectamos regresión vs D1
     // hacemos merge y re-escribimos LS + estado React.
     _ls.setItem(key, JSON.stringify(list));
-    setTimeout(() => {
-      if (_syncStatusCallback) _syncStatusCallback("syncing");
-    }, 0);
     const slimListInicial = list.map(_slimPatient);
     // Supabase backup (best-effort, no bloquea)
     _sbSet(cloudKey, slimListInicial).then((ok) => {
       if (!ok) _sbQueue.pending[cloudKey] = slimListInicial;
-      setTimeout(() => {
-        if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
-      }, 0);
+      // Supabase backup NO controla el indicador
     });
 
     // ── PROTECCIÓN ANTI-REGRESIÓN POR ID/docNumero + escritura D1 ─────────
