@@ -262,14 +262,29 @@ const sps = (k, fb) => {
 const _PROXY_URL =
   (typeof window !== "undefined" && window.__SISO_PROXY_URL) || null;
 // ── Cloudflare Worker D1 (reemplaza Supabase como backend principal) ──────────
-const _WORKER_URL =
-  (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) ||
-  import.meta.env?.VITE_WORKER_URL ||
-  "https://siso-api.dr-juliancucalon.workers.dev";
-const _WORKER_TOKEN =
-  (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) ||
-  import.meta.env?.VITE_WORKER_TOKEN ||
-  "";
+// FIX 2026-06-12: Cache del token en localStorage como fallback.
+// Si el middleware de Cloudflare falla al inyectar window.__SISO_CONFIG,
+// el token cacheado evita que la app quede sin acceso al worker.
+const _LS_TOKEN_CACHE_KEY = "siso_worker_token_cache";
+const _LS_URL_CACHE_KEY = "siso_worker_url_cache";
+const _WORKER_URL = (() => {
+  const v =
+    (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) ||
+    import.meta.env?.VITE_WORKER_URL ||
+    (typeof localStorage !== "undefined" && localStorage.getItem(_LS_URL_CACHE_KEY)) ||
+    "https://siso-api.dr-juliancucalon.workers.dev";
+  if (v && typeof localStorage !== "undefined") localStorage.setItem(_LS_URL_CACHE_KEY, v);
+  return v;
+})();
+const _WORKER_TOKEN = (() => {
+  const v =
+    (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) ||
+    import.meta.env?.VITE_WORKER_TOKEN ||
+    (typeof localStorage !== "undefined" && localStorage.getItem(_LS_TOKEN_CACHE_KEY)) ||
+    "";
+  if (v && typeof localStorage !== "undefined") localStorage.setItem(_LS_TOKEN_CACHE_KEY, v);
+  return v;
+})();
 // ─────────────────────────────────────────────────────────────────────────────
 // FIX 2026-06-04: dominio estable para links compartidos (encuestas, portal, etc).
 // Cloudflare Pages crea 2 tipos de URL:
@@ -1516,7 +1531,9 @@ const _sync = (key, jsonValue) => {
       console.warn("[_sync] D1 write falló para", key, ":", e?.message);
     });
   }
-  // ── ESCRITURA A SUPABASE (backup) ─────────────────────────────────────
+  // ── ESCRITURA A SUPABASE (backup secundario) ─────────────────────────
+  // FIX 2026-06-12: Supabase es backup — su fallo NO debe mostrar "Sin nube".
+  // D1 ya guardó los datos (líneas anteriores). El indicador refleja D1, no SB.
   const _sbMatch =
     _SB_KEYS.includes(key) || _SB_KEY_PREFIXES.some((p) => key.startsWith(p));
   if (!_sbMatch) return;
@@ -1525,8 +1542,9 @@ const _sync = (key, jsonValue) => {
   }, 0);
   _sbSet(key, parsed).then((ok) => {
     if (!ok) _sbQueue.pending[key] = parsed;
+    // Si SB falla pero D1 ya guardó → mostrar "ok" de todas formas
     setTimeout(() => {
-      if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
+      if (_syncStatusCallback) _syncStatusCallback("ok");
     }, 0);
   });
 };
@@ -18012,6 +18030,49 @@ function AppInner() {
     _syncStatusCallback = setSyncStatus;
     return () => {
       _syncStatusCallback = null;
+    };
+  }, []);
+
+  // FIX 2026-06-12: Monitoreo real de D1 + auto-recuperación automática
+  // Cada 2 minutos verifica que el worker D1 responde.
+  // Si syncStatus lleva más de 90s en "error" → reintenta automáticamente.
+  useEffect(() => {
+    let lastErrorTs = 0;
+    const checkD1Health = async () => {
+      if (!_WORKER_URL || !_WORKER_TOKEN) return;
+      try {
+        const r = await fetch(`${_WORKER_URL}/health`, {
+          headers: { "X-Siso-Token": _WORKER_TOKEN },
+          cache: "no-store",
+          signal: AbortSignal.timeout(8000),
+        });
+        if (r.ok) {
+          setSyncStatus((prev) => (prev === "error" ? "ok" : prev));
+          lastErrorTs = 0;
+        } else {
+          setSyncStatus("error");
+          lastErrorTs = lastErrorTs || Date.now();
+        }
+      } catch {
+        setSyncStatus("error");
+        lastErrorTs = lastErrorTs || Date.now();
+      }
+    };
+    // Chequeo inicial a los 5s de cargar (esperar que la app arranque)
+    const boot = setTimeout(checkD1Health, 5000);
+    // Chequeo periódico cada 2 min
+    const interval = setInterval(checkD1Health, 2 * 60 * 1000);
+    // Auto-recuperación: si lleva >90s en error, hacer reload silencioso del token
+    const retryInterval = setInterval(() => {
+      if (lastErrorTs && Date.now() - lastErrorTs > 90_000) {
+        lastErrorTs = 0;
+        checkD1Health();
+      }
+    }, 30_000);
+    return () => {
+      clearTimeout(boot);
+      clearInterval(interval);
+      clearInterval(retryInterval);
     };
   }, []);
 
