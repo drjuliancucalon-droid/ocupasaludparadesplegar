@@ -308,36 +308,16 @@ const _sisoStableOrigin = () => {
 };
 // ─────────────────────────────────────────────────────────────────────────────
 // Acceso bajo nivel al Worker D1 (sin chunking) — NO usar fuera de este módulo.
-// FIX 2026-06-12: El indicador "Nube" refleja SOLO D1, nunca Supabase.
-// _syncStatusCallback se llama aquí (escritura real a D1) y en el health-check.
-// Debounce de 400ms para no parpadear en operaciones chunked (N llamadas seguidas).
-let _d1StatusDebounceTimer = null;
-const _notifyD1Status = (status) => {
-  if (!_syncStatusCallback) return;
-  clearTimeout(_d1StatusDebounceTimer);
-  if (status === "syncing") {
-    // "syncing" se muestra inmediato
-    _syncStatusCallback("syncing");
-  } else {
-    // "ok" y "error" se debounce 400ms (evita parpadeo en chunked)
-    _d1StatusDebounceTimer = setTimeout(() => _syncStatusCallback(status), 400);
-  }
-};
 const _workerSetRaw = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
-  _notifyD1Status("syncing");
   try {
     const r = await fetch(`${_WORKER_URL}/store`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
       body: JSON.stringify({ key, value }),
     });
-    _notifyD1Status(r.ok ? "ok" : "error");
     return r.ok;
-  } catch {
-    _notifyD1Status("error");
-    return false;
-  }
+  } catch { return false; }
 };
 const _workerGetRaw = async (key) => {
   if (!_WORKER_TOKEN) return null;
@@ -396,7 +376,6 @@ const _workerSet = async (key, value) => {
     const ok = await _workerSetRaw(key, value);
     if (!ok) return false;
     // Verify-after-write con retry: D1 puede tener latencia de propagación.
-    // Si el primer intento falla, espera 350ms y reintenta una vez.
     let back = await _workerGetRaw(key);
     if (back === null || _hash64(JSON.stringify(back)) !== expectedHash) {
       await new Promise(r => setTimeout(r, 350));
@@ -1556,13 +1535,21 @@ const _sync = (key, jsonValue) => {
       console.warn("[_sync] D1 write falló para", key, ":", e?.message);
     });
   }
-  // ── ESCRITURA A SUPABASE (backup secundario, sin efecto en indicador) ───
+  // ── ESCRITURA A SUPABASE (backup secundario) ─────────────────────────
+  // FIX 2026-06-12: Supabase es backup — su fallo NO debe mostrar "Sin nube".
+  // D1 ya guardó los datos (líneas anteriores). El indicador refleja D1, no SB.
   const _sbMatch =
     _SB_KEYS.includes(key) || _SB_KEY_PREFIXES.some((p) => key.startsWith(p));
   if (!_sbMatch) return;
+  setTimeout(() => {
+    if (_syncStatusCallback) _syncStatusCallback("syncing");
+  }, 0);
   _sbSet(key, parsed).then((ok) => {
     if (!ok) _sbQueue.pending[key] = parsed;
-    // Supabase NO controla el indicador — solo D1 lo hace
+    // Si SB falla pero D1 ya guardó → mostrar "ok" de todas formas
+    setTimeout(() => {
+      if (_syncStatusCallback) _syncStatusCallback("ok");
+    }, 0);
   });
 };
 // Clave de storage de pacientes por usuario (aislamiento total)
@@ -16975,8 +16962,8 @@ function AppInner() {
       return nuevo;
     });
   };
-  // Estado del indicador — refleja SOLO D1 (Supabase desconectado del indicador)
-  const [syncStatus, setSyncStatus] = useState("loading");
+  // SUPABASE: estado del indicador de sincronización en la nube
+  const [syncStatus, setSyncStatus] = useState("idle");
   // OFFLINE: estado de conexión y pendientes
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
   const [offlinePending, setOfflinePending] = useState(0);
@@ -17275,7 +17262,6 @@ function AppInner() {
     _sbSet("siso_informes", updated).catch(() => {});
 
     // 4° Portal en BACKGROUND — no bloquea el retorno al usuario.
-    // El informe ya quedó guardado. La publicación al portal es independiente.
     if (informe?.empresaId) {
       _publicarAlPortalEmpresa(informe).then(result => {
         if (!result?.ok) {
@@ -18062,7 +18048,7 @@ function AppInner() {
           signal: AbortSignal.timeout(8000),
         });
         if (r.ok) {
-          setSyncStatus("ok");
+          setSyncStatus((prev) => (prev === "error" ? "ok" : prev));
           lastErrorTs = 0;
         } else {
           setSyncStatus("error");
@@ -18717,30 +18703,30 @@ function AppInner() {
       if (sessionUser) {
         const _localPatsNow = sp(_patKey(sessionUser), []);
         const _localCompsNow = sp(_compKey(sessionUser), []);
-        // Siempre consultar D1 en background:
-        // - Si LS vacío: usar D1 directamente
-        // - Si LS tiene datos y D1 tiene MÁS (hasta 15 extra): MERGE seguro
-        //   (recupera pacientes añadidos en otras sesiones/dispositivos)
-        // - Si D1 tiene >15 extra: ignorar (evita traer acumulados históricos)
-        if (_WORKER_TOKEN) {
+        if (_localPatsNow.length === 0 || _localCompsNow.length === 0) {
           (async () => {
+            // ── 1° Intentar D1 (autoritativo) ──────────────────────────────
             let _patsRaw = null;
             let _comps = null;
             let _fuente = "";
-            try {
-              _patsRaw = await _workerGet(`siso_db_patients_${sessionUser}`)
-                || await _workerGet(`siso_patients_${sessionUser}`);
-              if (_patsRaw) _fuente = "D1";
-              if (_localCompsNow.length === 0) {
-                _comps = await _workerGet(`siso_companies_${sessionUser}`)
-                  || await _workerGet("siso_companies_shared");
-                if (_comps) _fuente = _fuente || "D1";
+            if (_WORKER_TOKEN) {
+              try {
+                if (_localPatsNow.length === 0) {
+                  _patsRaw = await _workerGet(`siso_db_patients_${sessionUser}`)
+                    || await _workerGet(`siso_patients_${sessionUser}`);
+                  if (_patsRaw) _fuente = "D1";
+                }
+                if (_localCompsNow.length === 0) {
+                  _comps = await _workerGet(`siso_companies_${sessionUser}`)
+                    || await _workerGet("siso_companies_shared");
+                  if (_comps) _fuente = _fuente || "D1";
+                }
+              } catch (e) {
+                console.warn("[SISO] D1 lectura arranque falló:", e?.message);
               }
-            } catch (e) {
-              console.warn("[SISO] D1 lectura arranque falló:", e?.message);
             }
-            // Fallback Supabase solo si D1 devolvió null Y LS vacío
-            if (!_patsRaw && _localPatsNow.length === 0) {
+            // ── 2° Fallback Supabase si D1 no devolvió nada ────────────────
+            if ((!_patsRaw && _localPatsNow.length === 0) || (!_comps && _localCompsNow.length === 0)) {
               try {
                 const cloud = await Promise.race([
                   _sbGetMany([
@@ -18752,83 +18738,46 @@ function AppInner() {
                   new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
                 ]);
                 if (cloud) {
-                  _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
-                    || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                  if (_patsRaw) _fuente = "Supabase (fallback)";
+                  if (!_patsRaw && _localPatsNow.length === 0) {
+                    _patsRaw = cloud?.["siso_patients_" + sessionUser]?.value
+                      || cloud?.["siso_db_patients_" + sessionUser]?.value;
+                    if (_patsRaw) _fuente = _fuente || "Supabase (fallback)";
+                  }
                   if (!_comps && _localCompsNow.length === 0) {
                     _comps = cloud?.["siso_companies_" + sessionUser]?.value
                       || cloud?.["siso_companies_shared"]?.value;
+                    if (_comps) _fuente = _fuente || "Supabase (fallback)";
                   }
                 }
               } catch (err) {
-                console.warn("[SISO] Restauración arranque Supabase falló:", err.message);
+                console.warn("[SISO] Restauración en arranque Supabase falló:", err.message);
               }
             }
+            // ── 3° Aplicar pacientes y empresas ─────────────────────────────
             try {
-              if (Array.isArray(_patsRaw) && _patsRaw.length > 0) {
-                const _pats = _patsRaw.filter(p => p && p.id);
-                const currentPats = sp(_patKey(sessionUser), []);
-                if (currentPats.length === 0) {
-                  // LS vacío: restaurar desde D1/SB directamente
+              if (_localPatsNow.length === 0 && _patsRaw) {
+                // ANTI-FANTASMA: filtrar entries sin id
+                const _pats = Array.isArray(_patsRaw) ? _patsRaw.filter(p => p && p.id) : [];
+                if (_pats.length > 0) {
                   setPatientsList(_pats);
                   try { _ls.setItem(_patKey(sessionUser), JSON.stringify(_pats)); } catch (e) { console.warn("[SISO] LS quota arranque:", e?.message); }
-                  console.log(`[SISO] ✅ Pacientes restaurados desde ${_fuente}: ${_pats.length}`);
-                } else {
-                  const extras = _pats.length - currentPats.length;
-                  if (extras > 0 && extras <= 15) {
-                    // MERGE seguro: D1 tiene pocos extras (otra sesión reciente)
-                    const localIds  = new Set(currentPats.filter(p => p?.id).map(p => p.id));
-                    const localDocs = new Set(currentPats.filter(p => p?.docNumero).map(p => String(p.docNumero).trim()));
-                    const nuevos = _pats.filter(p => {
-                      if (!p || (!p.id && !p.docNumero)) return false;
-                      if (p.id && localIds.has(p.id)) return false;
-                      if (p.docNumero && localDocs.has(String(p.docNumero).trim())) return false;
-                      return true;
-                    });
-                    if (nuevos.length > 0) {
-                      const merged = [...currentPats, ...nuevos];
-                      setPatientsList(merged);
-                      try { _ls.setItem(_patKey(sessionUser), JSON.stringify(merged)); } catch {}
-                      console.warn(`[SISO] MERGE arranque: +${nuevos.length} de D1 = ${merged.length}`);
-                    }
-                  }
-                  // Si extras > 15: no mezclar automáticamente (puede ser acumulado histórico)
+                  dataReadyRef.current = true;
+                  console.log(`[SISO] ✅ Pacientes restaurados desde ${_fuente} en arranque: ${_pats.length}`);
                 }
+              } else if (_localPatsNow.length > 0) {
+                dataReadyRef.current = true;
               }
               if (_localCompsNow.length === 0 && Array.isArray(_comps) && _comps.length > 0) {
                 setCompanies(_comps);
                 try { _ls.setItem(_compKey(sessionUser), JSON.stringify(_comps)); } catch {}
-                console.log(`[SISO] ✅ Empresas desde ${_fuente}: ${_comps.length}`);
+                console.log(`[SISO] ✅ Empresas restauradas desde ${_fuente} en arranque: ${_comps.length}`);
               }
             } catch (e) {
               console.warn("[SISO] Aplicación de datos en arranque falló:", e?.message);
             }
-            dataReadyRef.current = true;
           })();
         } else {
-          // Sin token D1: fallback Supabase solo cuando LS vacío
-          if (_localPatsNow.length === 0 || _localCompsNow.length === 0) {
-            (async () => {
-              try {
-                const cloud = await Promise.race([
-                  _sbGetMany([`siso_patients_${sessionUser}`, `siso_db_patients_${sessionUser}`,
-                    `siso_companies_${sessionUser}`, "siso_companies_shared"]),
-                  new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-                ]);
-                if (cloud && _localPatsNow.length === 0) {
-                  const r = cloud?.["siso_patients_" + sessionUser]?.value || cloud?.["siso_db_patients_" + sessionUser]?.value;
-                  if (Array.isArray(r) && r.length > 0) { const p = r.filter(x => x && x.id); if (p.length > 0) { setPatientsList(p); try { _ls.setItem(_patKey(sessionUser), JSON.stringify(p)); } catch {} } }
-                }
-                if (cloud && _localCompsNow.length === 0) {
-                  const c = cloud?.["siso_companies_" + sessionUser]?.value || cloud?.["siso_companies_shared"]?.value;
-                  if (Array.isArray(c) && c.length > 0) { setCompanies(c); try { _ls.setItem(_compKey(sessionUser), JSON.stringify(c)); } catch {} }
-                }
-              } catch (err) { console.warn("[SISO] Restauración sin token:", err.message); }
-              dataReadyRef.current = true;
-            })();
-          } else {
-            dataReadyRef.current = true;
-          }
+          dataReadyRef.current = true;
         }
       }
     } else {
@@ -19378,7 +19327,7 @@ function AppInner() {
         return;
       }
       try {
-        // Supabase auto-sync — sin efecto en indicador (D1 lo controla)
+        if (_syncStatusCallback) _syncStatusCallback("syncing");
         // Sincronizar todas las colecciones a Supabase
         // PASO 6: usar claves aisladas por empresa/usuario
         const _asSuf = currentUser?.empresaId
@@ -19507,13 +19456,13 @@ function AppInner() {
         if (currentUser?.user)
           tasks.push(_sbSet(`siso_ai_keys_${currentUser.user}`, currentKeys));
         const results = await Promise.all(tasks);
-        // Supabase auto-sync no controla el indicador — D1 lo hace
-        void results;
+        const allOk = results.every(Boolean);
+        if (_syncStatusCallback) _syncStatusCallback(allOk ? "ok" : "error");
         // Vaciar cola de pendientes
         await _sbQueue.flush();
       } catch (err) {
-        console.warn("[OCUPASALUD] Auto-sync SB falló:", err.message);
-        // No cambiar syncStatus — D1 es el indicador real
+        console.warn("[OCUPASALUD] Auto-sync falló:", err.message);
+        if (_syncStatusCallback) _syncStatusCallback("error");
       }
     };
     const timer = setInterval(doAutoBackup, AUTO_INTERVAL_MS);
@@ -21461,11 +21410,16 @@ const handleLogin = (u, p) => {
     // LS se escribe ya con `list`. Si después detectamos regresión vs D1
     // hacemos merge y re-escribimos LS + estado React.
     _ls.setItem(key, JSON.stringify(list));
+    setTimeout(() => {
+      if (_syncStatusCallback) _syncStatusCallback("syncing");
+    }, 0);
     const slimListInicial = list.map(_slimPatient);
     // Supabase backup (best-effort, no bloquea)
     _sbSet(cloudKey, slimListInicial).then((ok) => {
       if (!ok) _sbQueue.pending[cloudKey] = slimListInicial;
-      // Supabase backup NO controla el indicador
+      setTimeout(() => {
+        if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
+      }, 0);
     });
 
     // ── PROTECCIÓN ANTI-REGRESIÓN POR ID/docNumero + escritura D1 ─────────
