@@ -13559,7 +13559,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
 // GENERADOR DE CERTIFICADO PARA PORTAL (usa datos de siso_portal_doc_*)
 // Reutiliza _generarCertificadoHTMLNormalizado con mapeo de campos
 // ══════════════════════════════════════════════════════════════════════════
-const _generarCertificadoDesdePortal = (portalData) => {
+const _generarCertificadoDesdePortal = (portalData, fallbackDoctor = null, fallbackSignature = null) => {
   const mappedData = {
     nombres: portalData.nombres || "",
     docTipo: portalData.docTipo || "CC",
@@ -13588,8 +13588,8 @@ const _generarCertificadoDesdePortal = (portalData) => {
     estadoHistoria: portalData.estadoHistoria || "Cerrada",
     examenAlturas: portalData.examenAlturas || {},
   };
-  const doctorData = portalData._doctorData || { nombre: portalData.medicoNombre || "MÉDICO OCUPACIONAL" };
-  const signature = portalData._firma || "";
+  const doctorData = portalData._doctorData || fallbackDoctor || { nombre: portalData.medicoNombre || "MÉDICO OCUPACIONAL" };
+  const signature = portalData._firma || fallbackSignature || "";
   return _generarCertificadoHTMLNormalizado(mappedData, doctorData, signature, null);
 };
 
@@ -15391,12 +15391,12 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                           const w = window.open("", "_blank", "width=900,height=700");
                           if (!w) { alert("Permite ventanas emergentes para descargar."); return; }
                           const certs = pacs.map((p, i) => {
-                            const certHtml = _generarCertificadoDesdePortal(p);
+                            const certHtml = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p));
                             const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
                             const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
                             return `<div style="${i > 0 ? "page-break-before:always;padding-top:10mm;" : ""}">${bodyContent}</div>`;
                           }).join("");
-                          const firstCert = _generarCertificadoDesdePortal(pacs[0]);
+                          const firstCert = _generarCertificadoDesdePortal(pacs[0], ..._resolveDoctorForCert(pacs[0]));
                           const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                           const styles = styleMatch ? styleMatch[1] : "";
                           w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados — ${portalDocs.nombre}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles}.np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
@@ -15445,7 +15445,7 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                                     <button
                                       title="Descargar certificado individual"
                                       onClick={() => {
-                                        const html = _generarCertificadoDesdePortal(p);
+                                        const html = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p));
                                         const w = window.open("", "_blank", "width=920,height=1150");
                                         if (!w) { alert("Permite ventanas emergentes para descargar."); return; }
                                         const htmlConBtn = html.replace("</body>", `<div style="position:fixed;top:10px;right:10px;z-index:9999;"><button onclick="window.print()" style="background:#065f46;color:white;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 PDF / Imprimir</button></div></body>`);
@@ -16118,7 +16118,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                     })()}
                     <button
                       onClick={() => {
-                        const html = _generarCertificadoDesdePortal(resultado);
+                        const html = _generarCertificadoDesdePortal(resultado, ..._resolveDoctorForCert(resultado));
                         const w = window.open("", "_blank", "width=920,height=1150");
                         if (!w) { alert("El navegador bloqueó la ventana emergente. Permita los popups para descargar el certificado."); return; }
                         const htmlConBtn = html.replace("</body>", '<div class="np-dl"><button onclick="window.print()">📥 Guardar / Imprimir PDF</button><p>En el diálogo de impresión,<br/>selecciona <b>Guardar como PDF</b></p></div></body>');
@@ -16325,8 +16325,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                       <button onClick={() => {
                         const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
                         const pacs = sel.length > 0 ? sel : atencionesVisibles;
-                        const certs = pacs.map((p, idx) => { const certHtml = _generarCertificadoDesdePortal(p); const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/); const bodyContent = bodyMatch ? bodyMatch[1] : certHtml; return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>"; }).join("");
-                        const firstCert = _generarCertificadoDesdePortal(pacs[0]);
+                        const certs = pacs.map((p, idx) => { const certHtml = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p)); const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/); const bodyContent = bodyMatch ? bodyMatch[1] : certHtml; return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>"; }).join("");
+                        const firstCert = _generarCertificadoDesdePortal(pacs[0], ..._resolveDoctorForCert(pacs[0]));
                         const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                         const styles = styleMatch ? styleMatch[1] : "";
                         const htmlContent = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>Certificados - " + empNombreActual + "</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}" + styles + ".np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class=\"np-dl\"><button onclick=\"window.print()\" style=\"background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);\">📥 Guardar PDF / Imprimir (" + pacs.length + " certificados)</button></div>" + certs + "</body></html>";
@@ -17937,6 +17937,17 @@ function AppInner() {
   const [ipsEditingEmpId, setIpsEditingEmpId] = useState(null);
   const activeDoctorData = currentUser?.doctorData || DEFAULT_DOCTOR_DATA;
   const activeSignature = currentUser?.doctorData?.signature || doctorSignature;
+  // Opción B: cada certificado lleva los datos del médico que cerró ESA HC.
+  // 1° usar _doctorData embebido en el paciente; 2° buscar por medicoId en usersList;
+  // 3° caer al médico activo (usuario logueado).
+  const _resolveDoctorForCert = (p) => {
+    if (p?._doctorData) return [p._doctorData, p._firma || ""];
+    if (p?.medicoId) {
+      const med = (usersList || []).find(u => u?.user === p.medicoId);
+      if (med?.doctorData) return [med.doctorData, med.doctorData?.signature || activeSignature || ""];
+    }
+    return [activeDoctorData, activeSignature || ""];
+  };
   // ── Bloque 4-A: useMemo para cómputos costosos (bajo rendimiento) ─────────
   const _memoPatients = React.useMemo(() => patientsList, [patientsList]);
   const _memoCompanies = React.useMemo(() => companies, [companies]);
