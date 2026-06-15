@@ -13587,24 +13587,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
 // GENERADOR DE CERTIFICADO PARA PORTAL (usa datos de siso_portal_doc_*)
 // Reutiliza _generarCertificadoHTMLNormalizado con mapeo de campos
 // ══════════════════════════════════════════════════════════════════════════
-// FIX 2026-06-15: contexto módulo para resolver el médico de un certificado.
-// AppInner lo mantiene actualizado vía useEffect. Disponible para TODOS los
-// componentes (incluidos los de portal que están fuera de AppInner).
-const _certDoctorCtx = { usersList: [], activeDoctorData: null, activeSignature: "" };
-// Opción B: cada certificado lleva los datos del médico que cerró ESA HC.
-// 1° usar _doctorData embebido en el paciente; 2° buscar por medicoId en usersList;
-// 3° caer al médico activo (usuario logueado).
-const _resolveDoctorForCert = (p) => {
-  if (p?._doctorData) return [p._doctorData, p._firma || ""];
-  const { usersList, activeDoctorData, activeSignature } = _certDoctorCtx;
-  if (p?.medicoId) {
-    const med = (usersList || []).find(u => u?.user === p.medicoId);
-    if (med?.doctorData) return [med.doctorData, med.doctorData?.signature || activeSignature || ""];
-  }
-  return [activeDoctorData, activeSignature || ""];
-};
-
-const _generarCertificadoDesdePortal = (portalData, fallbackDoctor = null, fallbackSignature = null) => {
+const _generarCertificadoDesdePortal = (portalData) => {
   const mappedData = {
     nombres: portalData.nombres || "",
     docTipo: portalData.docTipo || "CC",
@@ -13633,8 +13616,8 @@ const _generarCertificadoDesdePortal = (portalData, fallbackDoctor = null, fallb
     estadoHistoria: portalData.estadoHistoria || "Cerrada",
     examenAlturas: portalData.examenAlturas || {},
   };
-  const doctorData = portalData._doctorData || fallbackDoctor || { nombre: portalData.medicoNombre || "MÉDICO OCUPACIONAL" };
-  const signature = portalData._firma || fallbackSignature || "";
+  const doctorData = portalData._doctorData || { nombre: portalData.medicoNombre || "MÉDICO OCUPACIONAL" };
+  const signature = portalData._firma || "";
   return _generarCertificadoHTMLNormalizado(mappedData, doctorData, signature, null);
 };
 
@@ -15436,12 +15419,12 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                           const w = window.open("", "_blank", "width=900,height=700");
                           if (!w) { alert("Permite ventanas emergentes para descargar."); return; }
                           const certs = pacs.map((p, i) => {
-                            const certHtml = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p));
+                            const certHtml = _generarCertificadoDesdePortal(p);
                             const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
                             const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
                             return `<div style="${i > 0 ? "page-break-before:always;padding-top:10mm;" : ""}">${bodyContent}</div>`;
                           }).join("");
-                          const firstCert = _generarCertificadoDesdePortal(pacs[0], ..._resolveDoctorForCert(pacs[0]));
+                          const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                           const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                           const styles = styleMatch ? styleMatch[1] : "";
                           w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados — ${portalDocs.nombre}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles}.np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
@@ -15490,7 +15473,7 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                                     <button
                                       title="Descargar certificado individual"
                                       onClick={() => {
-                                        const html = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p));
+                                        const html = _generarCertificadoDesdePortal(p);
                                         const w = window.open("", "_blank", "width=920,height=1150");
                                         if (!w) { alert("Permite ventanas emergentes para descargar."); return; }
                                         const htmlConBtn = html.replace("</body>", `<div style="position:fixed;top:10px;right:10px;z-index:9999;"><button onclick="window.print()" style="background:#065f46;color:white;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 PDF / Imprimir</button></div></body>`);
@@ -16163,7 +16146,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                     })()}
                     <button
                       onClick={() => {
-                        const html = _generarCertificadoDesdePortal(resultado, ..._resolveDoctorForCert(resultado));
+                        const html = _generarCertificadoDesdePortal(resultado);
                         const w = window.open("", "_blank", "width=920,height=1150");
                         if (!w) { alert("El navegador bloqueó la ventana emergente. Permita los popups para descargar el certificado."); return; }
                         const htmlConBtn = html.replace("</body>", '<div class="np-dl"><button onclick="window.print()">📥 Guardar / Imprimir PDF</button><p>En el diálogo de impresión,<br/>selecciona <b>Guardar como PDF</b></p></div></body>');
@@ -16370,8 +16353,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                       <button onClick={() => {
                         const sel = atencionesVisibles.filter((_, i) => certSeleccionados[i]);
                         const pacs = sel.length > 0 ? sel : atencionesVisibles;
-                        const certs = pacs.map((p, idx) => { const certHtml = _generarCertificadoDesdePortal(p, ..._resolveDoctorForCert(p)); const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/); const bodyContent = bodyMatch ? bodyMatch[1] : certHtml; return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>"; }).join("");
-                        const firstCert = _generarCertificadoDesdePortal(pacs[0], ..._resolveDoctorForCert(pacs[0]));
+                        const certs = pacs.map((p, idx) => { const certHtml = _generarCertificadoDesdePortal(p); const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/); const bodyContent = bodyMatch ? bodyMatch[1] : certHtml; return "<div style=\"" + (idx > 0 ? "page-break-before:always;" : "") + "padding-top:" + (idx > 0 ? "10mm" : "0") + ";\">" + bodyContent + "</div>"; }).join("");
+                        const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                         const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                         const styles = styleMatch ? styleMatch[1] : "";
                         const htmlContent = "<!DOCTYPE html><html lang=\"es\"><head><meta charset=\"UTF-8\"><title>Certificados - " + empNombreActual + "</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}" + styles + ".np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class=\"np-dl\"><button onclick=\"window.print()\" style=\"background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);\">📥 Guardar PDF / Imprimir (" + pacs.length + " certificados)</button></div>" + certs + "</body></html>";
@@ -17986,15 +17969,6 @@ function AppInner() {
   const [ipsEditingEmpId, setIpsEditingEmpId] = useState(null);
   const activeDoctorData = currentUser?.doctorData || DEFAULT_DOCTOR_DATA;
   const activeSignature = currentUser?.doctorData?.signature || doctorSignature;
-  // FIX 2026-06-15: _resolveDoctorForCert se movió a nivel de módulo (ver arriba)
-  // porque los componentes de portal (PortalEmpresaDocsPeriodos, PortalPublicoTrabajador)
-  // están FUERA de AppInner y no tenían acceso. Aquí solo mantenemos el contexto
-  // actualizado para que la función módulo pueda resolver el médico.
-  useEffect(() => {
-    _certDoctorCtx.usersList = usersList || [];
-    _certDoctorCtx.activeDoctorData = activeDoctorData || null;
-    _certDoctorCtx.activeSignature = activeSignature || "";
-  }, [usersList, activeDoctorData, activeSignature]);
   // ── Bloque 4-A: useMemo para cómputos costosos (bajo rendimiento) ─────────
   const _memoPatients = React.useMemo(() => patientsList, [patientsList]);
   const _memoCompanies = React.useMemo(() => companies, [companies]);
@@ -22002,8 +21976,20 @@ const handleLogin = (u, p) => {
                 });
                 pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0,10)).filter(Boolean))].sort();
                 pa.updatedAt = new Date().toISOString();
-                if (!pa._firma) pa._firma = portalData._firma;
-                if (!pa._doctorData) pa._doctorData = portalData._doctorData;
+              }
+              // FIX 2026-06-15: garantizar firma+médico en el ROOT del agregado
+              // SIEMPRE (no solo cuando se agrega atención nueva). Antes esto vivía
+              // dentro de if(!yaExiste) → agregados creados por scripts/recuperación
+              // (ej. AMEZQUITA) quedaban sin firma y sus certificados salían vacíos.
+              // Ahora cualquier cierre repara/garantiza la firma del root, para todas
+              // las empresas presentes y futuras.
+              const _firmaOk = pa._firma && typeof pa._firma === "string" && pa._firma.length > 100;
+              const _drOk = pa._doctorData && pa._doctorData.nombre && pa._doctorData.nombre !== "MÉDICO OCUPACIONAL";
+              let _needWrite = !yaExiste;
+              if (!_firmaOk && portalData._firma) { pa._firma = portalData._firma; _needWrite = true; }
+              if (!_drOk && portalData._doctorData?.nombre) { pa._doctorData = portalData._doctorData; _needWrite = true; }
+              if (_needWrite) {
+                pa.updatedAt = new Date().toISOString();
                 if (_WORKER_TOKEN) {
                   try { await _workerSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa); } catch (e) { console.warn("[cierre] D1 portal_empresa_atenciones:", e?.message); }
                 }
