@@ -18161,6 +18161,52 @@ function AppInner() {
     return () => { clearTimeout(boot); clearInterval(interval); };
   }, []);
 
+  // FIX 2026-06-15: Garbage collector de chunks temporales D1.
+  // Cuando _workerSet falla mid-flight, deja claves __new{ts}__cN y __new{ts}__meta
+  // que el cleanup con .catch(()=>{}) no logra borrar siempre. Acumuladas, llenan D1.
+  // Este GC corre 1 minuto tras el arranque y escanea prefijos críticos eliminando
+  // chunks temporales con más de 1 hora de antigüedad (seguros: nadie los usa).
+  const _gcDoneRef = useRef(false);
+  useEffect(() => {
+    if (_gcDoneRef.current) return;
+    if (!_WORKER_TOKEN) return;
+    const t = setTimeout(async () => {
+      _gcDoneRef.current = true;
+      const HORA_MS = 60 * 60 * 1000;
+      const ahora = Date.now();
+      // Prefijos con chunks: arrays grandes que la app re-escribe seguido
+      const prefijos = ["siso_atenciones_cerradas", "siso_atenciones_drcucalon", "siso_atenciones_"];
+      const regex = /__new(\d+)__(c\d+|meta)$/;
+      let borrados = 0, errs = 0;
+      try {
+        const vistos = new Set();
+        for (const pfx of prefijos) {
+          try {
+            const r = await fetch(`${_WORKER_URL}/store/prefix/${encodeURIComponent(pfx)}`, { headers: { "X-Siso-Token": _WORKER_TOKEN } });
+            if (!r.ok) continue;
+            const rows = await r.json();
+            for (const row of rows) {
+              if (vistos.has(row.key)) continue;
+              vistos.add(row.key);
+              const m = row.key.match(regex);
+              if (!m) continue;
+              const ts = parseInt(m[1], 10);
+              if (Number.isNaN(ts) || ahora - ts <= HORA_MS) continue;
+              // Borrar
+              try {
+                const dr = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(row.key)}`, { method: "DELETE", headers: { "X-Siso-Token": _WORKER_TOKEN } });
+                if (dr.ok) borrados++; else errs++;
+              } catch { errs++; }
+              await new Promise(r => setTimeout(r, 100));
+            }
+          } catch {}
+        }
+        if (borrados > 0) console.log(`[GC] ✅ Limpiados ${borrados} chunks temporales abandonados (errors: ${errs})`);
+      } catch (e) { console.warn("[GC] excepción:", e?.message); }
+    }, 60_000);
+    return () => clearTimeout(t);
+  }, []);
+
   // FIX 2026-06-13: Auditoría LS ↔ D1 al iniciar sesión.
   // Se ejecuta UNA vez 8s después del arranque con currentUser activo.
   // - Si LS tiene HCs con fechaExamen que D1 no tiene → encola para subir

@@ -171,6 +171,38 @@ export default {
         return new Response(JSON.stringify(result), { headers });
       }
 
+      // ── POST /cleanup — limpieza de emergencia (sin crear snapshot nuevo)
+      // FIX 2026-06-15: útil cuando D1 está lleno y no permite escrituras.
+      // Borra: snapshots > 7 días + chunks temporales __new* > 1h
+      if (request.method === "POST" && path === "/cleanup") {
+        const log = [];
+        // Rotación snapshots
+        try {
+          const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+          const dr = await env.DB.prepare(
+            "DELETE FROM siso_store WHERE key LIKE 'siso_snapshot_%' AND substr(key, 15, 10) < ?"
+          ).bind(cutoff).run();
+          log.push({ section: "rotacion_snapshots", borradas: dr.meta?.changes ?? 0, cutoff });
+        } catch (e) { log.push({ section: "rotacion_snapshots", error: e.message }); }
+        // Chunks temporales abandonados
+        try {
+          const cutoffMs = Date.now() - 60 * 60 * 1000;
+          const rows = await env.DB.prepare(
+            "SELECT key FROM siso_store WHERE key LIKE '%\\_\\_new%\\_\\_c%' OR key LIKE '%\\_\\_new%\\_\\_meta' ESCAPE '\\'"
+          ).all();
+          let n = 0;
+          for (const r of (rows.results || [])) {
+            const m = r.key.match(/__new(\d+)__/);
+            if (m && parseInt(m[1], 10) < cutoffMs) {
+              await env.DB.prepare("DELETE FROM siso_store WHERE key = ?").bind(r.key).run();
+              n++;
+            }
+          }
+          log.push({ section: "chunks_temporales", borrados: n });
+        } catch (e) { log.push({ section: "chunks_temporales", error: e.message }); }
+        return new Response(JSON.stringify({ ok: true, log }), { headers });
+      }
+
       // ── GET /snapshot/list — listar snapshots disponibles ────────────
       if (request.method === "GET" && path === "/snapshot/list") {
         const rows = await env.DB.prepare(
@@ -211,6 +243,41 @@ async function runDailySnapshot(env) {
   const snapPrefix = `siso_snapshot_${today}`;
   const t0 = Date.now();
   const log = [];
+
+  // FIX 2026-06-15: Rotación PRIMERO (antes de escribir nuevo snapshot).
+  // Bug previo: rotación al final → si la escritura fallaba (timeout, DB llena),
+  // los snapshots viejos nunca se borraban. Resultado: acumulación de snapshots
+  // de 17+ días que llenaron D1.
+  try {
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const delRes = await env.DB.prepare(
+      "DELETE FROM siso_store WHERE key LIKE 'siso_snapshot_%' AND substr(key, 15, 10) < ?"
+    ).bind(cutoff).run();
+    log.push(`[ROT-INICIO] borradas ${delRes.meta?.changes ?? 0} claves snapshots anteriores a ${cutoff}`);
+  } catch (e) {
+    log.push(`[ROT-INICIO] error: ${e?.message}`);
+  }
+  // FIX 2026-06-15: Limpieza de chunks temporales abandonados (> 1h)
+  try {
+    const cutoffMs = Date.now() - 60 * 60 * 1000;
+    const cutoffTs = cutoffMs.toString();
+    // Borrar __new[timestamp]__c* y __new[timestamp]__meta con timestamp < cutoff
+    // Como el ts está embebido en la key, usamos LIKE + substr para extraer
+    const rows = await env.DB.prepare(
+      "SELECT key FROM siso_store WHERE key LIKE '%\\_\\_new%\\_\\_c%' OR key LIKE '%\\_\\_new%\\_\\_meta' ESCAPE '\\'"
+    ).all();
+    let tempsBorrados = 0;
+    for (const r of (rows.results || [])) {
+      const m = r.key.match(/__new(\d+)__/);
+      if (m && parseInt(m[1], 10) < cutoffMs) {
+        await env.DB.prepare("DELETE FROM siso_store WHERE key = ?").bind(r.key).run();
+        tempsBorrados++;
+      }
+    }
+    log.push(`[GC-TEMP] borrados ${tempsBorrados} chunks temporales abandonados`);
+  } catch (e) {
+    log.push(`[GC-TEMP] error: ${e?.message}`);
+  }
 
   // 1) Leer todas las claves (excluir snapshots y legacy — no respaldar respaldos)
   const allRows = await env.DB.prepare(
@@ -302,13 +369,6 @@ async function runDailySnapshot(env) {
   }
   log.push(`escritas ${writeBatch.length} claves del snapshot`);
 
-  // 5) Rotación: borrar snapshots cuya fecha (extraída de la clave) sea > 7 días atrás
-  const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
-  // siso_snapshot_YYYY-MM-DD__... → substr(15, 10) = "YYYY-MM-DD"
-  const delRes = await env.DB.prepare(
-    "DELETE FROM siso_store WHERE key LIKE 'siso_snapshot_%' AND substr(key, 15, 10) < ?"
-  ).bind(cutoff).run();
-  log.push(`rotación: borradas ${delRes.meta?.changes ?? 0} claves anteriores a ${cutoff}`);
-
+  // Rotación ya se hizo al inicio (ver FIX 2026-06-15 arriba).
   return { ok: true, snapshotKey: snapPrefix, manifest, log };
 }
