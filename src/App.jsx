@@ -488,6 +488,34 @@ const _workerGet = async (key) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// COLA DE PENDIENTES D1 — Cuando _workerSet falla, se encola para reintento.
+// La cola vive en localStorage como `siso_pending_d1_writes`.
+// Estructura: { [key]: { value, ts, retries } }
+// Un useEffect en AppInner la procesa cada 30s.
+// ─────────────────────────────────────────────────────────────────────────────
+const _PENDING_D1_KEY = "siso_pending_d1_writes";
+const _PENDING_D1_MAX_RETRIES = 20;
+const _enqueuePendingD1 = (key, value) => {
+  try {
+    const raw = localStorage.getItem(_PENDING_D1_KEY) || "{}";
+    const pending = JSON.parse(raw);
+    pending[key] = { value, ts: Date.now(), retries: 0 };
+    localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(pending));
+    return true;
+  } catch (e) { console.warn("[pending] enqueue falló:", e?.message); return false; }
+};
+const _getPendingD1 = () => {
+  try { return JSON.parse(localStorage.getItem(_PENDING_D1_KEY) || "{}"); } catch { return {}; }
+};
+const _clearPendingD1 = (key) => {
+  try {
+    const p = _getPendingD1();
+    delete p[key];
+    localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(p));
+  } catch {}
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // _readSmart — Lectura comparativa D1 (autoritativo) + Supabase (backup).
 // Arquitectura:
 //   - D1 es FUENTE DE VERDAD PRINCIPAL.
@@ -16984,6 +17012,10 @@ function AppInner() {
   const [usersList, setUsersList] = useState(initialUsers);
   const [usersReady, setUsersReady] = useState(false); // FIX: esperar Supabase antes de login
   const [patientsList, setPatientsList] = useState([]);
+  // FIX 2026-06-13: contador de operaciones D1 pendientes (cola de reintento)
+  const [pendingD1Count, setPendingD1Count] = useState(() => {
+    try { return Object.keys(_getPendingD1()).length; } catch { return 0; }
+  });
   // Ref siempre actualizado con el valor más reciente de patientsList.
   // Evita el problema de "stale closure" en funciones async como handleCloseHistory,
   // donde la variable capturada en el closure puede ser una versión anterior.
@@ -18086,6 +18118,98 @@ function AppInner() {
       clearInterval(retryInterval);
     };
   }, []);
+
+  // FIX 2026-06-13: Procesador de cola de pendientes D1.
+  // Cada 30s revisa siso_pending_d1_writes y reintenta cada item.
+  // Si el intento tiene éxito → quita de la cola.
+  // Si falla → incrementa retries (descarta tras MAX_RETRIES intentos).
+  useEffect(() => {
+    if (!_WORKER_TOKEN) return;
+    const processQueue = async () => {
+      const pending = _getPendingD1();
+      const keys = Object.keys(pending);
+      if (keys.length === 0) {
+        setPendingD1Count(0);
+        return;
+      }
+      setPendingD1Count(keys.length);
+      for (const k of keys) {
+        const item = pending[k];
+        if (!item || item.retries >= _PENDING_D1_MAX_RETRIES) {
+          console.warn(`[pending] descartando ${k} tras ${_PENDING_D1_MAX_RETRIES} reintentos`);
+          _clearPendingD1(k);
+          continue;
+        }
+        try {
+          const ok = await _workerSet(k, item.value);
+          if (ok) {
+            _clearPendingD1(k);
+            console.log(`[pending] ✅ ${k} subido tras ${item.retries} reintento(s)`);
+          } else {
+            item.retries++;
+            const all = _getPendingD1();
+            all[k] = item;
+            localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(all));
+          }
+        } catch (e) { console.warn(`[pending] excepción ${k}:`, e?.message); }
+      }
+      setPendingD1Count(Object.keys(_getPendingD1()).length);
+    };
+    // Primer intento a los 10s, después cada 30s
+    const boot = setTimeout(processQueue, 10_000);
+    const interval = setInterval(processQueue, 30_000);
+    return () => { clearTimeout(boot); clearInterval(interval); };
+  }, []);
+
+  // FIX 2026-06-13: Auditoría LS ↔ D1 al iniciar sesión.
+  // Se ejecuta UNA vez 8s después del arranque con currentUser activo.
+  // - Si LS tiene HCs con fechaExamen que D1 no tiene → encola para subir
+  // - Si D1 tiene pacientes que LS no tiene → muestra console.warn (no auto-merge)
+  // - No bloquea la UI, todo en background.
+  const _auditDoneRef = useRef(false);
+  useEffect(() => {
+    if (_auditDoneRef.current) return;
+    if (!currentUser?.user || !_WORKER_TOKEN) return;
+    const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
+    const t = setTimeout(async () => {
+      try {
+        _auditDoneRef.current = true;
+        const lsPats = (patientsListRef.current || []).filter(p => p && p.id);
+        if (lsPats.length === 0) return;
+        const remote = await _workerGet(_patKey(sid)).catch(() => null);
+        if (!Array.isArray(remote)) {
+          console.warn("[AUDIT] D1 no respondió, no se puede auditar");
+          return;
+        }
+        const remoteIds = new Set(remote.filter(p => p?.id).map(p => p.id));
+        const remoteDocs = new Set(remote.filter(p => p?.docNumero).map(p => String(p.docNumero).trim()));
+        // Detectar HCs cerradas/con fechaExamen en LS que NO están en D1
+        const noEnD1 = lsPats.filter(p => {
+          if (!p.fechaExamen) return false;
+          if (p.id && remoteIds.has(p.id)) return false;
+          if (p.docNumero && remoteDocs.has(String(p.docNumero).trim())) return false;
+          return true;
+        });
+        if (noEnD1.length > 0) {
+          console.warn(`[AUDIT] ⚠️ ${noEnD1.length} HCs en LS NO presentes en D1, encolando subida...`);
+          const merged = [...remote, ...noEnD1];
+          const slim = merged.map(_slimPatient);
+          _enqueuePendingD1(_patKey(sid), slim);
+          _enqueuePendingD1(_patKeyCloud(sid), slim);
+          setPendingD1Count(Object.keys(_getPendingD1()).length);
+        } else {
+          console.log("[AUDIT] ✅ LS ↔ D1 sincronizados");
+        }
+        // Detectar pacientes en D1 que faltan en LS (solo log)
+        const lsIds = new Set(lsPats.filter(p => p?.id).map(p => p.id));
+        const noEnLS = remote.filter(p => p?.id && !lsIds.has(p.id));
+        if (noEnLS.length > 0 && noEnLS.length <= 20) {
+          console.warn(`[AUDIT] ℹ️ ${noEnLS.length} pacientes en D1 ausentes en LS (otros dispositivos)`);
+        }
+      } catch (e) { console.warn("[AUDIT] excepción:", e?.message); }
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [currentUser?.user]);
 
   // OFFLINE: detectar cambios de conexión y actualizar UI
   useEffect(() => {
@@ -21468,9 +21592,12 @@ const handleLogin = (u, p) => {
             }
           }
           // Escribir versión final (mergeada o original) a D1
+          // FIX 2026-06-13: si una escritura falla, encolar para reintento automático.
           const slimFinal = finalList.map(_slimPatient);
-          await _workerSet(cloudKey, slimFinal).catch((e) => console.warn("[_syncPatients] D1 cloudKey:", e?.message));
-          await _workerSet(key,      slimFinal).catch((e) => console.warn("[_syncPatients] D1 key:", e?.message));
+          const ok1 = await _workerSet(cloudKey, slimFinal).catch(() => false);
+          if (!ok1) { _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); }
+          const ok2 = await _workerSet(key,      slimFinal).catch(() => false);
+          if (!ok2) { _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); }
         } catch (e) {
           console.warn("[_syncPatients] async D1 falló:", e?.message);
         }
@@ -24451,6 +24578,14 @@ Esta historia clínica debe conservarse mínimo 20 años.
               )}{" "}
               {_syncTxt}
             </button>
+          )}
+          {pendingD1Count > 0 && (
+            <span
+              title={`${pendingD1Count} operación(es) D1 en cola — reintentando automáticamente cada 30s`}
+              className="flex items-center gap-1 text-[10px] font-bold px-2 py-1 rounded-lg border no-print bg-amber-50 text-amber-700 border-amber-300 cursor-default animate-pulse"
+            >
+              ⏳ {pendingD1Count} pendiente{pendingD1Count > 1 ? "s" : ""}
+            </span>
           )}
           {["administrador", "medico", "super_admin"].includes(
             currentUser?.role
