@@ -13587,6 +13587,23 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
 // GENERADOR DE CERTIFICADO PARA PORTAL (usa datos de siso_portal_doc_*)
 // Reutiliza _generarCertificadoHTMLNormalizado con mapeo de campos
 // ══════════════════════════════════════════════════════════════════════════
+// FIX 2026-06-15: contexto módulo para resolver el médico de un certificado.
+// AppInner lo mantiene actualizado vía useEffect. Disponible para TODOS los
+// componentes (incluidos los de portal que están fuera de AppInner).
+const _certDoctorCtx = { usersList: [], activeDoctorData: null, activeSignature: "" };
+// Opción B: cada certificado lleva los datos del médico que cerró ESA HC.
+// 1° usar _doctorData embebido en el paciente; 2° buscar por medicoId en usersList;
+// 3° caer al médico activo (usuario logueado).
+const _resolveDoctorForCert = (p) => {
+  if (p?._doctorData) return [p._doctorData, p._firma || ""];
+  const { usersList, activeDoctorData, activeSignature } = _certDoctorCtx;
+  if (p?.medicoId) {
+    const med = (usersList || []).find(u => u?.user === p.medicoId);
+    if (med?.doctorData) return [med.doctorData, med.doctorData?.signature || activeSignature || ""];
+  }
+  return [activeDoctorData, activeSignature || ""];
+};
+
 const _generarCertificadoDesdePortal = (portalData, fallbackDoctor = null, fallbackSignature = null) => {
   const mappedData = {
     nombres: portalData.nombres || "",
@@ -17969,17 +17986,15 @@ function AppInner() {
   const [ipsEditingEmpId, setIpsEditingEmpId] = useState(null);
   const activeDoctorData = currentUser?.doctorData || DEFAULT_DOCTOR_DATA;
   const activeSignature = currentUser?.doctorData?.signature || doctorSignature;
-  // Opción B: cada certificado lleva los datos del médico que cerró ESA HC.
-  // 1° usar _doctorData embebido en el paciente; 2° buscar por medicoId en usersList;
-  // 3° caer al médico activo (usuario logueado).
-  const _resolveDoctorForCert = (p) => {
-    if (p?._doctorData) return [p._doctorData, p._firma || ""];
-    if (p?.medicoId) {
-      const med = (usersList || []).find(u => u?.user === p.medicoId);
-      if (med?.doctorData) return [med.doctorData, med.doctorData?.signature || activeSignature || ""];
-    }
-    return [activeDoctorData, activeSignature || ""];
-  };
+  // FIX 2026-06-15: _resolveDoctorForCert se movió a nivel de módulo (ver arriba)
+  // porque los componentes de portal (PortalEmpresaDocsPeriodos, PortalPublicoTrabajador)
+  // están FUERA de AppInner y no tenían acceso. Aquí solo mantenemos el contexto
+  // actualizado para que la función módulo pueda resolver el médico.
+  useEffect(() => {
+    _certDoctorCtx.usersList = usersList || [];
+    _certDoctorCtx.activeDoctorData = activeDoctorData || null;
+    _certDoctorCtx.activeSignature = activeSignature || "";
+  }, [usersList, activeDoctorData, activeSignature]);
   // ── Bloque 4-A: useMemo para cómputos costosos (bajo rendimiento) ─────────
   const _memoPatients = React.useMemo(() => patientsList, [patientsList]);
   const _memoCompanies = React.useMemo(() => companies, [companies]);
