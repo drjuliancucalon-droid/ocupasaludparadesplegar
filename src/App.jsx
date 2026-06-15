@@ -1889,6 +1889,14 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
     const code = (p.codigoVerificacion || p.firmaDigital?.codigoQR || "").trim();
     if (!p.docNumero && !code) { sinDatos++; continue; }
 
+    // FIX 2026-06-15: ANTI-DEGRADADO. Si el paciente local es "slim" (sin firma
+    // ni recomendaciones, ej. importado de encuesta), NO republicar — pelaría la
+    // versión completa que ya está en D1. Solo se republican HCs con contenido real.
+    const _firmaLocal = p._firma || activeSignature || "";
+    const _drLocal = (p._doctorData && p._doctorData.nombre) || activeDoctorData?.nombre;
+    const _contenidoLocal = p.recomendaciones || p.analisisRestricciones || p.restricciones;
+    if (!(_firmaLocal && _firmaLocal.length > 100) || !_drLocal || !_contenidoLocal) { sinDatos++; continue; }
+
     const docData = p._doctorData || {
       nombre: activeDoctorData?.nombre || p.medicoNombre || "MÉDICO OCUPACIONAL",
       titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
@@ -19166,6 +19174,13 @@ function AppInner() {
               const ced = (p.docNumero || "").replace(/\s/g, "");
               const code = (p.codigoVerificacion || p.firmaDigital?.codigoQR || "").trim().toUpperCase();
               const docData = p._doctorData || {};
+              // FIX 2026-06-15: ANTI-DEGRADADO. No reescribir portal_doc/hc_completa
+              // si el paciente local es "slim" (sin firma real o sin médico embebido).
+              // Su versión en D1 ya es igual o mejor. Antes este auto-push pelaba
+              // certificados ya publicados con firma + recomendaciones (ej. pacientes
+              // importados de encuesta como AMEZQUITA) cada login.
+              const _firmaLocal = p._firma || "";
+              if (!(_firmaLocal && _firmaLocal.length > 100) || !docData.nombre) continue;
               const portalVal = {
                 nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
                 empresaNombre: p.empresaNombre || "", empresaNit: p.empresaNit || "",
