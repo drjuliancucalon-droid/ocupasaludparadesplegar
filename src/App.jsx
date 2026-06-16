@@ -15787,7 +15787,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           // tampoco hay atenciones agrupadas Y documentos[] está vacío, mostrar
           // el mensaje informativo.
 
-          // 1) Intentar atenciones agrupadas (con todas las variantes NIT)
+          // 1) Cargar atenciones agrupadas (con todas las variantes NIT)
           let atencionesGrupo = null;
           let nitConAtenciones = null;
           for (const nv of nitVariants) {
@@ -15798,42 +15798,51 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               break;
             }
           }
+
+          // FIX 2026-06-15: UNIÓN agregado + índice documentos[].
+          // BUG previo: el portal usaba SOLO el agregado si tenía ≥1 atención y
+          // hacía return → ignoraba el índice. Cuando una empresa tenía sus 14
+          // certificados en el índice (publicados por script) y luego se cerraba
+          // UNA HC nueva (PAOLA), el agregado quedaba con 1 → el portal mostraba 1.
+          // Ahora SIEMPRE se combinan ambas fuentes por docNumero (sin perder a nadie).
+          const _firmaRoot = atencionesGrupo?._firma || "";
+          const _drRoot = atencionesGrupo?._doctorData || {};
+          const _resultados = [];
+          const _vistos = new Set();
           if (atencionesGrupo) {
-            setEmpresaAtenciones(atencionesGrupo);
-            // OPTIMIZACIÓN: la firma y datos del médico ahora viven en el ROOT
-            // del agregado (1 sola vez) en lugar de duplicarse por cada atención
-            // (antes inflaba a 1.8MB por empresa, ahora ~100KB). Hidratamos cada
-            // atención con la firma del root para que los flujos de descarga PDF
-            // sigan funcionando sin cambios (esperan _firma en cada item).
-            const _firmaRoot = atencionesGrupo._firma || "";
-            const _drRoot = atencionesGrupo._doctorData || {};
-            const _atsHidratadas = (atencionesGrupo.atenciones || []).map((a) => ({
-              ...a,
-              _firma: (a && a._firma) || _firmaRoot,
-              _doctorData: (a && a._doctorData) || _drRoot,
-            }));
-            setResultadosEmpresa(_atsHidratadas);
+            for (const a of (atencionesGrupo.atenciones || [])) {
+              const dn = String(a?.docNumero || "").replace(/\s/g, "").trim();
+              if (dn) _vistos.add(dn);
+              _resultados.push({
+                ...a,
+                _firma: (a && a._firma) || _firmaRoot,
+                _doctorData: (a && a._doctorData) || _drRoot,
+              });
+            }
+          }
+          // Complementar con portal_doc del índice que NO estén ya en el agregado
+          if (empresaIdx && Array.isArray(empresaIdx.documentos)) {
+            for (const doc of empresaIdx.documentos) {
+              const dn = String(doc).replace(/\s/g, "").trim();
+              if (!dn || _vistos.has(dn)) continue;
+              const rDoc = await fetchKey("siso_portal_doc_" + dn);
+              if (rDoc.ok && rDoc.data) {
+                _resultados.push({
+                  ...rDoc.data,
+                  _firma: (rDoc.data && rDoc.data._firma) || _firmaRoot,
+                  _doctorData: (rDoc.data && rDoc.data._doctorData) || _drRoot,
+                });
+                _vistos.add(dn);
+              }
+            }
+          }
+          if (_resultados.length > 0) {
+            setEmpresaAtenciones(atencionesGrupo || null);
+            setResultadosEmpresa(_resultados);
             setFechaFiltroEmpresa("");
             setCertSeleccionados({});
             setCargando(false);
             return;
-          }
-
-          // 2) Si tiene documentos[] cargarlos individualmente
-          if (empresaIdx && empresaIdx.documentos && empresaIdx.documentos.length > 0) {
-            const resultados = [];
-            for (const doc of empresaIdx.documentos) {
-              const rDoc = await fetchKey("siso_portal_doc_" + doc.replace(/\s/g, ""));
-              if (rDoc.ok && rDoc.data) resultados.push(rDoc.data);
-            }
-            if (resultados.length > 0) {
-              setEmpresaAtenciones(null);
-              setFechaFiltroEmpresa("");
-              setResultadosEmpresa(resultados);
-              setCertSeleccionados({});
-              setCargando(false);
-              return;
-            }
           }
 
           // 3) Si llegamos acá: el código fue válido (o no había código que validar)
