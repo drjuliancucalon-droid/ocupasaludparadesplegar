@@ -13630,6 +13630,85 @@ const _generarCertificadoDesdePortal = (portalData) => {
 };
 
 // ══════════════════════════════════════════════════════════════════════════
+// FASE 4 — Helpers módulo para "Entrega de Documentos" (ver/descargar PDF).
+// Reutilizan generadores existentes. No dependen de scope de componente.
+// ══════════════════════════════════════════════════════════════════════════
+// Abre una ventana imprimible con el HTML dado.
+const _abrirVentanaPDF = (html, titulo) => {
+  const w = window.open("", "_blank", "width=920,height=1150");
+  if (!w) { alert("Permita ventanas emergentes para ver/descargar el documento."); return false; }
+  const conBtn = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo || "Documento"}</title>
+    <style>*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{margin:0;background:#e5e7eb;}@media print{body{background:white;}.np-dl{display:none!important;}@page{size:letter portrait;margin:12mm;}}</style></head>
+    <body><div class="np-dl" style="position:sticky;top:0;padding:10px 16px;background:#065f46;display:flex;gap:10px;z-index:9999;">
+    <button onclick="window.print()" style="background:#10b981;color:#fff;border:none;padding:9px 22px;border-radius:8px;font-weight:900;cursor:pointer;font-size:12px;">📥 Imprimir / Guardar PDF</button>
+    <button onclick="window.close()" style="background:#ef4444;color:#fff;border:none;padding:9px 16px;border-radius:8px;font-weight:900;cursor:pointer;font-size:12px;">✕ Cerrar</button>
+    <span style="color:#a7f3d0;font-size:11px;align-self:center;">${titulo || ""}</span></div>
+    <div style="padding:20px;display:flex;justify-content:center;">${html}</div></body></html>`;
+  w.document.write(conBtn); w.document.close(); w.focus();
+  return true;
+};
+
+// Genera el HTML de TODOS los certificados de una lista de pacientes (cada uno
+// hidratado con su médico/firma). Reutiliza _generarCertificadoDesdePortal.
+const _buildCertificadosEmpresaHTML = (pacientes) => {
+  const certs = (pacientes || []).map((p, i) => {
+    const certHtml = _generarCertificadoDesdePortal(p);
+    const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
+    const body = bodyMatch ? bodyMatch[1] : certHtml;
+    return `<div style="${i > 0 ? "page-break-before:always;padding-top:8mm;" : ""}">${body}</div>`;
+  }).join("");
+  const first = (pacientes && pacientes[0]) ? _generarCertificadoDesdePortal(pacientes[0]) : "";
+  const styleMatch = first.match(/<style>([\s\S]*?)<\/style>/);
+  const styles = styleMatch ? styleMatch[1] : "";
+  return `<div><style>${styles}</style>${certs}</div>`;
+};
+
+// Genera el HTML de la Carta de Custodia (extraído de printCarta — autocontenido).
+const _buildCartaCustodiaHTML = (c) => {
+  c = c || {};
+  const ini = (c.docNombre || c.medicoNombre || "JC").split(" ").slice(0, 2).map(w => w[0] || "").join("").slice(0, 2).toUpperCase() || "JC";
+  const docNombre = c.docNombre || c.medicoNombre || "JULIAN CUCALON";
+  const docTitulo = c.docTitulo || c.medicoTitulo || "MEDICO ESPECIALISTA EN SST";
+  const docLic = c.docLicencia || c.medicoLicencia || "14497-12-2019";
+  const docCC = c.docCC || c.medicoCC || "1061750704";
+  const docCel = c.docCel || c.medicoTel || "3182213979";
+  const docEmail = c.docEmail || c.medicoEmail || "dr.juliancucalon@gmail.com";
+  const docCiudad = c.docCiudad || c.medicoCiudad || "Popayán";
+  const firmaSrc = c.firmaSrc || c.firma || null;
+  const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  const mesTexto = c.mesTexto || (Number.isInteger(c.mes) ? MESES[c.mes] : "");
+  const anioVal = c.anioVal || c.anio || new Date().getFullYear();
+  const fechaTexto = c.fechaTexto || (c.fecha ? (() => { const [y,m,d]=String(c.fecha).split("-").map(Number); return `${d} de ${MESES[(m||1)-1]} de ${y}`; })() : "");
+  const empresaNombre = c.empresaNombre || "";
+  return `<div style="font-family:'Arial','Helvetica',sans-serif;font-size:11pt;color:#111;background:white;width:816px;min-height:1056px;padding:56px 68px 48px;box-sizing:border-box;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="width:50px;height:50px;background:linear-gradient(135deg,#065f46,#0f766e);border-radius:10px;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-weight:900;font-size:15px;">${ini}</span></div>
+        <div><p style="font-size:13pt;font-weight:900;margin:0;">DR. ${docNombre}</p><p style="font-size:7.5pt;color:#4B5563;margin:3px 0 0;">${docTitulo}</p></div>
+      </div>
+      <div style="text-align:right;font-size:8.5pt;color:#374151;line-height:1.55;">
+        <p style="margin:0;font-weight:700;">${docNombre}</p><p style="margin:0;">Licencia: Resolución ${docLic} (Cauca)</p>
+        <p style="margin:0;">${(docCiudad).toUpperCase()}</p><p style="margin:0;">Cel: ${docCel}</p><p style="margin:0;">Email: ${(docEmail).toUpperCase()}</p>
+      </div>
+    </div>
+    <hr style="height:2px;background:linear-gradient(90deg,#065f46,#0f766e 60%,#0d9488);margin:10px 0 24px;border:none;" />
+    <p style="text-align:right;margin-bottom:28px;">${fechaTexto}</p>
+    <div style="margin-bottom:28px;"><p style="margin:0;">Señores</p><p style="margin:0;font-weight:700;">${empresaNombre}</p><p style="margin:0;">${docCiudad}</p></div>
+    <p style="text-align:center;font-weight:700;margin-bottom:26px;">ASUNTO: CARTA CUSTODIA DE LAS HISTORIAS CLÍNICAS OCUPACIONALES</p>
+    <p style="line-height:1.65;text-align:justify;margin-bottom:14px;">Por medio de la presente se hace constar la custodia de las Historias Clínicas Ocupacionales del personal valorado durante el <strong>mes de ${mesTexto} de ${anioVal}</strong>, las cuales reposan bajo la responsabilidad del médico especialista en Seguridad y Salud en el Trabajo abajo firmante, en cumplimiento de la Resolución 2346 de 2007 y la Resolución 1843 de 2025.</p>
+    <p style="line-height:1.65;text-align:justify;margin-bottom:14px;">Las historias clínicas son documentos privados sometidos a reserva, por lo que solo pueden ser conocidas por terceros previa autorización del trabajador o en los casos previstos por la ley. La empresa podrá solicitar los certificados de aptitud laboral y los informes de condiciones de salud, que no contienen diagnóstico clínico (Art. 16 Res. 1843/2025).</p>
+    <p style="line-height:1.65;margin-bottom:52px;">Cordialmente,</p>
+    <div style="text-align:center;">
+      ${firmaSrc ? `<img src="${firmaSrc}" alt="Firma" style="max-height:72px;max-width:190px;object-fit:contain;display:block;margin:0 auto 6px;" />` : `<div style="height:64px;width:190px;margin:0 auto 6px;border:1.5px dashed #9CA3AF;border-radius:6px;display:flex;align-items:center;justify-content:center;"><span style="font-size:8pt;color:#9CA3AF;">Firma digital</span></div>`}
+      <hr style="height:1px;background:#374151;margin:0 auto 10px;border:none;width:220px;" />
+      <p style="margin:0;font-weight:700;">${docNombre}</p><p style="margin:0;font-size:9pt;">${docTitulo}</p>
+      <p style="margin:0;font-size:9pt;">CC: ${docCC}</p><p style="margin:0;font-size:9pt;">Licencia SST: Resolución ${docLic} (Cauca)</p>
+      <p style="margin:0;font-size:9pt;">Cel: ${docCel} · ${docEmail}</p>
+    </div>
+  </div>`;
+};
+
+// ══════════════════════════════════════════════════════════════════════════
 // FORMULARIO PÚBLICO DE ENCUESTA SOCIODEMOGRÁFICA - Acceso sin login
 // URL: https://ocupasalud.pages.dev/#encuesta?token=xxx
 // Los trabajadores llenan sus datos sociodemográficos antes de la consulta.
@@ -57308,6 +57387,93 @@ body{padding-top:52px;}
                   }} className="px-3 py-1 bg-amber-600 text-white text-[10px] font-black rounded-lg hover:bg-amber-700">Crear ahora →</button>}
                 </div>
               </div>
+
+              {/* FASE 4: Ver / Descargar documentos (PDF) sin salir del panel */}
+              <div className="border-t border-gray-200 pt-3 mb-3">
+                <p className="text-[10px] font-black text-gray-500 uppercase tracking-wide mb-2">📥 Ver / Descargar documentos</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Certificados */}
+                  <button
+                    disabled={!hasCerts}
+                    onClick={async () => {
+                      try {
+                        const certsEmp = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada");
+                        // Hidratar cada paciente con su portal_doc (enriquecido: firma + recomendaciones + restricciones)
+                        const hidratados = [];
+                        for (const p of certsEmp) {
+                          const cc = (p.docNumero || "").replace(/\s/g, "");
+                          let pd = null;
+                          if (_WORKER_TOKEN && cc) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
+                          hidratados.push(pd || p);
+                        }
+                        const html = _buildCertificadosEmpresaHTML(hidratados);
+                        _abrirVentanaPDF(html, `Certificados — ${emp.empresaNombre} (${hidratados.length})`);
+                      } catch (e) { showAlert("Error generando certificados: " + e?.message); }
+                    }}
+                    className={"py-2 text-[11px] font-black rounded-xl flex items-center justify-center gap-1 " + (hasCerts ? "bg-emerald-600 text-white hover:bg-emerald-700" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
+                  >📄 Certificados ({certCount})</button>
+
+                  {/* Carta de custodia */}
+                  <button
+                    disabled={!hasCustodia}
+                    onClick={() => {
+                      const cust = savedInformes.find(i => i.empresaId === emp.empresaId && i.tipo === "custodia");
+                      if (!cust) { showAlert("No hay carta de custodia guardada."); return; }
+                      _abrirVentanaPDF(_buildCartaCustodiaHTML(cust), `Carta Custodia — ${emp.empresaNombre}`);
+                    }}
+                    className={"py-2 text-[11px] font-black rounded-xl flex items-center justify-center gap-1 " + (hasCustodia ? "bg-purple-600 text-white hover:bg-purple-700" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
+                  >📁 Carta Custodia</button>
+
+                  {/* Cuenta de cobro — abre la vista de edición/impresión existente */}
+                  <button
+                    disabled={!hasCuenta}
+                    onClick={() => {
+                      if (!cuentaData) { showAlert("No hay cuenta de cobro."); return; }
+                      setBillData(p => ({ ...p, ...cuentaData, amount: cuentaData.amount ? String(cuentaData.amount) : "" }));
+                      setVolverAEnvioIntegral({ empresaId: emp.empresaId, empresaNombre: emp.empresaNombre, from: "cuenta" });
+                      setShowEnvioIntegral(false);
+                      goTo("bill");
+                    }}
+                    className={"py-2 text-[11px] font-black rounded-xl flex items-center justify-center gap-1 " + (hasCuenta ? "bg-orange-600 text-white hover:bg-orange-700" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
+                  >💰 Cuenta de Cobro</button>
+
+                  {/* Informe — abre la vista de reportes donde se ve/imprime */}
+                  <button
+                    disabled={!hasInforme}
+                    onClick={() => { setShowEnvioIntegral(false); goTo("reporte"); showAlert("El informe se ve e imprime en la sección Reportes (botón 'Descargar / Imprimir Informe')."); }}
+                    className={"py-2 text-[11px] font-black rounded-xl flex items-center justify-center gap-1 " + (hasInforme ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
+                  >📋 Informe</button>
+                </div>
+                {/* Descargar TODO (los que se pueden generar en ventana) */}
+                <button
+                  disabled={!hasCerts && !hasCustodia}
+                  onClick={async () => {
+                    try {
+                      const partes = [];
+                      // Certificados
+                      if (hasCerts) {
+                        const certsEmp = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada");
+                        const hidratados = [];
+                        for (const p of certsEmp) {
+                          const cc = (p.docNumero || "").replace(/\s/g, "");
+                          let pd = null;
+                          if (_WORKER_TOKEN && cc) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
+                          hidratados.push(pd || p);
+                        }
+                        partes.push(_buildCertificadosEmpresaHTML(hidratados));
+                      }
+                      // Carta custodia
+                      if (hasCustodia) {
+                        const cust = savedInformes.find(i => i.empresaId === emp.empresaId && i.tipo === "custodia");
+                        if (cust) partes.push(`<div style="page-break-before:always;">${_buildCartaCustodiaHTML(cust)}</div>`);
+                      }
+                      _abrirVentanaPDF(partes.join(""), `Documentos — ${emp.empresaNombre}`);
+                    } catch (e) { showAlert("Error: " + e?.message); }
+                  }}
+                  className={"w-full mt-2 py-2 text-[11px] font-black rounded-xl " + ((hasCerts || hasCustodia) ? "bg-gray-800 text-white hover:bg-gray-900" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
+                >📦 Ver/Descargar paquete (certificados + carta)</button>
+              </div>
+
               {/* Botón enviar */}
               {todoListo ? (
                 <button onClick={async () => {
