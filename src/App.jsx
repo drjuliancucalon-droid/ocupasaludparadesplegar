@@ -471,12 +471,24 @@ const _workerGet = async (key) => {
   if (direct !== null) return direct;
   const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
   if (!meta || !meta.chunked || !Number.isFinite(meta.count)) return null;
-  const parts = [];
-  for (let i = 0; i < meta.count; i++) {
-    const p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
-    if (p === null) { console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key}`); return null; }
-    parts.push(p);
-  }
+  // FIX 2026-06-16 (velocidad): leer chunks en PARALELO con límite de concurrencia.
+  // Antes era secuencial (for+await): 8 chunks × ~1.8s = ~14s. Ahora ~3s.
+  // Pool de 6 lectores; preserva el orden con parts[i].
+  const parts = new Array(meta.count);
+  let _huboError = false;
+  let _nextIdx = 0;
+  const _CONC = 6;
+  const _lector = async () => {
+    while (!_huboError) {
+      const i = _nextIdx++;
+      if (i >= meta.count) return;
+      const p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+      if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key}`); return; }
+      parts[i] = p;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(_CONC, meta.count) }, () => _lector()));
+  if (_huboError) return null;
   const joined = parts.join("");
   // Verificación de integridad opcional (si meta tiene hash)
   if (meta.hash && _hash64(joined) !== meta.hash) {
@@ -15899,19 +15911,26 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
               });
             }
           }
-          // Complementar con portal_doc del índice que NO estén ya en el agregado
+          // Complementar con portal_doc del índice que NO estén ya en el agregado.
+          // FIX 2026-06-16 (velocidad): carga en PARALELO (límite 6 concurrentes).
+          // Antes era secuencial: 14 docs × ~1.4s = ~18s. Ahora ~3s.
           if (empresaIdx && Array.isArray(empresaIdx.documentos)) {
-            for (const doc of empresaIdx.documentos) {
-              const dn = String(doc).replace(/\s/g, "").trim();
-              if (!dn || _vistos.has(dn)) continue;
-              const rDoc = await fetchKey("siso_portal_doc_" + dn);
-              if (rDoc.ok && rDoc.data) {
-                _resultados.push({
-                  ...rDoc.data,
-                  _firma: (rDoc.data && rDoc.data._firma) || _firmaRoot,
-                  _doctorData: (rDoc.data && rDoc.data._doctorData) || _drRoot,
-                });
-                _vistos.add(dn);
+            const _pend = empresaIdx.documentos
+              .map(doc => String(doc).replace(/\s/g, "").trim())
+              .filter(dn => dn && !_vistos.has(dn));
+            const _CONCP = 6;
+            for (let _b = 0; _b < _pend.length; _b += _CONCP) {
+              const _lote = _pend.slice(_b, _b + _CONCP);
+              const _res = await Promise.all(_lote.map(dn => fetchKey("siso_portal_doc_" + dn).then(r => ({ dn, r })).catch(() => ({ dn, r: { ok: false } }))));
+              for (const { dn, r } of _res) {
+                if (r.ok && r.data && !_vistos.has(dn)) {
+                  _resultados.push({
+                    ...r.data,
+                    _firma: (r.data && r.data._firma) || _firmaRoot,
+                    _doctorData: (r.data && r.data._doctorData) || _drRoot,
+                  });
+                  _vistos.add(dn);
+                }
               }
             }
           }
