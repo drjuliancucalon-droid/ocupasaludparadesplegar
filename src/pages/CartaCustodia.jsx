@@ -295,9 +295,14 @@ export default function CartaCustodia({
   return (
     <div className="min-h-screen bg-gray-100 flex">
       <style>{`
-        @media print {.min-h-screen { display: none !important; } .carta-wrap { padding: 0 !important; background: white !important; }
+        @media print {
+          /* FIX 2026-06-15: NO ocultar .min-h-screen (es el contenedor de la carta).
+             Antes tenía display:none → la carta salía EN BLANCO. Ahora solo se
+             neutraliza el layout de pantalla y se oculta el panel lateral (.no-print). */
+          .min-h-screen { display: block !important; background: white !important; min-height: 0 !important; }
+          .carta-wrap { padding: 0 !important; background: white !important; }
           .no-print { display: none !important; }
-          .carta-doc { box-shadow: none !important; margin: 0 !important; width: 100% !important; }
+          .carta-doc { box-shadow: none !important; margin: 0 auto !important; width: 100% !important; }
           @page { margin: 0; size: letter portrait; }
           body { background: white; }
         }
