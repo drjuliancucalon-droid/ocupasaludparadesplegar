@@ -30744,6 +30744,23 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         docs.updatedAt = new Date().toISOString();
                         await _sbSet(`siso_portal_empresa_docs_${_nit}`, docs);
                       } else {
+                        // FIX 2026-06-16: ANTI-SOBREESCRITURA. _docsExist null puede ser
+                        // (a) no existe → OK crear; o (b) la lectura falló (D1/SB
+                        // intermitente) → NO crear estructura nueva, borraría los
+                        // periodos/documentos previos de la empresa.
+                        let _existeReal = false;
+                        if (_WORKER_TOKEN) {
+                          try {
+                            const _raw = await _workerGetRaw(`siso_portal_empresa_docs_${_nit}`);
+                            const _meta = await _workerGetRaw(`siso_portal_empresa_docs_${_nit}` + _CHUNK_SUF_META);
+                            if (_raw !== null || _meta !== null) _existeReal = true;
+                          } catch { _existeReal = true; }
+                        }
+                        if (_existeReal) {
+                          btn.disabled = false; btn.textContent = "📤 Publicar en portal";
+                          showAlert("⚠️ No se pudo leer el portal (conexión inestable). No se publicó para no borrar los documentos previos de la empresa. Reintente en unos segundos.");
+                          return;
+                        }
                         // Registro nuevo: recuperar código existente de la empresa local, no generar uno nuevo si ya tiene
                         const _compRec = companies.find(cx => (cx.nit || "").replace(/[^0-9]/g, "") === _nit);
                         const _charsP = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
