@@ -13759,6 +13759,10 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
       const workerUrl = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) || "https://siso-api.dr-juliancucalon.workers.dev";
       const workerToken = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) || "";
       let leyoDeD1 = false;
+      // FIX 2026-06-15: ANTI-PÉRDIDA. Rastrear si ALGUNA fuente confirmó la lectura.
+      // Si ninguna responde, NO sobreescribir (evita borrar respuestas previas, que
+      // fue lo que pasó con HOTEL CAMINO REAL: bajó de 7 a 3).
+      let lecturaConfiable = false;
       if (workerToken) {
         try {
           const r = await _fetchWithTimeout(`${workerUrl}/store/${encodeURIComponent(`siso_encuesta_resp_${token}`)}`, {
@@ -13769,6 +13773,7 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
             const v = d[0]?.value;
             respuestas = Array.isArray(v) ? v : (typeof v === "string" ? JSON.parse(v) : []);
             leyoDeD1 = true;
+            lecturaConfiable = true;
           }
         } catch (e) { console.warn("[Encuesta] read D1 falló:", e.message); }
       }
@@ -13779,7 +13784,14 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
           }, 6000);
           const existing = await readResp.json();
           respuestas = Array.isArray(existing[0]?.value) ? existing[0].value : [];
-        } catch (e) { console.warn("[Encuesta] read SB falló:", e.message, "— continuando con array vacío"); }
+          lecturaConfiable = true;
+        } catch (e) { console.warn("[Encuesta] read SB falló:", e.message); }
+      }
+      // Si NINGUNA fuente respondió, abortar para no sobreescribir respuestas previas.
+      if (!lecturaConfiable) {
+        setError("No se pudo conectar para guardar (conexión inestable). Intente de nuevo en unos segundos.");
+        setLoading(false);
+        return;
       }
 
       // ── 2. Verificar duplicado por cédula ────────────────────────────────
@@ -14275,20 +14287,39 @@ function PortalCustodiaViewer({ custodia, empresaNombre, periodo, sbUrl, sbKey }
     setSaving(true);
     try {
       const doc = { id: "cust_p_" + Date.now(), empresaNombre, periodo, docNombre, docTitulo, docLicencia, docCC, docCel, docEmail, docCiudad, firmaSrc, fechaTexto, mesTexto, anioVal, savedAt: new Date().toISOString() };
-      // Leer existentes: D1 primero, Supabase fallback
-      let arr = [];
+      // FIX 2026-06-15: ANTI-PÉRDIDA. Si la lectura falla pero la clave EXISTE en
+      // D1, abortar (no guardar [doc] solo, que borraría todas las cartas previas).
+      let arr = null;
       if (_WORKER_TOKEN) {
         try { const v = await _workerGet("siso_cartas_custodia"); if (Array.isArray(v)) arr = v; } catch {}
       }
-      if (!arr.length) {
+      if (arr === null) {
         try {
           const r = await fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_cartas_custodia&select=value`, { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } });
           const existing = await r.json();
           if (Array.isArray(existing[0]?.value)) arr = existing[0].value;
         } catch {}
       }
-      arr.push(doc);
-      await _sbPortalSave(sbUrl, sbKey, "siso_cartas_custodia", arr);
+      if (arr === null) {
+        let existe = false;
+        if (_WORKER_TOKEN) {
+          try {
+            const raw = await _workerGetRaw("siso_cartas_custodia");
+            const meta = await _workerGetRaw("siso_cartas_custodia" + _CHUNK_SUF_META);
+            if (raw !== null || meta !== null) existe = true;
+          } catch { existe = true; }
+        }
+        if (existe) {
+          alert("⚠️ No se pudieron leer las cartas previas (conexión inestable). No se guardó para no borrar las anteriores. Reintente en unos segundos.");
+          setSaving(false);
+          return;
+        }
+        arr = [];
+      }
+      // MERGE por id (evita duplicados) + agregar la nueva
+      const merged = arr.filter(x => x && x.id !== doc.id);
+      merged.push(doc);
+      await _sbPortalSave(sbUrl, sbKey, "siso_cartas_custodia", merged);
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (e) { alert("Error al guardar: " + e.message); }
@@ -17153,8 +17184,24 @@ function AppInner() {
           } catch {}
         }
       }
-      // Si no existe, crear estructura inicial
+      // FIX 2026-06-15: ANTI-SOBREESCRITURA. Si _workerGet devolvió null puede ser
+      // (a) la clave no existe → OK crear; o (b) la lectura falló (D1 intermitente
+      // o hash inválido) → NO debemos crear estructura vacía porque al escribir
+      // borraríamos todos los periodos/documentos anteriores de la empresa.
+      // Verificamos existencia real con raw + meta antes de decidir.
       if (!portalData) {
+        let _existeEnD1 = false;
+        if (_WORKER_TOKEN) {
+          try {
+            const _raw = await _workerGetRaw(portalKey);
+            const _meta = await _workerGetRaw(portalKey + _CHUNK_SUF_META);
+            if (_raw !== null || _meta !== null) _existeEnD1 = true;
+          } catch { _existeEnD1 = true; } // ante la duda, proteger
+        }
+        if (_existeEnD1) {
+          return { ok: false, error: "lectura del portal falló — no se sobreescribe para proteger los documentos previos de la empresa. Reintente en unos segundos." };
+        }
+        // Legítimamente nuevo: crear estructura inicial
         portalData = {
           nit,
           nombre: emp.nombre || "",
@@ -21686,6 +21733,35 @@ const handleLogin = (u, p) => {
     }
   };
 
+  // FIX 2026-06-15: persistencia SEGURA de facturas (anti-sobreescritura).
+  // Reemplaza _sync directo. Usa MERGE por id en ambas claves D1 → si el
+  // estado local está incompleto, preserva las facturas que existan en D1.
+  // Para AÑADIR/EDITAR/PAGAR (el local gana en ids presentes, preserva extras).
+  const _suf = () => currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user || "shared";
+  const _persistBillsSafe = (upd) => {
+    const k1 = `siso_saved_bills_${_suf()}`, k2 = "siso_saved_bills";
+    try { _ls.setItem(k1, JSON.stringify(upd)); } catch {}
+    try { _ls.setItem(k2, JSON.stringify(upd)); } catch {}
+    if (_WORKER_TOKEN) {
+      _writeArrayMergeD1(k1, upd, "id").catch(() => {});
+      _writeArrayMergeD1(k2, upd, "id").catch(() => {});
+    }
+    _sbSet(k1, upd).catch(() => {});
+    _sbSet(k2, upd).catch(() => {});
+  };
+  // Borrado SEGURO: lee D1, quita SOLO el id borrado, preserva el resto.
+  // Evita que un estado local parcial borre facturas de otras sesiones.
+  const _deleteBillSafe = async (idBorrado, fallbackList) => {
+    for (const key of [`siso_saved_bills_${_suf()}`, "siso_saved_bills"]) {
+      let base = Array.isArray(fallbackList) ? fallbackList : [];
+      if (_WORKER_TOKEN) { try { const r = await _workerGet(key); if (Array.isArray(r) && r.length) base = r; } catch {} }
+      const final = base.filter(b => b && String(b.id) !== String(idBorrado));
+      try { _ls.setItem(key, JSON.stringify(final)); } catch {}
+      if (_WORKER_TOKEN) await _workerSet(key, final).catch(() => {});
+      _sbSet(key, final).catch(() => {});
+    }
+  };
+
   const _syncCompanies = (list) => {
     const _suid2 = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
@@ -22829,7 +22905,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
           const _bSuf = currentUser?.empresaId
             ? "empresa_" + currentUser.empresaId
             : currentUser?.user || "shared";
-          _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(d.savedBills));
+          _persistBillsSafe(d.savedBills);
         }
         // Informes / reportes guardados
         if (d.savedReports && Array.isArray(d.savedReports)) {
@@ -35600,7 +35676,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           : b
                       );
                       setSavedBillsList(upd);
-                      _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(upd));
+                      _persistBillsSafe(upd);
                       setEditingBillId(null);
                       showAlert("✅ Cuenta de cobro actualizada correctamente.");
                     } else {
@@ -35613,7 +35689,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       };
                       const upd = [...savedBillsList, nb];
                       setSavedBillsList(upd);
-                      _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(upd));
+                      _persistBillsSafe(upd);
                       if (volverAEnvioIntegral) {
                         showAlert("✅ Cuenta de cobro guardada.\n\nVolviendo al panel de envío integral...");
                         setTimeout(() => {
@@ -36049,7 +36125,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                 const fechaPago = new Date().toISOString().split("T")[0];
                                 const updated = savedBillsList.map(b => b.id===bill.id ? {...b, pagada:true, fechaPago} : b);
                                 setSavedBillsList(updated);
-                                _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(updated));
+                                _persistBillsSafe(updated);
                                 // Actualizar también en portal empresa (siso_portal_empresa_docs_${nit})
                                 try {
                                   const _compEmp = companies.find(c => c.id === bill.companyId || (c.nombre||"").toLowerCase().trim() === (bill.clientName||"").toLowerCase().trim());
@@ -36082,7 +36158,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                               if (!window.confirm(`¿Eliminar cuenta No.${String(bill.number||"0").padStart(3,"0")} de ${bill.clientName}?`)) return;
                               const updated = savedBillsList.filter(b => b.id !== bill.id);
                               setSavedBillsList(updated);
-                              _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(updated));
+                              _deleteBillSafe(bill.id, updated);
                               if (editingBillId === bill.id) setEditingBillId(null);
                             }}
                             className="px-3 py-1.5 bg-red-50 text-red-600 text-[10px] font-black rounded-lg hover:bg-red-100 transition"
@@ -49975,7 +50051,7 @@ ${
         const _bSuf = currentUser?.empresaId
           ? "empresa_" + currentUser.empresaId
           : currentUser?.user || "shared";
-        _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(updated));
+        _persistBillsSafe(updated);
       }
     };
     const editarCuenta = (bill) => {
@@ -50018,7 +50094,7 @@ ${
                   const _bSuf = currentUser?.empresaId
                     ? "empresa_" + currentUser.empresaId
                     : currentUser?.user || "shared";
-                  _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(updated));
+                  _persistBillsSafe(updated);
                 }
                 showAlert(
                   "✅ Cuenta actualizada." +
@@ -50043,7 +50119,7 @@ ${
             const _bSuf = currentUser?.empresaId
               ? "empresa_" + currentUser.empresaId
               : currentUser?.user || "shared";
-            _sync(`siso_saved_bills_${_bSuf}`, JSON.stringify(updated));
+            _deleteBillSafe(id, updated);
           }
         });
       });
