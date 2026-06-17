@@ -223,22 +223,25 @@ export default {
           ).bind(cutoff).run();
           log.push({ section: "rotacion_snapshots", borradas: dr.meta?.changes ?? 0, cutoff });
         } catch (e) { log.push({ section: "rotacion_snapshots", error: e.message }); }
-        // Chunks temporales abandonados
+        // Chunks temporales abandonados (__new<ts>__cN / __meta) — DELETE masivo.
+        // FIX 2026-06-17: el loop con filtro de timestamp borraba 0. Los chunks
+        // __new son SIEMPRE temporales (una escritura completa los promueve al key
+        // real y los borra); cualquier __new que quede es huérfano de escritura
+        // fallida. DELETE en una sola sentencia: rápido y libera el espacio real.
         try {
-          const cutoffMs = Date.now() - 60 * 60 * 1000;
-          const rows = await env.DB.prepare(
-            "SELECT key FROM siso_store WHERE key LIKE '%\\_\\_new%\\_\\_c%' OR key LIKE '%\\_\\_new%\\_\\_meta' ESCAPE '\\'"
-          ).all();
-          let n = 0;
-          for (const r of (rows.results || [])) {
-            const m = r.key.match(/__new(\d+)__/);
-            if (m && parseInt(m[1], 10) < cutoffMs) {
-              await env.DB.prepare("DELETE FROM siso_store WHERE key = ?").bind(r.key).run();
-              n++;
-            }
-          }
-          log.push({ section: "chunks_temporales", borrados: n });
+          const dr = await env.DB.prepare(
+            "DELETE FROM siso_store WHERE key LIKE '%\\_\\_new%' ESCAPE '\\'"
+          ).run();
+          log.push({ section: "chunks_temporales", borrados: dr.meta?.changes ?? 0 });
         } catch (e) { log.push({ section: "chunks_temporales", error: e.message }); }
+        // Autosaves de sesión > 48h (acumulan sin límite)
+        try {
+          const cutoff48h = new Date(Date.now() - 48 * 3600000).toISOString();
+          const dr = await env.DB.prepare(
+            "DELETE FROM siso_store WHERE key LIKE 'siso_autosave_cloud_%' AND updated_at < ?"
+          ).bind(cutoff48h).run();
+          log.push({ section: "autosaves", borrados: dr.meta?.changes ?? 0 });
+        } catch (e) { log.push({ section: "autosaves", error: e.message }); }
         return new Response(JSON.stringify({ ok: true, log }), { headers });
       }
 
