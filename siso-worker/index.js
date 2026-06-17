@@ -31,6 +31,44 @@ function corsHeaders(origin) {
   };
 }
 
+// ── COMPRESIÓN GZIP — reduce 50-80% el tamaño en D1 ──────────────────────────
+// Usa la Web Compression Streams API nativa de Cloudflare (sin dependencias).
+// Los valores comprimidos llevan prefijo 'gz:'. Retrocompatible: si un valor NO
+// empieza con 'gz:' se trata como JSON plano legacy (lee igual que antes).
+// Tanto compress como decompress tienen fallback: nunca lanzan excepción.
+// ─────────────────────────────────────────────────────────────────────────────
+async function compressValue(text) {
+  try {
+    const stream = new CompressionStream("gzip");
+    const writer = stream.writable.getWriter();
+    writer.write(new TextEncoder().encode(text));
+    writer.close();
+    const buf = await new Response(stream.readable).arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
+    return "gz:" + btoa(binary);
+  } catch (e) {
+    return text; // fallback: guardar sin comprimir
+  }
+}
+async function decompressValue(stored) {
+  if (typeof stored !== "string" || !stored.startsWith("gz:")) return stored;
+  try {
+    const binary = atob(stored.slice(3));
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    const stream = new DecompressionStream("gzip");
+    const writer = stream.writable.getWriter();
+    writer.write(bytes);
+    writer.close();
+    return await new Response(stream.readable).text();
+  } catch (e) {
+    return stored; // fallback: devolver crudo
+  }
+}
+
 export default {
   async fetch(request, env) {
     const origin = request.headers.get("Origin") || "";
@@ -57,7 +95,7 @@ export default {
         const key = decodeURIComponent(path.slice(7));
         const row = await env.DB.prepare("SELECT value, updated_at FROM siso_store WHERE key = ?").bind(key).first();
         if (!row) return new Response(JSON.stringify([]), { headers });
-        const value = JSON.parse(row.value);
+        const value = JSON.parse(await decompressValue(row.value));
         const ts = row.updated_at;
         // Exponer también el etag en header para uso fácil del cliente
         const respHeaders = { ...headers, "ETag": ts ? `"${ts}"` : '""', "X-Siso-Ts": ts || "" };
@@ -70,7 +108,7 @@ export default {
         const rows = await env.DB.prepare(
           "SELECT key, value FROM siso_store WHERE key LIKE ? LIMIT 2000"
         ).bind(prefix + "%").all();
-        const result = (rows.results || []).map(r => ({ key: r.key, value: JSON.parse(r.value) }));
+        const result = await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: JSON.parse(await decompressValue(r.value)) })));
         return new Response(JSON.stringify(result), { headers });
       }
 
@@ -87,11 +125,11 @@ export default {
             "SELECT key, value, updated_at FROM siso_store LIMIT 2000"
           ).all();
         }
-        const result = (rows.results || []).map(r => ({
+        const result = await Promise.all((rows.results || []).map(async r => ({
           key: r.key,
-          value: JSON.parse(r.value),
+          value: JSON.parse(await decompressValue(r.value)),
           updated_at: r.updated_at,
-        }));
+        })));
         return new Response(JSON.stringify(result), { headers });
       }
 
@@ -122,11 +160,12 @@ export default {
         const stmt = env.DB.prepare(
           "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
         );
-        // Batch en chunks de 50
+        // Batch en chunks de 50 — comprime cada value (gzip) antes de insertar
         const CHUNK = 50;
         for (let i = 0; i < rows.length; i += CHUNK) {
           const chunk = rows.slice(i, i + CHUNK);
-          const batch = chunk.map(({ key, value }) => stmt.bind(key, JSON.stringify(value)));
+          const comp = await Promise.all(chunk.map(async ({ key, value }) => ({ key, cv: await compressValue(JSON.stringify(value)) })));
+          const batch = comp.map(({ key, cv }) => stmt.bind(key, cv));
           await env.DB.batch(batch);
         }
         return new Response(JSON.stringify({ ok: true, count: rows.length }), { headers });
@@ -211,6 +250,41 @@ export default {
         return new Response(JSON.stringify(rows.results || []), { headers });
       }
 
+      // ── GET /storage-stats — monitoreo de uso de D1 ──────────────────
+      if (request.method === "GET" && path === "/storage-stats") {
+        try {
+          const total = await env.DB.prepare(
+            "SELECT COUNT(*) as filas, SUM(LENGTH(value)) as bytes FROM siso_store"
+          ).first();
+          const top = await env.DB.prepare(
+            `SELECT CASE
+               WHEN INSTR(key,'__new')>0 THEN substr(key,1,INSTR(key,'__new')-1)||'__new*'
+               WHEN key LIKE 'siso_snapshot_%' THEN 'siso_snapshot_*'
+               WHEN key LIKE 'siso_autosave_cloud_%' THEN 'siso_autosave_cloud_*'
+               WHEN key LIKE 'siso_hc_completa_%' THEN 'siso_hc_completa_*'
+               WHEN key LIKE 'siso_portal_doc_%' THEN 'siso_portal_doc_*'
+               WHEN key LIKE 'siso_db_patients_%' THEN 'siso_db_patients_*'
+               WHEN key LIKE 'siso_patients_%' THEN 'siso_patients_*'
+               WHEN key LIKE 'siso_portal_empresa_%' THEN 'siso_portal_empresa_*'
+               ELSE key END as grupo,
+             COUNT(*) as cant, ROUND(SUM(LENGTH(value))/1024.0,1) as kb
+             FROM siso_store GROUP BY grupo ORDER BY kb DESC LIMIT 25`
+          ).all();
+          const bytes = total?.bytes || 0;
+          const mb = bytes / 1048576;
+          const pct = (mb / 500 * 100);
+          return new Response(JSON.stringify({
+            ok: true, filas: total?.filas || 0,
+            mb_usados: parseFloat(mb.toFixed(2)), limite_mb: 500,
+            uso_pct: pct.toFixed(1) + "%",
+            alerta_70: pct >= 70, alerta_90: pct >= 90,
+            top_grupos: top.results || [], ts: new Date().toISOString(),
+          }), { headers });
+        } catch (e) {
+          return new Response(JSON.stringify({ ok: false, error: e.message }), { status: 500, headers });
+        }
+      }
+
       return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers });
 
     } catch (err) {
@@ -292,17 +366,18 @@ async function runDailySnapshot(env) {
   const direct = {};
   const chunkRe = /__c(\d+)$/;
   for (const row of rows) {
+    const rawVal = await decompressValue(row.value); // soporta valores gz: y legacy
     if (row.key.endsWith("__meta")) {
-      try { metas[row.key.slice(0, -6)] = JSON.parse(row.value); } catch {}
+      try { metas[row.key.slice(0, -6)] = JSON.parse(rawVal); } catch {}
       continue;
     }
     const m = chunkRe.exec(row.key);
     if (m) {
       const base = row.key.slice(0, -m[0].length);
-      (chunkBags[base] ||= {})[Number(m[1])] = JSON.parse(row.value);
+      (chunkBags[base] ||= {})[Number(m[1])] = JSON.parse(rawVal);
       continue;
     }
-    try { direct[row.key] = JSON.parse(row.value); } catch { direct[row.key] = row.value; }
+    try { direct[row.key] = JSON.parse(rawVal); } catch { direct[row.key] = rawVal; }
   }
 
   const reconstructed = { ...direct };
