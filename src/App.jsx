@@ -11549,15 +11549,15 @@ body{padding-top:52px;}
 <div contenteditable="false">${header}</div>
 <div contenteditable="true" spellcheck="false">${singleMedHtml}</div>
 </body></html>`;
-    const _blob = new Blob([_html], {type:'text/html;charset=utf-8'});
-    const _burl = URL.createObjectURL(_blob);
-    const w = window.open(_burl, "_blank", "width=600,height=700");
+    // FIX 2026-06-16: document.write (compatible) en vez de window.open(blob).
+    const w = window.open("", "_blank", "width=600,height=700");
     if (!w) {
-      URL.revokeObjectURL(_burl);
       alert("⚠️ El navegador bloqueó la ventana de impresión.\n\nPermita ventanas emergentes para este sitio:\n1. Clic en el ícono de pop-up bloqueado en la barra de direcciones\n2. 'Permitir ventanas emergentes'\n3. Reintentar imprimir");
       return;
     }
-    setTimeout(() => URL.revokeObjectURL(_burl), 60000);
+    w.document.write(_html);
+    w.document.close();
+    w.focus();
   };
 
   const openPrintWindow = (section, titleDoc) => {
@@ -11764,15 +11764,16 @@ body{padding-top:52px;}
   <button class="btn-close" onclick="window.close()">✕ Cerrar</button>
 </div>
 <div contenteditable="false">${header}</div><div contenteditable="true" spellcheck="false">${bodyHtml}</div></body></html>`;
-    const _blob2 = new Blob([_html2], {type:'text/html;charset=utf-8'});
-    const _burl2 = URL.createObjectURL(_blob2);
-    const w = window.open(_burl2, "_blank", "width=870,height=1100");
+    // FIX 2026-06-16: usar document.write (compatible) en vez de window.open(blob),
+    // que fallaba silenciosamente por CSP/navegador. Mismo método que certificados.
+    const w = window.open("", "_blank", "width=870,height=1100");
     if (!w) {
-      URL.revokeObjectURL(_burl2);
       alert("⚠️ El navegador bloqueó la ventana de impresión.\n\nPermita ventanas emergentes para este sitio:\n1. Clic en el ícono de pop-up bloqueado en la barra de direcciones\n2. 'Permitir ventanas emergentes'\n3. Reintentar imprimir");
       return;
     }
-    setTimeout(() => URL.revokeObjectURL(_burl2), 60000);
+    w.document.write(_html2);
+    w.document.close();
+    w.focus();
     // No auto-print - el usuario edita y luego hace clic en "Imprimir ahora"
   };
   return (
@@ -55615,6 +55616,8 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
                 <TabFormulaDerivacion
                   data={data}
                   setData={setData}
+                  activeDoctorData={_billDocData}
+                  activeSignature={_billDocSig}
                   _billDocData={_billDocData}
                   _billDocSig={_billDocSig}
                   onPrint={handlePrint}
