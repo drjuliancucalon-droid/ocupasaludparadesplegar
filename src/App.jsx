@@ -13605,6 +13605,160 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
 };
 
 // ══════════════════════════════════════════════════════════════════════════
+// FASE 4 / FIX 2026-06-17: impresión de Fórmula / Derivación / Exámenes a nivel
+// MÓDULO. Antes openPrintWindow vivía dentro de TabFormulaDerivacion y el modal
+// "Seleccione documentos" (en AppInner) la llamaba fuera de alcance →
+// ReferenceError: openPrintWindow is not defined. Esta versión recibe todo por
+// parámetros y la usan ambos componentes.
+// ══════════════════════════════════════════════════════════════════════════
+const _mkPrintHeaderMod = (titleDoc, accentColor, data, doctor, miIPS) => {
+  const fechaDoc = data.fechaExamen || data.fechaConsulta || new Date().toLocaleDateString("es-CO");
+  const docName = _sanitize(doctor?.nombre || ""), docTitulo = _sanitize(doctor?.titulo || ""), docLic = _sanitize(doctor?.licencia || "");
+  const docCiudad = _sanitize(doctor?.ciudad || ""), docCel = _sanitize(doctor?.celular || ""), docEmail = _sanitize(doctor?.email || "");
+  const pNombre = _sanitize(data.nombres || "---"), pDocTipo = _sanitize(data.docTipo || "CC"), pDocNum = _sanitize(data.docNumero || "---");
+  const pEdad = _sanitize(String(data.edad || "--")), pGenero = _sanitize(data.genero || "---"), pEps = _sanitize(data.eps || "---");
+  const pArl = _sanitize(data.arl || "---"), pAfp = _sanitize(data.afp || "---"), pEmpresa = _sanitize(data.empresaNombre || "---");
+  const pCargo = _sanitize(data.cargo || "---"), pTipo = _sanitize(data.tipoExamen || data.motivoConsulta || "---");
+  const pId = _sanitize((data.id || "").toString().slice(-6) || "------");
+  const accentSafe = /^#[0-9a-fA-F]{3,6}$/.test(accentColor) ? accentColor : "#059669";
+  const leftColumn = miIPS
+    ? (() => {
+        const ipsNombre = _sanitize(miIPS.nombre || ""), ipsNit = _sanitize(miIPS.nit || ""), ipsDv = _sanitize(miIPS.dv || "");
+        const ipsDir = _sanitize(miIPS.direccion || ""), ipsCiudad = _sanitize(miIPS.ciudad || ""), ipsTel = _sanitize(miIPS.telefono || "");
+        const ipsEmail = _sanitize(miIPS.correo || ""), ipsLema = _sanitize(miIPS.lema || ""), ipsLogo = _safeLogoUrl(miIPS.logo || "");
+        const logoHtml = ipsLogo ? `<img src="${ipsLogo}" style="max-height:40px;max-width:90px;object-fit:contain;display:block;margin-bottom:4px;" />` : "";
+        return `<div style="width:32%;padding-right:8px;">${logoHtml}
+          <p style="font-size:10pt;font-weight:900;color:${accentSafe};text-transform:uppercase;margin:0 0 2px 0;">${ipsNombre}</p>
+          ${ipsNit ? `<p style="font-size:7.5pt;color:#555;margin:1px 0;">NIT: ${ipsNit}${ipsDv ? "-" + ipsDv : ""}</p>` : ""}
+          ${ipsDir ? `<p style="font-size:7.5pt;color:#555;margin:1px 0;">${ipsDir}${ipsCiudad ? " · " + ipsCiudad : ""}</p>` : ""}
+          ${ipsTel ? `<p style="font-size:7.5pt;color:#555;margin:1px 0;">Tel: ${ipsTel}</p>` : ""}
+          ${ipsEmail ? `<p style="font-size:7.5pt;color:#555;margin:1px 0;">${ipsEmail}</p>` : ""}
+          ${ipsLema ? `<p style="font-size:7pt;color:#888;font-style:italic;margin:2px 0;">${ipsLema}</p>` : ""}
+        </div>`;
+      })()
+    : `<div style="width:32%;padding-right:8px;">
+        <p style="font-size:10.5pt;font-weight:900;color:${accentSafe};text-transform:uppercase;margin:0 0 3px 0;">${docName}</p>
+        <p style="font-size:7.5pt;color:#555;margin:1px 0;">${docTitulo}</p>
+        <p style="font-size:7.5pt;color:#555;margin:1px 0;">Lic. Med.: ${docLic}</p>
+        <p style="font-size:7.5pt;color:#555;margin:1px 0;">${docCiudad} | Cel: ${docCel}</p>
+        <p style="font-size:7.5pt;color:#555;margin:1px 0;">${docEmail}</p>
+      </div>`;
+  return `<div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid ${accentSafe};padding-bottom:10px;margin-bottom:14px;">
+      ${leftColumn}
+      <div style="width:34%;text-align:center;border-left:1px solid #ddd;border-right:1px solid #ddd;padding:0 10px;">
+        <p style="font-size:13pt;font-weight:900;color:${accentSafe};text-transform:uppercase;margin:2px 0;">${_sanitize(titleDoc)}</p>
+        <p style="font-size:7pt;color:#888;margin:2px 0;">Res. 1995&#x2F;1999 · Res. 1843&#x2F;2025</p>
+        <p style="font-size:8pt;font-weight:700;color:#333;margin:5px 0 2px 0;">Fecha: ${_sanitize(fechaDoc)}</p>
+        <p style="font-size:7.5pt;color:#666;margin:1px 0;">Reg. # ${pId}</p>
+      </div>
+      <div style="width:32%;text-align:right;padding-left:8px;">
+        <p style="font-size:10.5pt;font-weight:900;color:${accentSafe};text-transform:uppercase;margin:0 0 3px 0;">${pNombre}</p>
+        <p style="font-size:7.5pt;color:#444;margin:1px 0;">${pDocTipo}: <b>${pDocNum}</b> &nbsp;|&nbsp; Edad: <b>${pEdad} años</b></p>
+        <p style="font-size:7.5pt;color:#444;margin:1px 0;">Sexo: ${pGenero} &nbsp;|&nbsp; EPS: <b>${pEps}</b></p>
+        <p style="font-size:7.5pt;color:#444;margin:1px 0;">ARL: <b>${pArl}</b> &nbsp;|&nbsp; AFP: ${pAfp}</p>
+        <p style="font-size:7.5pt;color:#444;margin:1px 0;">Empresa: <b>${pEmpresa}</b></p>
+        <p style="font-size:7.5pt;color:#444;margin:1px 0;">Cargo: <b>${pCargo}</b> | Tipo: ${pTipo}</p>
+      </div>
+    </div>`;
+};
+const _BASE_PRINT_STYLE_MOD = `
+  @page{size:letter portrait;margin:1.1cm 1.3cm 1.3cm 1.3cm;}
+  *{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}
+  body{font-family:Arial,Helvetica,sans-serif;font-size:9.5pt;color:#111;margin:0;padding:0;line-height:1.45;}
+  .badge{display:inline-block;padding:1px 7px;border-radius:50px;font-size:7.5pt;font-weight:700;}
+  .section-title{font-size:8.5pt;font-weight:900;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1.5px solid currentColor;padding-bottom:3px;margin:12px 0 6px 0;}
+  .med-card{border:1px solid #d1fae5;border-left:4px solid #059669;border-radius:4px;padding:6px 10px;margin-bottom:6px;page-break-inside:avoid;background:#f0fdf4;}
+  .med-num{background:#059669;color:white;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:8pt;font-weight:900;flex-shrink:0;}
+  .deriv-card{border:1px solid #bfdbfe;border-left:4px solid #2563eb;border-radius:4px;padding:8px 10px;margin-bottom:7px;page-break-inside:avoid;background:#eff6ff;}
+  .urgente{background:#fee2e2;color:#dc2626;} .prioritaria{background:#fef3c7;color:#92400e;} .electiva{background:#dcfce7;color:#166534;}
+  .sig-block{display:flex;justify-content:space-between;align-items:flex-end;margin-top:18mm;padding-top:0;}
+  .sig-line{text-align:center;width:42%;}
+  .sig-line-top{border-top:2px solid #222;padding-top:4px;font-size:7.5pt;font-weight:700;}
+  @media print{body{font-size:9pt;} .no-print{display:none!important;}}
+`;
+const _openPrintRecetaDeriv = (section, titleDoc, data, doctor, signature, miIPS) => {
+  const accent = section === "formula" ? "#059669" : section === "derivacion" ? "#2563eb" : "#0d9488";
+  const header = _mkPrintHeaderMod(titleDoc, accent, data, doctor, miIPS);
+  const sigDoc = `<div class="sig-line" style="text-align:center;">
+      ${signature ? `<img src="${signature}" style="max-height:55px;max-width:150px;object-fit:contain;" alt="Firma"/>` : '<div style="height:55px;border-bottom:2px solid #222;"></div>'}
+      <p style="font-size:8.5pt;font-weight:900;margin:3px 0;">${_sanitize(doctor?.nombre || "")}</p>
+      <p style="font-size:7.5pt;color:#555;margin:1px 0;">${_sanitize(doctor?.titulo || "")}</p>
+      <p style="font-size:7.5pt;color:#555;margin:1px 0;">Lic: ${_sanitize(doctor?.licencia || "")}</p>
+    </div>`;
+  let bodyHtml = "";
+  if (section === "formula") {
+    const meds = data.formulaMedicamentos || [];
+    const medsHtml = meds.length > 0 ? meds.map((m, i) => `
+      <div class="med-card" style="display:flex;gap:10px;align-items:flex-start;">
+        <span class="med-num">${i + 1}</span>
+        <div style="flex:1;">
+          <p style="font-size:10pt;font-weight:900;color:#065f46;margin:0 0 2px 0;">${_sanitize(m.nombre || "")} <span style="font-size:8pt;font-weight:400;color:#6b7280;">${_sanitize(m.presentacion || "")}</span></p>
+          <p style="font-size:8.5pt;color:#374151;margin:1px 0;"><b>Dosis:</b> ${_sanitize(m.dosis || "--")} &nbsp;·&nbsp; <b>Frec.:</b> ${_sanitize(m.frecuencia || "--")} &nbsp;·&nbsp; <b>Duración:</b> ${_sanitize(m.duracion || "--")}</p>
+          ${m.indicaciones ? `<p style="font-size:8pt;color:#92400e;font-style:italic;margin:2px 0;">&#9888; ${_sanitize(m.indicaciones)}</p>` : ""}
+        </div>
+      </div>`).join("") : '<p style="color:#9ca3af;font-style:italic;text-align:center;padding:12px 0;">Sin medicamentos prescritos.</p>';
+    const dx = _sanitize(data.diagnosticoPrincipal || (data.diagnosticos || [])[0]?.descripcion || data.diagnosticos?.[0]?.cie10 || "--");
+    const control = _sanitize(data.frecuenciaSeguimiento || data.plan?.controlEn || "--");
+    bodyHtml = `<div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:4px;padding:10px 12px;margin-bottom:12px;">
+        <p class="section-title" style="color:#065f46;">&#128138; Prescripción Médica</p>${medsHtml}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;border-top:1px solid #a7f3d0;padding-top:8px;">
+          <p style="font-size:8.5pt;"><b>Diagnóstico:</b> ${dx}</p><p style="font-size:8.5pt;"><b>Control en:</b> ${control}</p>
+        </div></div>
+      <div class="sig-block"><div class="sig-line"><div class="sig-line-top">Firma del Paciente / Responsable</div>
+        <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Nombre: _______________________</p>
+        <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Documento: ____________________</p></div>${sigDoc}</div>`;
+  } else if (section === "derivacion") {
+    const derivs = data.derivaciones || [];
+    const derivHtml = derivs.length > 0 ? derivs.map((d, i) => {
+      const urgClass = d.urgencia === "Urgente" ? "urgente" : d.urgencia === "Prioritaria" ? "prioritaria" : "electiva";
+      return `<div class="deriv-card">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+            <span style="background:#2563eb;color:white;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:8pt;font-weight:900;">${i + 1}</span>
+            <span style="font-size:10.5pt;font-weight:900;color:#1e3a8a;">${_sanitize(d.especialidad || "--")}</span>
+            <span class="badge ${urgClass}">${_sanitize(d.urgencia || "Electiva")}</span>
+          </div>
+          <p style="font-size:8.5pt;color:#374151;margin:3px 0;"><b>Motivo:</b> ${_sanitize(d.motivo || "--")}</p>
+          ${d.observaciones ? `<p style="font-size:8pt;color:#6b7280;font-style:italic;margin:2px 0;">${_sanitize(d.observaciones)}</p>` : ""}
+        </div>`;
+    }).join("") : '<p style="color:#9ca3af;font-style:italic;text-align:center;padding:12px 0;">Sin derivaciones registradas.</p>';
+    bodyHtml = `<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:4px;padding:10px 12px;margin-bottom:12px;">
+        <p class="section-title" style="color:#1e3a8a;">&#127973; Derivaciones / Interconsultas</p>${derivHtml}</div>
+      <div class="sig-block"><div class="sig-line"><div class="sig-line-top">Firma del Paciente / Responsable</div>
+        <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Nombre: _______________________</p></div>${sigDoc}</div>`;
+  } else if (section === "examenes") {
+    const exs = data.solicitudExamenes || [];
+    const exsHtml = exs.length > 0 ? exs.map((e, i) => `
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:6px 8px;border-bottom:1px solid #ccfbf1;">
+          <span style="background:#0d9488;color:white;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:9pt;font-weight:900;">${i + 1}</span>
+          <div style="flex:1;"><p style="font-size:10pt;font-weight:900;color:#134e4a;margin:0 0 2px 0;">${_sanitize(typeof e === "string" ? e : (e.nombre || e.examen || e.descripcion || ""))}</p>
+            ${(typeof e === "object" && e.observaciones) ? `<p style="font-size:8.5pt;color:#374151;margin:1px 0;">${_sanitize(e.observaciones)}</p>` : ""}
+            ${(typeof e === "object" && e.urgencia) ? `<p style="font-size:8pt;color:#92400e;font-style:italic;margin:2px 0;">Prioridad: ${_sanitize(e.urgencia)}</p>` : ""}
+          </div></div>`).join("") : '<p style="color:#9ca3af;font-style:italic;text-align:center;padding:12px 0;">Sin exámenes solicitados.</p>';
+    bodyHtml = `<div style="background:#f0fdfa;border:1px solid #99f6e4;border-radius:4px;padding:10px 12px;margin-bottom:12px;">
+        <p class="section-title" style="color:#134e4a;">&#129514; Solicitud de Exámenes Paraclínicos</p>${exsHtml}
+        <p style="font-size:8pt;color:#6b7280;margin-top:10px;padding-top:6px;border-top:1px solid #ccfbf1;"><b>Diagnóstico:</b> ${_sanitize(data.diagnosticoPrincipal || (data.diagnosticos || [])[0]?.descripcion || "--")}</p></div>
+      <div class="sig-block"><div class="sig-line"><div class="sig-line-top">Firma del Paciente / Responsable</div>
+        <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Nombre: _______________________</p></div>${sigDoc}</div>`;
+  }
+  const html = `<!DOCTYPE html><html lang="es"><head><title>${_sanitize(titleDoc)} - ${_sanitize(data.nombres)}</title><meta charset="UTF-8"/><style>
+${_BASE_PRINT_STYLE_MOD}
+.print-toolbar{position:fixed;top:0;left:0;right:0;background:#1e3a5f;color:white;padding:8px 14px;display:flex;align-items:center;gap:10px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,.25);}
+.print-toolbar .ptitle{flex:1;font-size:9.5pt;font-weight:700;}
+.print-toolbar button{background:white;color:#1e3a5f;border:none;padding:6px 14px;border-radius:6px;font-weight:900;cursor:pointer;font-size:9pt;}
+.print-toolbar button.btn-print{background:#10b981;color:white;} .print-toolbar button.btn-close{background:#ef4444;color:white;}
+[contenteditable]{outline:1.5px dashed #93c5fd;border-radius:3px;padding:1px 3px;}[contenteditable]:focus{outline:2px solid #3b82f6;background:#eff6ff;}
+body{padding-top:52px;}@media print{.print-toolbar{display:none!important;}body{padding-top:0!important;}[contenteditable]{outline:none!important;background:transparent!important;}}
+</style></head><body>
+<div class="print-toolbar"><span class="ptitle">✏️ ${_sanitize(titleDoc)} - ${_sanitize(data.nombres)}</span>
+<button class="btn-print" onclick="window.print()">🖨️ Imprimir ahora</button>
+<button class="btn-close" onclick="window.close()">✕ Cerrar</button></div>
+<div contenteditable="false">${header}</div><div contenteditable="true" spellcheck="false">${bodyHtml}</div></body></html>`;
+  const w = window.open("", "_blank", "width=870,height=1100");
+  if (!w) { alert("⚠️ El navegador bloqueó la ventana de impresión. Permita ventanas emergentes y reintente."); return; }
+  w.document.write(html); w.document.close(); w.focus();
+};
+
+// ══════════════════════════════════════════════════════════════════════════
 // GENERADOR DE CERTIFICADO PARA PORTAL (usa datos de siso_portal_doc_*)
 // Reutiliza _generarCertificadoHTMLNormalizado con mapeo de campos
 // ══════════════════════════════════════════════════════════════════════════
@@ -24513,9 +24667,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           const w = window.open("", "_blank", "width=920,height=1150");
                           if (w) { w.document.write(html.replace("</body>", '<div class="np-dl"><button onclick="window.print()">📥 Guardar PDF</button></div></body>')); w.document.close(); }
                         } else if (selected[0] === "historia") { _printHCClean(); }
-                        else if (selected[0] === "formula") { openPrintWindow("formula", "Fórmula Médica"); }
-                        else if (selected[0] === "derivacion") { openPrintWindow("derivacion", "Derivación / Interconsulta"); }
-                        else if (selected[0] === "examenes") { handlePrint("Exámenes-" + data.nombres); }
+                        else if (selected[0] === "formula") { const _ips = currentUser?.empresaId ? companies.find(c => c.id === currentUser.empresaId) : null; _openPrintRecetaDeriv("formula", "Fórmula Médica", data, activeDoctorData, activeSignature, _ips); }
+                        else if (selected[0] === "derivacion") { const _ips = currentUser?.empresaId ? companies.find(c => c.id === currentUser.empresaId) : null; _openPrintRecetaDeriv("derivacion", "Derivación / Interconsulta", data, activeDoctorData, activeSignature, _ips); }
+                        else if (selected[0] === "examenes") { const _ips = currentUser?.empresaId ? companies.find(c => c.id === currentUser.empresaId) : null; _openPrintRecetaDeriv("examenes", "Solicitud de Exámenes", data, activeDoctorData, activeSignature, _ips); }
                         else if (selected[0] === "incapacidad") {
                           // Incapacidad premium via Blob URL
                           const _inc = data.incapacidad || {};
