@@ -37,22 +37,13 @@ function corsHeaders(origin) {
 // empieza con 'gz:' se trata como JSON plano legacy (lee igual que antes).
 // Tanto compress como decompress tienen fallback: nunca lanzan excepción.
 // ─────────────────────────────────────────────────────────────────────────────
+// FIX 2026-06-18: compresión DESACTIVADA. Causó 500 en producción (datos
+// guardados como gz: que no se descomprimían bien en el edge → JSON.parse
+// fallaba). Como la limpieza de huérfanos dejó D1 al ~10%, NO se necesita
+// comprimir. Escribimos JSON plano (cero riesgo). decompressValue se mantiene
+// para leer cualquier valor gz: legacy que aún exista (retrocompatibilidad).
 async function compressValue(text) {
-  try {
-    const stream = new CompressionStream("gzip");
-    const writer = stream.writable.getWriter();
-    writer.write(new TextEncoder().encode(text));
-    writer.close();
-    const buf = await new Response(stream.readable).arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 8192) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-    }
-    return "gz:" + btoa(binary);
-  } catch (e) {
-    return text; // fallback: guardar sin comprimir
-  }
+  return text; // no-op: guardar siempre JSON plano
 }
 async function decompressValue(stored) {
   if (typeof stored !== "string" || !stored.startsWith("gz:")) return stored;
