@@ -843,7 +843,7 @@ function CrearCuentaModal({ onClose, onCreate, companies, consecutivoSiguiente, 
             <label className="text-[10px] font-bold text-gray-700 uppercase block mb-1">Tipo</label>
             <select value={tipo} onChange={e => setTipo(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm">
               <option value="individual">Individual</option>
-              <option value="bloque_periodico">Bloque periódico (>3 trabajadores)</option>
+              <option value="bloque_periodico">Bloque periódico ({'>'}3 trabajadores)</option>
             </select>
           </div>
           <div>
