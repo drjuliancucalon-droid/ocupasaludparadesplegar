@@ -1972,6 +1972,28 @@ const _rePublicarPortalTodos = async (patients, activeDoctorData, activeSignatur
     }
   }
 
+  // ── CAPA 2 (FIX 2026-06-18): consolidar variantes de NIT que difieren solo por
+  // el dígito de verificación (una clave es la otra + 1 dígito al final). Evita
+  // que los trabajadores de una empresa queden divididos en 2 claves de portal al
+  // re-publicar tras editar/reabrir una HC. Se fusiona en la forma más corta (sin
+  // DV) como canónica. La Capa 1 (lectura) ya une variantes, esto además mantiene
+  // los datos en una sola clave desde el origen. ──
+  {
+    const _nits = Object.keys(empresaIdx).sort((a, b) => a.length - b.length);
+    for (const a of _nits) {
+      if (!empresaIdx[a]) continue;
+      for (const b of _nits) {
+        if (a === b || !empresaIdx[b]) continue;
+        if (b.length === a.length + 1 && b.startsWith(a)) {
+          // b es a + 1 dígito (DV) → fusionar b dentro de a (canónica = más corta)
+          for (const d of empresaIdx[b].documentos) empresaIdx[a].documentos.add(d);
+          if (!empresaIdx[a].nombre && empresaIdx[b].nombre) empresaIdx[a].nombre = empresaIdx[b].nombre;
+          delete empresaIdx[b];
+        }
+      }
+    }
+  }
+
   // ── 3. Upsert masivo: portal rows + HC rows en 1-2 requests ──
   const [portalResult, hcResult] = await Promise.all([
     _sbBulkSet(portalRows),
@@ -15985,22 +16007,30 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         }
 
         try {
-          // 1) Buscar por NIT en índice — probar variantes (con/sin DV)
+          // 1) Buscar por NIT en índice — CAPA 1 (FIX 2026-06-18): UNIR todas las
+          // variantes de NIT (con/sin DV), NO detenerse en la primera. Evita que
+          // trabajadores "desaparezcan" del portal cuando los datos quedan divididos
+          // entre claves de NIT distintas (por reapertura/edición de HC que re-publica
+          // con DV diferente). La unión por cédula garantiza ver a TODOS.
           let empresaIdx = null;
-          // Intentar NIT exacto
-          const r1 = await fetchKey("siso_portal_empresa_" + nitClean);
-          if (r1.ok && r1.data) empresaIdx = r1.data;
-          // Si no encontró, probar agregando dígitos comunes (0-9) al final (DV)
-          if (!empresaIdx && nitClean.length >= 6) {
-            for (let dv = 0; dv <= 9; dv++) {
-              const r1b = await fetchKey("siso_portal_empresa_" + nitClean + dv);
-              if (r1b.ok && r1b.data) { empresaIdx = r1b.data; break; }
+          {
+            const _docsAll = [];
+            const _seenDoc = new Set();
+            for (const nv of nitVariants) {
+              const ri = await fetchKey("siso_portal_empresa_" + nv);
+              if (ri.ok && ri.data) {
+                if (!empresaIdx) empresaIdx = { ...ri.data, documentos: [] };
+                else {
+                  if (!empresaIdx.nombre && ri.data.nombre) empresaIdx.nombre = ri.data.nombre;
+                  if (!empresaIdx.codigoAcceso && ri.data.codigoAcceso) empresaIdx.codigoAcceso = ri.data.codigoAcceso;
+                }
+                for (const d of (ri.data.documentos || [])) {
+                  const dn = String(d).replace(/\s/g, "").trim();
+                  if (dn && !_seenDoc.has(dn)) { _seenDoc.add(dn); _docsAll.push(dn); }
+                }
+              }
             }
-          }
-          // Si no encontró, probar quitando último dígito (quizás el DV sobra)
-          if (!empresaIdx && nitClean.length > 6) {
-            const r1c = await fetchKey("siso_portal_empresa_" + nitClean.slice(0, -1));
-            if (r1c.ok && r1c.data) empresaIdx = r1c.data;
+            if (empresaIdx) empresaIdx.documentos = _docsAll;
           }
           // 2) Si no encontró por NIT, buscar por nombre en los índices
           if (!empresaIdx && qLower.length >= 3) {
@@ -16033,15 +16063,28 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           // tampoco hay atenciones agrupadas Y documentos[] está vacío, mostrar
           // el mensaje informativo.
 
-          // 1) Cargar atenciones agrupadas (con todas las variantes NIT)
+          // 1) Cargar atenciones agrupadas — CAPA 1: UNIR todas las variantes de NIT
+          // (no break en la primera). Unión por cédula; preserva firma/médico/nit del
+          // primer agregado encontrado como base.
           let atencionesGrupo = null;
           let nitConAtenciones = null;
-          for (const nv of nitVariants) {
-            const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nv);
-            if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
-              atencionesGrupo = rAt.data;
-              nitConAtenciones = nv;
-              break;
+          {
+            const _atMap = new Map();
+            let _base = null, _firmaR = "", _drR = null;
+            for (const nv of nitVariants) {
+              const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nv);
+              if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
+                if (!_base) { _base = rAt.data; nitConAtenciones = nv; }
+                if (!_firmaR && rAt.data._firma) _firmaR = rAt.data._firma;
+                if (!_drR && rAt.data._doctorData) _drR = rAt.data._doctorData;
+                for (const a of rAt.data.atenciones) {
+                  const dn = String(a?.docNumero || "").replace(/\s/g, "").trim();
+                  if (dn && !_atMap.has(dn)) _atMap.set(dn, a);
+                }
+              }
+            }
+            if (_atMap.size > 0) {
+              atencionesGrupo = { ..._base, atenciones: [..._atMap.values()], _firma: _firmaR || _base._firma, _doctorData: _drR || _base._doctorData };
             }
           }
 
