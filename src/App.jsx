@@ -308,37 +308,64 @@ const _sisoStableOrigin = () => {
 };
 // ─────────────────────────────────────────────────────────────────────────────
 // Acceso bajo nivel al Worker D1 (sin chunking) — NO usar fuera de este módulo.
+// ── LIMITADOR DE CONCURRENCIA + REINTENTO (FIX 2026-06-18) ───────────────────
+// El free tier de Cloudflare rechaza ~15-20% de las peticiones bajo ráfaga
+// concurrente (causaba 502/CORS transitorios en consola al sincronizar/crear HC).
+// Solución: cap de 5 peticiones simultáneas al Worker + reintento con backoff de
+// fallos transitorios (red / 429 / 5xx). Los 4xx (salvo 429) NO se reintentan.
+let _wInFlight = 0;
+const _wWaitQ = [];
+const _W_MAX_CONCURRENT = 5;
+const _wAcquire = () => new Promise((resolve) => {
+  if (_wInFlight < _W_MAX_CONCURRENT) { _wInFlight++; resolve(); }
+  else _wWaitQ.push(resolve);
+});
+const _wRelease = () => {
+  const next = _wWaitQ.shift();
+  if (next) next();          // transfiere el slot (mantiene _wInFlight)
+  else _wInFlight--;
+};
+const _workerFetch = async (url, opts = {}, retries = 3) => {
+  await _wAcquire();
+  try {
+    for (let attempt = 0; ; attempt++) {
+      let r = null;
+      try { r = await fetch(url, opts); } catch { r = null; }
+      // Éxito, o error definitivo (4xx que no sea 429) → devolver tal cual
+      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) return r;
+      // Transitorio (null / 429 / 5xx): reintentar si quedan intentos
+      if (attempt >= retries) return r;
+      await new Promise((res) => setTimeout(res, 200 * Math.pow(2, attempt))); // 200/400/800ms
+    }
+  } finally {
+    _wRelease();
+  }
+};
+
 const _workerSetRaw = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
-  try {
-    const r = await fetch(`${_WORKER_URL}/store`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
-      body: JSON.stringify({ key, value }),
-    });
-    return r.ok;
-  } catch { return false; }
+  const r = await _workerFetch(`${_WORKER_URL}/store`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
+    body: JSON.stringify({ key, value }),
+  });
+  return !!(r && r.ok);
 };
 const _workerGetRaw = async (key) => {
   if (!_WORKER_TOKEN) return null;
-  try {
-    const r = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
-      headers: { "X-Siso-Token": _WORKER_TOKEN },
-    });
-    if (!r.ok) return null;
-    const data = await r.json();
-    return data[0]?.value ?? null;
-  } catch { return null; }
+  const r = await _workerFetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
+    headers: { "X-Siso-Token": _WORKER_TOKEN },
+  });
+  if (!r || !r.ok) return null;
+  try { const data = await r.json(); return data[0]?.value ?? null; } catch { return null; }
 };
 const _workerDeleteRaw = async (key) => {
   if (!_WORKER_TOKEN) return false;
-  try {
-    const r = await fetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
-      method: "DELETE",
-      headers: { "X-Siso-Token": _WORKER_TOKEN },
-    });
-    return r.ok;
-  } catch { return false; }
+  const r = await _workerFetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+    headers: { "X-Siso-Token": _WORKER_TOKEN },
+  });
+  return !!(r && r.ok);
 };
 
 // Umbrales de auto-chunking — el bind de D1 ronda 1 MB; dejamos margen.
