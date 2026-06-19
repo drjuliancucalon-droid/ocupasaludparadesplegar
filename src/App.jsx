@@ -13318,9 +13318,19 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
       ? doctorData.telefono
       : "";
   const nomMail = doctorData && doctorData.email ? doctorData.email : "";
-  const sigImg = signature
+  // FIX 2026-06-18: firma resiliente. Si el caller pasa signature vacío o no-imagen
+  // (ej. PC nuevo donde activeSignature aún no cargó), caer a la firma EMBEBIDA en
+  // los datos (data._firma) o del médico. Evita la imagen rota en cualquier equipo.
+  const _isImgSrc = (s) => typeof s === "string" && (s.startsWith("data:") || s.startsWith("http"));
+  const _sigResolved = _isImgSrc(signature) ? signature
+    : _isImgSrc(data && data._firma) ? data._firma
+    : _isImgSrc(data && data.firma) ? data.firma
+    : _isImgSrc(doctorData && doctorData.firma) ? doctorData.firma
+    : _isImgSrc(doctorData && doctorData.signature) ? doctorData.signature
+    : "";
+  const sigImg = _sigResolved
     ? '<img src="' +
-      signature +
+      _sigResolved +
       '" style="max-height:68px;display:block;margin:0 auto 2px;" alt="Firma"/>'
     : '<div style="height:60px;"></div>';
   const tipoExamen = (data.tipoExamen || "").toUpperCase();
