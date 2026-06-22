@@ -13735,7 +13735,7 @@ const _BASE_PRINT_STYLE_MOD = `
   .sig-line-top{border-top:2px solid #222;padding-top:4px;font-size:7.5pt;font-weight:700;}
   @media print{body{font-size:9pt;} .no-print{display:none!important;}}
 `;
-const _openPrintRecetaDeriv = (section, titleDoc, data, doctor, signature, miIPS) => {
+const _openPrintRecetaDeriv = (section, titleDoc, data, doctor, signature, miIPS, opts = {}) => {
   const accent = section === "formula" ? "#059669" : section === "derivacion" ? "#2563eb" : "#0d9488";
   const header = _mkPrintHeaderMod(titleDoc, accent, data, doctor, miIPS);
   const sigDoc = `<div class="sig-line" style="text-align:center;">
@@ -13798,6 +13798,14 @@ const _openPrintRecetaDeriv = (section, titleDoc, data, doctor, signature, miIPS
         <p style="font-size:8pt;color:#6b7280;margin-top:10px;padding-top:6px;border-top:1px solid #ccfbf1;"><b>Diagnóstico:</b> ${_sanitize(data.diagnosticoPrincipal || (data.diagnosticos || [])[0]?.descripcion || "--")}</p></div>
       <div class="sig-block"><div class="sig-line"><div class="sig-line-top">Firma del Paciente / Responsable</div>
         <p style="font-size:7.5pt;color:#6b7280;margin:2px 0;">Nombre: _______________________</p></div>${sigDoc}</div>`;
+  }
+  // Modo "solo HTML": devuelve cuerpo + estilos sin abrir ventana, para componer
+  // un PDF combinado multi-documento (no abre popup).
+  if (opts.returnBody) {
+    return {
+      styles: _BASE_PRINT_STYLE_MOD,
+      body: `<div contenteditable="false">${header}</div><div>${bodyHtml}</div>`,
+    };
   }
   const html = `<!DOCTYPE html><html lang="es"><head><title>${_sanitize(titleDoc)} - ${_sanitize(data.nombres)}</title><meta charset="UTF-8"/><style>
 ${_BASE_PRINT_STYLE_MOD}
@@ -25148,7 +25156,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
               {showEnviarPanel && dataType === "ocupacional" && (() => {
                 const hasMeds = (data.formulaMedicamentos || []).length > 0;
                 const hasDeriv = (data.derivaciones || []).length > 0;
-                const hasExams = (data.examenesSolicitados || []).length > 0;
+                // FIX 2026-06-22: los exámenes se guardan en data.solicitudExamenes
+                // (no en examenesSolicitados). Antes este check usaba el campo equivocado
+                // y siempre mostraba "Sin datos" pese a tener exámenes solicitados.
+                const hasExams = (data.solicitudExamenes || []).length > 0;
                 return (
                 <div className="absolute right-0 top-12 z-50 bg-white border border-gray-200 rounded-xl p-3 shadow-2xl w-80">
                   <p className="text-[10px] font-black text-gray-700 uppercase mb-2">📤 Seleccione documentos y presione "Descargar / Enviar":</p>
@@ -25232,6 +25243,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         const _nALM = (n) => { try { return numeroALetras(Number(n)); } catch { return String(n); } };
                         const _acM = "#dc2626";
                         pages.push(`<div style="page-break-before:always;padding:14mm 16mm;font-family:Arial,sans-serif;font-size:9.5pt;color:#111;"><h2 style="font-size:13pt;font-weight:900;color:${_acM};text-align:center;text-transform:uppercase;border-bottom:3px solid ${_acM};padding-bottom:8px;margin-bottom:14px;">INCAPACIDAD MÉDICA</h2><div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:14px;margin-bottom:14px;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;"><div><p style="margin:3px 0;"><b>Paciente:</b> ${_sanitize(data.nombres||"--")}</p><p style="margin:3px 0;"><b>Doc:</b> ${_sanitize(data.docNumero||"--")}</p><p style="margin:3px 0;"><b>EPS:</b> ${_sanitize(data.eps||"--")}</p><p style="margin:3px 0;"><b>Cargo:</b> ${_sanitize(data.cargo||"--")}</p></div><div style="text-align:center;background:#fee2e2;border-radius:6px;padding:10px;"><p style="font-size:8pt;font-weight:900;color:${_acM};text-transform:uppercase;margin:0 0 4px 0;">Días</p><p style="font-size:32pt;font-weight:900;color:${_acM};line-height:1;margin:0;">${_incM.dias||0}</p><p style="font-size:8pt;color:${_acM};font-weight:700;">${_nALM(_incM.dias||0)} DÍAS</p></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;border-top:1px solid #fecaca;padding-top:10px;"><p style="margin:3px 0;"><b>Origen:</b> ${_sanitize(_incM.origen||"--")}</p><p style="margin:3px 0;"><b>Inicio:</b> ${_sanitize(_incM.desde||"--")}</p><p style="margin:3px 0;"><b>Fin:</b> ${_sanitize(_incM.hasta||"--")}</p><p style="margin:3px 0;"><b>Diagnóstico:</b> ${_sanitize(_incM.diagnostico||"--")}</p></div></div></div>`);
+                      }
+
+                      // Fórmula / Derivación / Exámenes en multi-doc (modo solo HTML)
+                      {
+                        const _ipsRD = currentUser?.empresaId ? companies.find(c => c.id === currentUser.empresaId) : null;
+                        const _rdMap = [
+                          { key: "formula", section: "formula", title: "Fórmula Médica" },
+                          { key: "derivacion", section: "derivacion", title: "Derivación / Interconsulta" },
+                          { key: "examenes", section: "examenes", title: "Solicitud de Exámenes" },
+                        ];
+                        for (const _rd of _rdMap) {
+                          if (!selected.includes(_rd.key)) continue;
+                          const _r = _openPrintRecetaDeriv(_rd.section, _rd.title, data, activeDoctorData, activeSignature, _ipsRD, { returnBody: true });
+                          if (_r && _r.body) {
+                            if (_r.styles) allStyles.push(_r.styles);
+                            pages.push('<div style="page-break-before:always;padding:14mm 16mm;">' + _r.body + '</div>');
+                          }
+                        }
                       }
 
                       if (pages.length === 0) { showAlert("No se pudo generar los documentos."); return; }
