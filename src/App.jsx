@@ -15696,15 +15696,37 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
     for (let dv = 0; dv <= 9; dv++) tryNits.push(nitBusq + dv);
     if (nitBusq.length > 6) tryNits.push(nitBusq.slice(0, -1));
     (async () => {
+      // FIX 2026-06-22 (Capa B): NO romper en la primera variante de NIT. Recolectar
+      // los docs de TODAS las variantes (con/sin DV) y FUSIONAR sus periodos por clave
+      // de periodo, tomando cada documento (informe/cuenta/custodia/certificados) de
+      // donde exista. Evita que la cuenta de cobro (u otro doc) "no aparezca" cuando
+      // quedó bajo una variante de NIT distinta o el read devolvió una copia incompleta.
+      let base = null;
+      const periodMap = new Map(); // periodo -> objeto periodo fusionado
       for (const n of tryNits) {
-        try {
-          // LECTURA COMPARATIVA D1↔SB: si AMBOS responden devuelve el más
-          // actualizado (por updatedAt). Si solo uno responde lo usa.
-          // D1 es autoritativo; SB es backup; cuando SB es más reciente se
-          // dispara catch-up para que D1 quede al día.
-          const val = await _readSmart(`siso_portal_empresa_docs_${n}`);
-          if (val) { setPortalDocs(val); break; }
-        } catch {}
+        let val = null;
+        try { val = await _readSmart(`siso_portal_empresa_docs_${n}`); } catch {}
+        if (!val || !Array.isArray(val.periodos)) continue;
+        if (!base) base = { nit: val.nit || n, nombre: val.nombre || "", codigoAcceso: val.codigoAcceso };
+        else {
+          if (!base.nombre && val.nombre) base.nombre = val.nombre;
+          if (!base.codigoAcceso && val.codigoAcceso) base.codigoAcceso = val.codigoAcceso;
+        }
+        for (const per of val.periodos) {
+          const k = per.periodo || "";
+          const prev = periodMap.get(k) || { periodo: k };
+          periodMap.set(k, {
+            ...prev, ...per,
+            informe: per.informe || prev.informe || null,
+            cuenta: per.cuenta || prev.cuenta || null,
+            custodia: per.custodia || prev.custodia || null,
+            certificados: (per.certificados && per.certificados.count) ? per.certificados : (prev.certificados || per.certificados || null),
+          });
+        }
+      }
+      if (base && periodMap.size > 0) {
+        base.periodos = [...periodMap.values()].sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
+        setPortalDocs(base);
       }
       setDocsLoaded(true);
     })();
