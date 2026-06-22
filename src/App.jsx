@@ -17952,54 +17952,74 @@ function AppInner() {
     if (!comp) { showAlert("Selecciona una empresa."); return; }
     const nitClean = (comp.nit || "").replace(/[^0-9]/g, "");
     const empName = comp.nombre || "empresa";
-    showAlert("📦 Generando paquete ZIP...\n\nEsto puede tardar unos segundos. El archivo se descargará automáticamente.");
+    const _wrapDoc = (inner) => `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><style>*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{margin:0;background:#fff;font-family:Arial,Helvetica,sans-serif;width:816px;color:#111;}</style></head><body>${inner}</body></html>`;
+    showAlert("📦 Generando paquete ZIP...\n\nPuede tardar unos segundos. Se descargará automáticamente.");
     const zip = new JSZip();
     let total = 0;
-    // 1) Certificados (todos los trabajadores cerrados, hidratados desde portal_doc)
+
+    // Leer el periodo EMITIDO del portal (fuente de verdad; funciona aunque el estado
+    // local haya perdido informe/cuenta/custodia al reentrar). Une variantes de NIT.
+    let per = null;
     try {
-      const cerrados = patientsList.filter((p) => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada");
-      const hidratados = [];
-      for (const p of cerrados) {
-        const cc = (p.docNumero || "").replace(/\s/g, "");
-        let pd = null;
-        if (_WORKER_TOKEN && cc) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
-        hidratados.push(pd || p);
+      const variants = [nitClean]; for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv); if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
+      const pMap = new Map();
+      for (const nv of variants) {
+        let docs = null; try { docs = await _workerGet(`siso_portal_empresa_docs_${nv}`); } catch {}
+        if (!docs || !Array.isArray(docs.periodos)) continue;
+        for (const pp of docs.periodos) { const k = pp.periodo || ""; const prev = pMap.get(k) || { periodo: k }; pMap.set(k, { ...prev, ...pp, informe: pp.informe || prev.informe || null, cuenta: pp.cuenta || prev.cuenta || null, custodia: pp.custodia || prev.custodia || null, certificados: (pp.certificados && pp.certificados.count) ? pp.certificados : (prev.certificados || pp.certificados || null) }); }
       }
-      if (hidratados.length) {
-        const html = _buildCertificadosEmpresaHTML(hidratados);
-        const blob = await _htmlToPdfBlobMod(html);
-        zip.file("01_Certificados_de_Aptitud.pdf", blob); total++;
+      const periodos = [...pMap.values()].sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
+      per = periodos.find(p => (p.certificados?.count > 0) || p.informe || p.cuenta || p.custodia) || null;
+    } catch {}
+
+    // 1) Certificados — uno por trabajador con el generador REAL (idéntico a la app).
+    try {
+      let cedulas = (per?.certificados?.documentos || []).map(d => String(d).replace(/\s/g, "")).filter(Boolean);
+      if (!cedulas.length) cedulas = patientsList.filter(p => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada").map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean);
+      let idx = 0;
+      for (const cc of cedulas) {
+        let pd = null;
+        if (_WORKER_TOKEN) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
+        if (!pd) pd = patientsList.find(p => (p.docNumero || "").replace(/\s/g, "") === cc) || null;
+        if (!pd) continue;
+        try {
+          const html = _generarCertificadoDesdePortal(pd); // HTML completo, diseño real
+          const blob = await _htmlToPdfBlobMod(html);
+          idx++;
+          const nm = (pd.nombres || "Trab").replace(/[^a-zA-Z0-9 ]/g, "").trim().substring(0, 28);
+          zip.file(`01_Certificados/${String(idx).padStart(2, "0")}_${nm}_${cc}.pdf`, blob); total++;
+        } catch (e) { console.warn("[ZIP] cert", cc, e?.message); }
       }
     } catch (e) { console.warn("[ZIP] certificados:", e?.message); }
-    // 2) Informe epidemiológico
+
+    // 2) Informe epidemiológico (portal con respaldo local)
     try {
-      const inf = savedInformes.find((i) => i.empresaId === selectedCompanyReport && !i.tipo);
-      if (inf) {
-        const resumen = (inf.resumen || inf.aiResult || "").toString();
-        const html = `<div style="font-family:Arial,sans-serif;width:816px;padding:40px;color:#111;"><h1 style="color:#1e3a8a;font-size:18pt;text-align:center;">DIAGNÓSTICO DE CONDICIONES DE SALUD</h1><h2 style="text-align:center;color:#374151;font-size:13pt;">${_sanitize(empName)}</h2><p style="text-align:center;color:#6b7280;font-size:10pt;">Población evaluada: ${inf.totalPacientes || ""} · ${_sanitize(inf.periodo || "")} · ${_sanitize(inf.fecha || "")}</p><hr/><div style="font-size:10pt;line-height:1.6;white-space:pre-wrap;">${_sanitize(resumen).replace(/\n/g, "<br/>")}</div></div>`;
-        const blob = await _htmlToPdfBlobMod(html);
-        zip.file("02_Informe_Epidemiologico.pdf", blob); total++;
+      const local = savedInformes.find(i => i.empresaId === selectedCompanyReport && !i.tipo);
+      const resumen = (local?.resumen || per?.informe?.resumen || local?.aiResult || "").toString();
+      const totPac = local?.totalPacientes || per?.informe?.totalPacientes || "";
+      const fechaInf = local?.fecha || per?.informe?.fecha || "";
+      if (per?.informe || local) {
+        const inner = `<div style="padding:40px;"><h1 style="color:#1e3a8a;font-size:18pt;text-align:center;margin:0 0 4px;">DIAGNÓSTICO DE CONDICIONES DE SALUD</h1><h2 style="text-align:center;color:#374151;font-size:13pt;margin:0;">${_sanitize(empName)}</h2><p style="text-align:center;color:#6b7280;font-size:10pt;">Población evaluada: ${totPac} · ${_sanitize(per?.periodo || "")} · ${_sanitize(fechaInf)}</p><hr style="border:none;border-top:2px solid #1e3a8a;margin:14px 0;"/>${resumen ? `<div style="font-size:10pt;line-height:1.6;white-space:pre-wrap;">${_sanitize(resumen).replace(/\n/g, "<br/>")}</div>` : `<p style="color:#6b7280;font-style:italic;">Informe epidemiológico emitido. El resumen detallado está disponible en la plataforma.</p>`}</div>`;
+        const blob = await _htmlToPdfBlobMod(_wrapDoc(inner)); zip.file("02_Informe_Epidemiologico.pdf", blob); total++;
       }
     } catch (e) { console.warn("[ZIP] informe:", e?.message); }
-    // 3) Cuenta de cobro
+
+    // 3) Cuenta de cobro (portal con respaldo local)
     try {
-      const bill = savedBillsList.find((b) => b && !b._deleted && (b.companyId === selectedCompanyReport || (b.clientNit || "").replace(/[^0-9]/g, "").includes(nitClean) || (b.clientName || "").toUpperCase() === empName.toUpperCase()));
-      if (bill) {
-        const html = `<div style="font-family:Arial,sans-serif;width:816px;padding:48px;color:#111;"><div style="text-align:center;border-bottom:3px solid #c2410c;padding-bottom:12px;margin-bottom:20px;"><p style="font-size:22pt;font-weight:900;text-transform:uppercase;margin:0;">Cuenta de Cobro</p><p style="font-size:11pt;color:#6b7280;margin:4px 0;">No. ${String(bill.number || "1").padStart(3, "0")} · ${_sanitize(bill.date || "")}</p></div><p><b>Cliente:</b> ${_sanitize(bill.clientName || empName)}</p><p><b>NIT:</b> ${_sanitize(bill.clientNit || comp.nit || "")}</p><p style="margin-top:14px;"><b>Concepto:</b><br/>${_sanitize(bill.concept || "Servicios médicos ocupacionales")}</p><div style="margin-top:24px;text-align:right;"><p style="font-size:18pt;font-weight:900;color:#065f46;">Total: $${Number(bill.amount || 0).toLocaleString("es-CO")}</p>${bill.amountWords ? `<p style="font-size:9pt;color:#6b7280;">(${_sanitize(bill.amountWords)})</p>` : ""}</div></div>`;
-        const blob = await _htmlToPdfBlobMod(html);
-        zip.file("03_Cuenta_de_Cobro_No" + String(bill.number || "1").padStart(3, "0") + ".pdf", blob); total++;
+      const localBill = savedBillsList.find(b => b && !b._deleted && (b.companyId === selectedCompanyReport || (b.clientNit || "").replace(/[^0-9]/g, "").includes(nitClean) || (b.clientName || "").toUpperCase() === empName.toUpperCase()));
+      const c = localBill || per?.cuenta;
+      if (c) {
+        const inner = `<div style="padding:48px;"><div style="text-align:center;border-bottom:3px solid #c2410c;padding-bottom:12px;margin-bottom:20px;"><p style="font-size:22pt;font-weight:900;text-transform:uppercase;margin:0;">Cuenta de Cobro</p><p style="font-size:11pt;color:#6b7280;margin:4px 0;">No. ${String(c.number || "1").padStart(3, "0")} · ${_sanitize(c.date || "")}</p></div><p><b>Cliente:</b> ${_sanitize(c.clientName || empName)}</p><p><b>NIT:</b> ${_sanitize(c.clientNit || comp.nit || "")}</p><p style="margin-top:14px;"><b>Concepto:</b><br/>${_sanitize(c.concept || "Servicios médicos ocupacionales")}</p><div style="margin-top:24px;text-align:right;"><p style="font-size:18pt;font-weight:900;color:#065f46;">Total: $${Number(c.amount || 0).toLocaleString("es-CO")}</p>${c.amountWords ? `<p style="font-size:9pt;color:#6b7280;">(${_sanitize(c.amountWords)})</p>` : ""}</div><div style="margin-top:36px;font-size:9pt;color:#374151;border-top:1px solid #e5e7eb;padding-top:12px;">${c.doctorNombre ? `<p style="margin:2px 0;"><b>${_sanitize(c.doctorNombre)}</b></p><p style="margin:2px 0;">${_sanitize(c.doctorTitulo || "")} · Lic: ${_sanitize(c.doctorLicencia || "")}</p>` : ""}${c.bankName ? `<p style="margin:2px 0;">Banco: ${_sanitize(c.bankName)} · ${_sanitize(c.accountType || "")} ${_sanitize(c.accountNumber || "")}</p>` : ""}</div></div>`;
+        const blob = await _htmlToPdfBlobMod(_wrapDoc(inner)); zip.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
       }
     } catch (e) { console.warn("[ZIP] cuenta:", e?.message); }
-    // 4) Carta de custodia
+
+    // 4) Carta de custodia (portal con respaldo local)
     try {
-      let cartas = null;
-      if (_WORKER_TOKEN) { try { cartas = await _workerGet("siso_cartas_custodia"); } catch {} }
-      const cust = (cartas || savedInformes || []).find((c) => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase()) && (c.tipo === "custodia" || c.docTitulo || c.firma || c.firmaSrc));
-      if (cust) {
-        const html = _buildCartaCustodiaHTML(cust);
-        const blob = await _htmlToPdfBlobMod(html);
-        zip.file("04_Carta_de_Custodia.pdf", blob); total++;
-      }
+      let cartas = null; if (_WORKER_TOKEN) { try { cartas = await _workerGet("siso_cartas_custodia"); } catch {} }
+      let cust = (cartas || []).find(c => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase()));
+      if (!cust && per?.custodia) { const pc = per.custodia; cust = { empresaNombre: empName, docNombre: pc.medicoNombre, medicoNombre: pc.medicoNombre, docTitulo: pc.medicoTitulo, docLicencia: pc.medicoLicencia, docCC: pc.medicoCC, docEmail: pc.medicoEmail, docCel: pc.medicoTel, docCiudad: pc.medicoCiudad, firma: pc.firma, firmaSrc: pc.firma, fecha: pc.fecha }; }
+      if (cust) { const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCartaCustodiaHTML(cust))); zip.file("04_Carta_de_Custodia.pdf", blob); total++; }
     } catch (e) { console.warn("[ZIP] custodia:", e?.message); }
 
     if (!total) { showAlert("⚠️ No se pudo generar ningún documento. Verifica que la empresa tenga documentos emitidos."); return; }
@@ -57720,13 +57740,18 @@ body{padding-top:52px;}
       {/* MODAL: Envío Integral por Empresa */}
       {showEnvioIntegral && envioIntegralEmpresa && (() => {
         const emp = envioIntegralEmpresa;
-        const hasInforme = savedInformes.some(i => i.empresaId === emp.empresaId);
-        const hasCerts = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada").length > 0;
-        const certCount = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada").length;
-        const hasCuenta = savedBillsList.some(b => (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && !b._deleted);
+        // FIX 2026-06-22: el modal ahora reconoce lo YA EMITIDO en el portal (no solo
+        // el estado local). Si el documento existe en el portal (emitidoEmpresa.docs),
+        // se marca ✅ aunque el estado local lo haya perdido al reentrar. Así "guardado
+        // una vez = consultable siempre".
+        const _emit = (emitidoEmpresa && emp.empresaId === selectedCompanyReport) ? emitidoEmpresa.docs : null;
+        const hasInforme = savedInformes.some(i => i.empresaId === emp.empresaId) || !!_emit?.informe;
+        const hasCerts = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada").length > 0 || (_emit?.certificados > 0);
+        const certCount = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada").length || (_emit?.certificados || 0);
+        const hasCuenta = savedBillsList.some(b => (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && !b._deleted) || !!_emit?.cuenta;
         const cuentaData = savedBillsList.find(b => (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && !b._deleted);
         // Carta de custodia: check in savedInformes with tipo "custodia"
-        const hasCustodia = savedInformes.some(i => i.empresaId === emp.empresaId && i.tipo === "custodia");
+        const hasCustodia = savedInformes.some(i => i.empresaId === emp.empresaId && i.tipo === "custodia") || !!_emit?.custodia;
         const todoListo = hasInforme && hasCerts && hasCuenta && hasCustodia;
         const comp = companies.find(c => c.id === emp.empresaId);
         return (
@@ -58016,6 +58041,17 @@ body{padding-top:52px;}
                     if (_existVal) {
                       // Prioridad: 1) código en D1/Supabase, 2) código en registro local empresa, 3) código nuevo
                       portalDocsData.codigoAcceso = _existVal.codigoAcceso || comp?.portalCode || codigoAcceso;
+                      // ANTI-PÉRDIDA (FIX 2026-06-22): para el periodo actual, preservar lo
+                      // que YA estaba emitido si el dato local viene nulo. Evita que un
+                      // re-envío con estado local incompleto borre informe/cuenta/custodia.
+                      const _oldSame = (_existVal.periodos || []).find(p => p.periodo === mesActual);
+                      if (_oldSame) {
+                        const np = portalDocsData.periodos[0];
+                        np.informe = np.informe || _oldSame.informe || null;
+                        np.cuenta = np.cuenta || _oldSame.cuenta || null;
+                        np.custodia = np.custodia || _oldSame.custodia || null;
+                        if (!(np.certificados && np.certificados.count) && _oldSame.certificados) np.certificados = _oldSame.certificados;
+                      }
                       if (_existVal.periodos) {
                         const oldPeriodos = _existVal.periodos.filter(p => p.periodo !== mesActual);
                         portalDocsData.periodos = [...portalDocsData.periodos, ...oldPeriodos];
