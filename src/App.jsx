@@ -13969,6 +13969,203 @@ const _buildCartaCustodiaHTML = (c) => {
   </div>`;
 };
 
+// Genera el HTML REAL de la Cuenta de Cobro (réplica fiel de renderBill, CSS en línea).
+// Alimentado del objeto `cuenta` guardado en el portal (siso_portal_empresa_docs).
+const _buildCuentaCobroHTMLMod = (c) => {
+  c = c || {};
+  const ini = (c.doctorNombre || "JC").split(" ").slice(0, 2).map(w => w[0] || "").join("").slice(0, 2).toUpperCase() || "JC";
+  const docNombre = (c.doctorNombre || "JULIAN CUCALON").toUpperCase();
+  const docTitulo = (c.doctorTitulo || "MEDICO ESPECIALISTA EN SST").toUpperCase();
+  const num = String(c.number || "1").padStart(3, "0");
+  const fecha = (() => { try { return getSpanishDate(c.date); } catch { return c.date || ""; } })();
+  const monto = "$ " + Number(c.amount || 0).toLocaleString("es-CO");
+  const son = c.amountWords ? ("Son: " + c.amountWords) : "";
+  return `<div style="font-family:'Arial','Helvetica',sans-serif;color:#1f2937;background:#fff;width:816px;min-height:1056px;padding:60px 64px;box-sizing:border-box;">
+    <!-- Cabecera -->
+    <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:4px solid #059669;padding-bottom:20px;margin-bottom:28px;">
+      <div style="display:flex;align-items:center;gap:11px;">
+        <div style="width:54px;height:54px;background:linear-gradient(135deg,#065f46,#0f766e);border-radius:11px;display:flex;align-items:center;justify-content:center;"><span style="color:#fff;font-weight:900;font-size:17px;">${ini}</span></div>
+        <div><p style="font-size:14pt;font-weight:900;margin:0;color:#1f2937;">DR. ${docNombre}</p><p style="font-size:8pt;color:#4B5563;margin:3px 0 0;">${docTitulo}</p></div>
+      </div>
+      <div style="text-align:right;">
+        <h2 style="font-size:26pt;font-weight:900;color:#1f2937;text-transform:uppercase;letter-spacing:-1px;margin:0;">Cuenta de Cobro</h2>
+        <div style="background:#059669;color:#fff;font-weight:700;padding:2px 14px;border-radius:6px 0 0 6px;margin-top:6px;display:inline-block;">No. ${num}</div>
+      </div>
+    </div>
+    <!-- Cliente / Fecha -->
+    <div style="display:flex;gap:24px;margin-bottom:28px;">
+      <div style="flex:1;padding:16px;background:#f9fafb;border-radius:12px;border:1px solid #f3f4f6;">
+        <p style="font-size:9pt;font-weight:700;color:#9ca3af;text-transform:uppercase;margin:0 0 4px;">Cliente</p>
+        <p style="font-size:14pt;font-weight:900;color:#1f2937;text-transform:uppercase;margin:0;">${_sanitize(c.clientName || "")}</p>
+        <p style="font-size:10pt;color:#4b5563;margin:4px 0 0;">NIT/CC: ${_sanitize(c.clientNit || "")}</p>
+      </div>
+      <div style="flex:1;text-align:right;display:flex;flex-direction:column;justify-content:center;">
+        <p style="font-size:10pt;font-weight:700;color:#9ca3af;text-transform:uppercase;margin:0;">Fecha de Emisión</p>
+        <p style="font-size:11pt;color:#1f2937;margin:4px 0 0;">${_sanitize(fecha)}</p>
+      </div>
+    </div>
+    <!-- Concepto / Valor -->
+    <div style="margin-bottom:24px;">
+      <div style="background:#059669;color:#fff;padding:9px 12px;border-radius:12px 12px 0 0;font-size:9pt;font-weight:700;text-transform:uppercase;display:flex;justify-content:space-between;">
+        <span>Concepto del Servicio</span><span>Valor</span>
+      </div>
+      <div style="border:1px solid #059669;border-radius:0 0 12px 12px;padding:20px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+        <div style="width:74%;font-size:11pt;font-weight:500;color:#1f2937;text-transform:uppercase;line-height:1.6;">${_sanitize(c.concept || "Servicios médicos ocupacionales")}</div>
+        <div style="width:24%;text-align:right;"><p style="font-size:19pt;font-weight:900;color:#111827;margin:0;">${monto}</p></div>
+      </div>
+      ${son ? `<div style="margin-top:6px;text-align:right;"><span style="font-size:9pt;font-style:italic;color:#6b7280;background:#f9fafb;padding:4px 8px;border-radius:5px;display:inline-block;">${_sanitize(son)}</span></div>` : ""}
+    </div>
+    <!-- Pago / Acreedor -->
+    <div style="display:flex;gap:24px;margin-bottom:28px;">
+      <div style="flex:1;">
+        <p style="font-size:9pt;font-weight:700;color:#9ca3af;text-transform:uppercase;margin:0 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">Información de Pago</p>
+        <div style="background:#eff6ff;padding:12px;border-radius:12px;border:1px solid #dbeafe;font-size:9.5pt;color:#1f2937;">
+          <p style="font-weight:700;text-transform:uppercase;margin:0;">${_sanitize(c.bankName || "BANCOLOMBIA")}</p>
+          <p style="margin:2px 0 0;">Tipo: ${_sanitize(c.accountType || "Ahorros")}</p>
+          <p style="font-family:monospace;font-size:11pt;margin:4px 0 0;">No. ${_sanitize(c.accountNumber || "--")}</p>
+          ${c.rut ? `<p style="color:#6b7280;margin:4px 0 0;">RUT: ${_sanitize(c.rut)}</p>` : ""}
+        </div>
+      </div>
+      <div style="flex:1;">
+        <p style="font-size:9pt;font-weight:700;color:#9ca3af;text-transform:uppercase;margin:0 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">Acreedor</p>
+        <div style="font-size:9.5pt;color:#374151;">
+          <p style="font-weight:900;font-size:11pt;margin:0;">${_sanitize(c.doctorNombre || "")}</p>
+          <p style="margin:2px 0 0;">NIT/CC: ${_sanitize((c.doctorCC || "").split(" ")[0])}</p>
+          <p style="margin:2px 0 0;">Lic: ${_sanitize(c.doctorLicencia || "")}</p>
+          <p style="margin:2px 0 0;">Cel: ${_sanitize(c.doctorCel || "")}</p>
+          <p style="margin:2px 0 0;">${_sanitize(c.doctorEmail || "")}</p>
+        </div>
+      </div>
+    </div>
+    <!-- Firma / Juramento -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:40px;">
+      <div style="width:50%;text-align:center;">
+        ${c.firma ? `<img src="${c.firma}" alt="Firma" style="max-height:74px;max-width:200px;object-fit:contain;display:block;margin:0 auto 6px;" />` : `<div style="height:64px;"></div>`}
+        <hr style="height:1px;background:#374151;border:none;margin:0 auto 8px;width:220px;" />
+        <p style="margin:0;font-weight:700;font-size:10pt;">${_sanitize(c.doctorNombre || "")}</p>
+        <p style="margin:0;font-size:8.5pt;color:#4b5563;">${_sanitize(c.doctorTitulo || "")}</p>
+        <p style="margin:0;font-size:8.5pt;color:#4b5563;">CC: ${_sanitize((c.doctorCC || "").split(" ")[0])} · Lic: ${_sanitize(c.doctorLicencia || "")}</p>
+      </div>
+      <div style="width:40%;text-align:right;">
+        <p style="font-size:13px;color:#111;font-weight:700;line-height:1.4;margin:0;">Bajo juramento : Me acojo al Art. 383 E.T. Tarifa mínima 0%. No practicar retención.</p>
+      </div>
+    </div>
+  </div>`;
+};
+
+// Genera el HTML REAL del Informe Epidemiológico (réplica del componente del portal,
+// CSS en línea). `d` = fullData cargado de informe.statsKey = {stats, aiResult, pacientes}.
+const _INF_COLORS = {
+  blue:{bg:"#eff6ff",bd:"#bfdbfe",bar:"#3b82f6",tx:"#1d4ed8",txd:"#1e3a8a"},
+  emerald:{bg:"#ecfdf5",bd:"#a7f3d0",bar:"#10b981",tx:"#047857",txd:"#065f46"},
+  amber:{bg:"#fffbeb",bd:"#fde68a",bar:"#f59e0b",tx:"#b45309",txd:"#92400e"},
+  red:{bg:"#fef2f2",bd:"#fecaca",bar:"#ef4444",tx:"#b91c1c",txd:"#991b1b"},
+  pink:{bg:"#fdf2f8",bd:"#fbcfe8",bar:"#ec4899",tx:"#be185d",txd:"#9d174d"},
+  purple:{bg:"#faf5ff",bd:"#e9d5ff",bar:"#a855f7",tx:"#7e22ce",txd:"#6b21a8"},
+  orange:{bg:"#fff7ed",bd:"#fed7aa",bar:"#f97316",tx:"#c2410c",txd:"#9a3412"},
+  green:{bg:"#f0fdf4",bd:"#bbf7d0",bar:"#22c55e",tx:"#15803d",txd:"#166534"},
+  lime:{bg:"#f7fee7",bd:"#d9f99d",bar:"#84cc16",tx:"#4d7c0f",txd:"#3f6212"},
+  indigo:{bg:"#eef2ff",bd:"#c7d2fe",bar:"#6366f1",tx:"#4338ca",txd:"#3730a3"},
+  teal:{bg:"#f0fdfa",bd:"#99f6e4",bar:"#14b8a6",tx:"#0f766e",txd:"#115e59"},
+  slate:{bg:"#f8fafc",bd:"#cbd5e1",bar:"#64748b",tx:"#334155",txd:"#1e293b"},
+};
+const _infStatBar = (dat, color, total) => {
+  const C = _INF_COLORS[color] || _INF_COLORS.blue;
+  return Object.entries(dat || {}).sort(([, a], [, b]) => b - a).slice(0, 6).map(([k, v]) => {
+    const pct = Math.round((v / Math.max(1, total)) * 100);
+    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+      <span style="font-size:8pt;color:#4b5563;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_sanitize(k || "N/R")}</span>
+      <div style="width:56px;background:#f3f4f6;border-radius:9999px;height:6px;overflow:hidden;flex-shrink:0;"><div style="background:${C.bar};height:100%;border-radius:9999px;width:${pct}%;"></div></div>
+      <span style="font-size:8pt;font-weight:700;color:${C.tx};min-width:24px;text-align:right;">${pct}%</span>
+    </div>`;
+  }).join("");
+};
+const _infBlocks = (arr, total) => arr.filter(t => t.data && Object.keys(t.data).length > 0).map(t => {
+  const C = _INF_COLORS[t.color] || _INF_COLORS.blue;
+  return `<div style="background:${C.bg};border-radius:12px;padding:12px;border:1px solid ${C.bd};">
+    <h4 style="font-weight:700;color:${C.txd};margin:0 0 8px;text-transform:uppercase;font-size:9pt;">${t.title}</h4>
+    ${_infStatBar(t.data, t.color, total)}
+  </div>`;
+}).join("");
+const _buildInformeHTMLMod = (informe, d, empName) => {
+  informe = informe || {}; d = d || {};
+  const total = informe.totalPacientes || 0;
+  const stats = d.stats || {};
+  const aiResult = d.aiResult || null;
+  const pacientes = d.pacientes || [];
+  const _sum = (obj, pred) => Object.entries(obj || {}).filter(([k]) => pred(k.toLowerCase())).reduce((s, [, n]) => s + n, 0);
+  const aptos = _sum(stats.conceptoAptitud, k => k.includes("apto") && !k.includes("no"));
+  const conRestr = _sum(stats.conceptoAptitud, k => k.includes("condic") || k.includes("restricc"));
+  const noAptos = _sum(stats.conceptoAptitud, k => k.includes("no apto"));
+  const kpi = (l, v, color) => { const C = _INF_COLORS[color]; return `<div style="flex:1;background:${C.bg};border:1px solid ${C.bd};border-radius:12px;padding:12px;text-align:center;"><p style="font-size:8pt;color:#6b7280;text-transform:uppercase;font-weight:700;margin:0;">${l}</p><p style="font-size:26pt;font-weight:900;color:${C.bar};margin:4px 0 0;">${v}</p></div>`; };
+  const hasStats = Object.keys(stats).length > 0 && total > 0;
+  const ai = aiResult || {};
+  const aiBlock = (bg, bd, txd, title, body) => `<div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:14px;margin-bottom:12px;"><p style="font-weight:900;color:${txd};font-size:9pt;text-transform:uppercase;margin:0 0 8px;">${title}</p><div style="font-size:9pt;text-align:justify;color:${txd};line-height:1.6;white-space:pre-wrap;">${_sanitize(body)}</div></div>`;
+  return `<div style="font-family:'Arial','Helvetica',sans-serif;color:#1f2937;background:#fff;width:816px;padding:40px 44px;box-sizing:border-box;">
+    <!-- Encabezado -->
+    <div style="text-align:center;margin-bottom:24px;">
+      <h1 style="font-size:18pt;font-weight:900;color:#1e3a8a;margin:0;">DIAGNÓSTICO DE CONDICIONES DE SALUD</h1>
+      <div style="margin-top:8px;display:inline-block;padding:12px;background:#eff6ff;border-radius:8px;border:1px solid #dbeafe;">
+        <p style="font-weight:700;color:#1e40af;font-size:13pt;margin:0;">${_sanitize(empName || "")}</p>
+        <p style="font-size:9pt;color:#6b7280;margin:4px 0 0;">Población evaluada: <strong>${total} trabajadores</strong></p>
+        ${informe.fecha ? `<p style="font-size:9pt;color:#9ca3af;margin:2px 0 0;">Período: ${_sanitize(informe.fecha)}</p>` : ""}
+      </div>
+    </div>
+    ${informe.resumen ? `<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:14px;margin-bottom:16px;"><p style="font-size:8pt;font-weight:900;color:#3730a3;text-transform:uppercase;margin:0 0 6px;">📝 Resumen Ejecutivo</p><p style="font-size:9pt;color:#312e81;line-height:1.6;margin:0;">${_sanitize(informe.resumen)}</p></div>` : ""}
+    ${total > 0 ? `<div style="display:flex;gap:12px;margin-bottom:24px;text-align:center;">${kpi("Total evaluados", total, "blue")}${kpi("Aptos", aptos, "emerald")}${kpi("Con restricciones", conRestr, "amber")}${kpi("No aptos", noAptos, "red")}</div>` : ""}
+    ${hasStats ? `
+    <div style="margin-bottom:20px;">
+      <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">1. Perfil Demográfico y Ocupacional</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">${_infBlocks([
+        { title: "Género", data: stats.genero, color: "pink" },
+        { title: "Rango de Edad", data: stats.edad, color: "purple" },
+        { title: "Cargo", data: stats.cargo, color: "orange" },
+        { title: "Tipo Examen", data: stats.tipoExamen, color: "green" },
+        { title: "Tipo Contrato", data: stats.tipoContrato, color: "amber" },
+        { title: "Antigüedad", data: stats.antiguedad, color: "lime" },
+      ], total)}</div>
+    </div>
+    <div style="margin-bottom:20px;">
+      <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">2. Perfil Clínico y de Salud</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">${_infBlocks([
+        { title: "Concepto Aptitud", data: stats.conceptoAptitud, color: "emerald" },
+        { title: "IMC", data: stats.imc, color: "blue" },
+        { title: "Tensión Arterial", data: stats.ta, color: "red" },
+        { title: "Diagnóstico CIE-10", data: stats.diagnosticos, color: "indigo" },
+      ], total)}</div>
+    </div>` : ""}
+    ${pacientes.length > 0 ? `
+    <div style="margin-bottom:20px;">
+      <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">3. Matriz Legal — Condiciones de Salud</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+        <thead><tr style="background:#1e3a8a;color:#fff;"><th style="padding:8px;text-align:left;">Trabajador</th><th style="padding:8px;">Edad</th><th style="padding:8px;text-align:left;">Diagnóstico</th><th style="padding:8px;text-align:left;">Concepto</th><th style="padding:8px;text-align:left;">Restricciones</th></tr></thead>
+        <tbody>${pacientes.map((p, i) => {
+          const cap = (p.conceptoAptitud || "").toLowerCase();
+          const badge = cap.includes("no apto") ? "background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;" : cap.includes("condic") ? "background:#fef3c7;color:#92400e;border:1px solid #fcd34d;" : "background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;";
+          return `<tr style="border-bottom:1px solid #e5e7eb;background:${i % 2 === 0 ? "#fff" : "#f9fafb"};vertical-align:top;">
+            <td style="padding:7px;"><p style="font-weight:700;color:#1e3a8a;margin:0;">${_sanitize(p.docNumero || "")}</p><p style="color:#4b5563;font-size:8pt;margin:0;">${_sanitize((p.nombres || "").substring(0, 28))}</p></td>
+            <td style="padding:7px;text-align:center;">${_sanitize(p.edad || "--")}</td>
+            <td style="padding:7px;color:#374151;">${_sanitize(p.diagnosticoPrincipal || "Z10.0")}</td>
+            <td style="padding:7px;"><span style="padding:2px 8px;border-radius:9999px;font-size:8pt;font-weight:900;${badge}">${_sanitize(p.conceptoAptitud || "--")}</span></td>
+            <td style="padding:7px;color:#4b5563;font-size:8pt;">${_sanitize(p.restricciones || "—")}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+    </div>` : ""}
+    ${aiResult ? `
+    <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:14px;margin-bottom:16px;">
+      <h3 style="font-weight:900;color:#3730a3;font-size:9pt;text-transform:uppercase;margin:0 0 12px;">🤖 Análisis Inteligente IA</h3>
+      ${ai.resumenEjecutivo ? `<div style="background:#fff;padding:12px;border-radius:8px;border:1px solid #c7d2fe;margin-bottom:12px;font-size:9pt;font-weight:700;color:#312e81;">${_sanitize(ai.resumenEjecutivo)}</div>` : ""}
+      ${ai.conclusiones ? `<div style="font-size:9pt;text-align:justify;color:#374151;line-height:1.6;white-space:pre-wrap;margin-bottom:12px;">${_sanitize(ai.conclusiones)}</div>` : ""}
+      ${ai.analisisJustificado ? aiBlock("#fffbeb", "#fde68a", "#92400e", "Análisis Justificado — Interpretación Epidemiológica", ai.analisisJustificado) : ""}
+      ${ai.recomendacionesInforme ? aiBlock("#ecfdf5", "#a7f3d0", "#065f46", "Recomendaciones — Acciones Correctivas y PVE", ai.recomendacionesInforme) : ""}
+      ${(ai.tabla && ai.tabla.length > 0) ? `<div style="margin-bottom:12px;"><p style="font-weight:900;color:#374151;font-size:9pt;text-transform:uppercase;margin:0 0 8px;">📊 Morbilidad Prevalente</p><table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #d1d5db;"><thead><tr style="background:#1e293b;color:#fff;"><th style="padding:8px;text-align:left;">Diagnóstico (CIE-10)</th><th style="padding:8px;text-align:center;">Casos</th><th style="padding:8px;text-align:center;">%</th><th style="padding:8px;text-align:left;">Relación</th></tr></thead><tbody>${ai.tabla.map((r, i) => `<tr style="background:${i % 2 === 0 ? "#fff" : "#f9fafb"};"><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-weight:600;">${_sanitize(r.diagnostico)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;">${_sanitize(r.cantidad)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;color:#4338ca;">${_sanitize(r.porcentaje)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#4b5563;">${_sanitize(r.relacion || "—")}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${ai.matrizLegalNormativa ? `<div style="margin-top:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px;font-size:9pt;color:#1e3a8a;"><p style="font-weight:900;margin:0 0 8px;text-transform:uppercase;color:#1e40af;">Cumplimiento Normativo</p><p style="text-align:justify;line-height:1.6;margin:0;">${_sanitize(ai.matrizLegalNormativa)}</p></div>` : ""}
+      ${(ai.pveRecomendados && ai.pveRecomendados.length > 0) ? `<div style="margin-top:12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:14px;font-size:9pt;"><p style="font-weight:900;color:#115e59;text-transform:uppercase;margin:0 0 8px;">Programas de Vigilancia Epidemiológica Recomendados</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${ai.pveRecomendados.map(pve => `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ccfbf1;border-radius:8px;padding:8px 12px;"><span style="color:#0d9488;font-weight:700;">✓</span><span style="color:#115e59;font-weight:600;">${_sanitize(pve)}</span></div>`).join("")}</div></div>` : ""}
+    </div>` : ""}
+  </div>`;
+};
+
 // ══════════════════════════════════════════════════════════════════════════
 // FORMULARIO PÚBLICO DE ENCUESTA SOCIODEMOGRÁFICA - Acceso sin login
 // URL: https://ocupasalud.pages.dev/#encuesta?token=xxx
@@ -17992,25 +18189,52 @@ function AppInner() {
       }
     } catch (e) { console.warn("[ZIP] certificados:", e?.message); }
 
-    // 2) Informe epidemiológico (portal con respaldo local)
+    // 2) Informe epidemiológico — diseño REAL (réplica del portal, carga statsKey)
     try {
       const local = savedInformes.find(i => i.empresaId === selectedCompanyReport && !i.tipo);
-      const resumen = (local?.resumen || per?.informe?.resumen || local?.aiResult || "").toString();
-      const totPac = local?.totalPacientes || per?.informe?.totalPacientes || "";
-      const fechaInf = local?.fecha || per?.informe?.fecha || "";
+      const infMeta = {
+        totalPacientes: local?.totalPacientes || per?.informe?.totalPacientes || 0,
+        resumen: local?.resumen || per?.informe?.resumen || "",
+        fecha: local?.fecha || per?.informe?.fecha || (per?.periodo || ""),
+        statsKey: local?.statsKey || per?.informe?.statsKey || null,
+      };
       if (per?.informe || local) {
-        const inner = `<div style="padding:40px;"><h1 style="color:#1e3a8a;font-size:18pt;text-align:center;margin:0 0 4px;">DIAGNÓSTICO DE CONDICIONES DE SALUD</h1><h2 style="text-align:center;color:#374151;font-size:13pt;margin:0;">${_sanitize(empName)}</h2><p style="text-align:center;color:#6b7280;font-size:10pt;">Población evaluada: ${totPac} · ${_sanitize(per?.periodo || "")} · ${_sanitize(fechaInf)}</p><hr style="border:none;border-top:2px solid #1e3a8a;margin:14px 0;"/>${resumen ? `<div style="font-size:10pt;line-height:1.6;white-space:pre-wrap;">${_sanitize(resumen).replace(/\n/g, "<br/>")}</div>` : `<p style="color:#6b7280;font-style:italic;">Informe epidemiológico emitido. El resumen detallado está disponible en la plataforma.</p>`}</div>`;
-        const blob = await _htmlToPdfBlobMod(_wrapDoc(inner)); zip.file("02_Informe_Epidemiologico.pdf", blob); total++;
+        // Cargar fullData (stats + aiResult + pacientes) desde D1 vía statsKey
+        let fullData = null;
+        if (infMeta.statsKey && _WORKER_TOKEN) { try { fullData = await _workerGet(infMeta.statsKey); } catch {} }
+        const html = _buildInformeHTMLMod(infMeta, fullData || {}, empName);
+        const blob = await _htmlToPdfBlobMod(_wrapDoc(html)); zip.file("02_Informe_Epidemiologico.pdf", blob); total++;
       }
     } catch (e) { console.warn("[ZIP] informe:", e?.message); }
 
-    // 3) Cuenta de cobro (portal con respaldo local)
+    // 3) Cuenta de cobro — diseño REAL (réplica de renderBill)
     try {
       const localBill = savedBillsList.find(b => b && !b._deleted && (b.companyId === selectedCompanyReport || (b.clientNit || "").replace(/[^0-9]/g, "").includes(nitClean) || (b.clientName || "").toUpperCase() === empName.toUpperCase()));
-      const c = localBill || per?.cuenta;
+      // Preferir la cuenta del portal (trae banco/acreedor/firma completos); si no, la local.
+      const base = per?.cuenta || {};
+      const lb = localBill || {};
+      const c = (per?.cuenta || localBill) ? {
+        number: lb.number || base.number,
+        amount: lb.amount || base.amount,
+        date: lb.date || base.date,
+        concept: lb.concept || base.concept,
+        amountWords: lb.amountWords || base.amountWords || "",
+        clientName: lb.clientName || base.clientName || empName,
+        clientNit: lb.clientNit || base.clientNit || (comp.nit || ""),
+        bankName: base.bankName || lb.bankName,
+        accountType: base.accountType || lb.accountType,
+        accountNumber: base.accountNumber || lb.accountNumber,
+        rut: base.rut || lb.rut,
+        doctorNombre: base.doctorNombre || lb.doctorNombre,
+        doctorCC: base.doctorCC || lb.doctorCC,
+        doctorLicencia: base.doctorLicencia || lb.doctorLicencia,
+        doctorTitulo: base.doctorTitulo || lb.doctorTitulo,
+        doctorCel: base.doctorCel || lb.doctorCel,
+        doctorEmail: base.doctorEmail || lb.doctorEmail,
+        firma: base.firma || lb.firma,
+      } : null;
       if (c) {
-        const inner = `<div style="padding:48px;"><div style="text-align:center;border-bottom:3px solid #c2410c;padding-bottom:12px;margin-bottom:20px;"><p style="font-size:22pt;font-weight:900;text-transform:uppercase;margin:0;">Cuenta de Cobro</p><p style="font-size:11pt;color:#6b7280;margin:4px 0;">No. ${String(c.number || "1").padStart(3, "0")} · ${_sanitize(c.date || "")}</p></div><p><b>Cliente:</b> ${_sanitize(c.clientName || empName)}</p><p><b>NIT:</b> ${_sanitize(c.clientNit || comp.nit || "")}</p><p style="margin-top:14px;"><b>Concepto:</b><br/>${_sanitize(c.concept || "Servicios médicos ocupacionales")}</p><div style="margin-top:24px;text-align:right;"><p style="font-size:18pt;font-weight:900;color:#065f46;">Total: $${Number(c.amount || 0).toLocaleString("es-CO")}</p>${c.amountWords ? `<p style="font-size:9pt;color:#6b7280;">(${_sanitize(c.amountWords)})</p>` : ""}</div><div style="margin-top:36px;font-size:9pt;color:#374151;border-top:1px solid #e5e7eb;padding-top:12px;">${c.doctorNombre ? `<p style="margin:2px 0;"><b>${_sanitize(c.doctorNombre)}</b></p><p style="margin:2px 0;">${_sanitize(c.doctorTitulo || "")} · Lic: ${_sanitize(c.doctorLicencia || "")}</p>` : ""}${c.bankName ? `<p style="margin:2px 0;">Banco: ${_sanitize(c.bankName)} · ${_sanitize(c.accountType || "")} ${_sanitize(c.accountNumber || "")}</p>` : ""}</div></div>`;
-        const blob = await _htmlToPdfBlobMod(_wrapDoc(inner)); zip.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
+        const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCuentaCobroHTMLMod(c))); zip.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
       }
     } catch (e) { console.warn("[ZIP] cuenta:", e?.message); }
 
