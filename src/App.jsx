@@ -13874,6 +13874,41 @@ const _abrirVentanaPDF = (html, titulo) => {
   return true;
 };
 
+// Convierte HTML completo → Blob PDF (iframe + html2canvas + jsPDF, multipágina).
+// Versión módulo del conversor del portal, para armar paquetes ZIP.
+const _htmlToPdfBlobMod = (htmlContent) => new Promise((resolve, reject) => {
+  const ifr = document.createElement("iframe");
+  ifr.style.cssText = "position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;";
+  document.body.appendChild(ifr);
+  const cleanup = () => { setTimeout(() => { if (document.body.contains(ifr)) document.body.removeChild(ifr); }, 300); };
+  const _to = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 25000);
+  ifr.onload = async () => {
+    try {
+      const iDoc = ifr.contentDocument;
+      const nb = iDoc.querySelector(".np-dl,.np-bar,.print-toolbar"); if (nb) nb.style.display = "none";
+      const sh = iDoc.documentElement.scrollHeight;
+      ifr.style.height = sh + "px";
+      await new Promise((r) => setTimeout(r, 300));
+      const canvas = await html2canvas(iDoc.body, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: "#ffffff", width: 816, windowWidth: 816, scrollX: 0, scrollY: 0, height: sh, windowHeight: sh });
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
+      const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
+      const mg = 12, cW = pW - mg * 2, pcH = pH - mg * 2;
+      const pxPerMm = canvas.width / cW, pcHpx = Math.round(pcH * pxPerMm);
+      const totalPages = Math.ceil(canvas.height / pcHpx);
+      for (let pg = 0; pg < totalPages; pg++) {
+        if (pg > 0) pdf.addPage();
+        const y0 = pg * pcHpx, y1 = Math.min(y0 + pcHpx, canvas.height), slicePx = y1 - y0;
+        const tmp = document.createElement("canvas"); tmp.width = canvas.width; tmp.height = slicePx;
+        const ctx = tmp.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, tmp.width, tmp.height);
+        ctx.drawImage(canvas, 0, y0, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+        pdf.addImage(tmp.toDataURL("image/jpeg", 0.92), "JPEG", mg, mg, cW, slicePx / pxPerMm);
+      }
+      clearTimeout(_to); cleanup(); resolve(pdf.output("blob"));
+    } catch (e) { clearTimeout(_to); cleanup(); reject(e); }
+  };
+  ifr.srcdoc = htmlContent;
+});
+
 // Genera el HTML de TODOS los certificados de una lista de pacientes (cada uno
 // hidratado con su médico/firma). Reutiliza _generarCertificadoDesdePortal.
 const _buildCertificadosEmpresaHTML = (pacientes) => {
@@ -17858,6 +17893,128 @@ function AppInner() {
   const [justExamen, setJustExamen] = useState("");
   const [printPreview, setPrintPreview] = useState(null); // 'prescripcion'|'examenes'|'incapacidad'|null
   const [selectedCompanyReport, setSelectedCompanyReport] = useState("");
+  // FASE: constancia de "Emitido" — derivada de los documentos YA publicados en el
+  // portal (siso_portal_empresa_docs). Funciona retroactivamente para empresas que
+  // ya enviaron sus documentos. null = sin cargar; {emitido,fecha,n,periodo,docs}.
+  const [emitidoEmpresa, setEmitidoEmpresa] = useState(null);
+  useEffect(() => {
+    setEmitidoEmpresa(null);
+    if (!selectedCompanyReport || !_WORKER_TOKEN) return;
+    const comp = companies.find((c) => c.id === selectedCompanyReport);
+    const nitClean = (comp?.nit || "").replace(/[^0-9]/g, "");
+    if (nitClean.length < 4) return;
+    const variants = [nitClean];
+    for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv);
+    if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
+    let cancelado = false;
+    (async () => {
+      // Unir periodos de TODAS las variantes de NIT (igual que la Capa B del portal)
+      const periodMap = new Map();
+      for (const nv of variants) {
+        let docs = null;
+        try { docs = await _workerGet(`siso_portal_empresa_docs_${nv}`); } catch {}
+        if (!docs || !Array.isArray(docs.periodos)) continue;
+        for (const per of docs.periodos) {
+          const k = per.periodo || "";
+          const prev = periodMap.get(k) || { periodo: k };
+          periodMap.set(k, {
+            ...prev, ...per,
+            informe: per.informe || prev.informe || null,
+            cuenta: per.cuenta || prev.cuenta || null,
+            custodia: per.custodia || prev.custodia || null,
+            certificados: (per.certificados && per.certificados.count) ? per.certificados : (prev.certificados || per.certificados || null),
+            emitidoEl: per.emitidoEl || prev.emitidoEl || per.fecha || null,
+          });
+        }
+      }
+      if (cancelado) return;
+      const periodos = [...periodMap.values()].sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
+      // El más reciente que tenga al menos certificados + (informe o cuenta o custodia)
+      const emitido = periodos.find((p) => (p.certificados?.count > 0) && (p.informe || p.cuenta || p.custodia));
+      if (emitido) {
+        const docs = {
+          certificados: emitido.certificados?.count || 0,
+          informe: !!emitido.informe, cuenta: !!emitido.cuenta, custodia: !!emitido.custodia,
+        };
+        const n = (docs.certificados > 0 ? 1 : 0) + (docs.informe ? 1 : 0) + (docs.cuenta ? 1 : 0) + (docs.custodia ? 1 : 0);
+        setEmitidoEmpresa({ emitido: true, fecha: (emitido.emitidoEl || emitido.fecha || "").slice(0, 10), periodo: emitido.periodo, n, docs, nit: nitClean });
+      } else {
+        setEmitidoEmpresa({ emitido: false });
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedCompanyReport, companies]);
+
+  // FASE 2: descargar en ZIP los documentos emitidos de la empresa (certificados +
+  // informe + cuenta de cobro + carta custodia). Reusa _htmlToPdfBlobMod + JSZip.
+  const _descargarPaqueteEmpresa = async () => {
+    const comp = companies.find((c) => c.id === selectedCompanyReport);
+    if (!comp) { showAlert("Selecciona una empresa."); return; }
+    const nitClean = (comp.nit || "").replace(/[^0-9]/g, "");
+    const empName = comp.nombre || "empresa";
+    showAlert("📦 Generando paquete ZIP...\n\nEsto puede tardar unos segundos. El archivo se descargará automáticamente.");
+    const zip = new JSZip();
+    let total = 0;
+    // 1) Certificados (todos los trabajadores cerrados, hidratados desde portal_doc)
+    try {
+      const cerrados = patientsList.filter((p) => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada");
+      const hidratados = [];
+      for (const p of cerrados) {
+        const cc = (p.docNumero || "").replace(/\s/g, "");
+        let pd = null;
+        if (_WORKER_TOKEN && cc) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
+        hidratados.push(pd || p);
+      }
+      if (hidratados.length) {
+        const html = _buildCertificadosEmpresaHTML(hidratados);
+        const blob = await _htmlToPdfBlobMod(html);
+        zip.file("01_Certificados_de_Aptitud.pdf", blob); total++;
+      }
+    } catch (e) { console.warn("[ZIP] certificados:", e?.message); }
+    // 2) Informe epidemiológico
+    try {
+      const inf = savedInformes.find((i) => i.empresaId === selectedCompanyReport && !i.tipo);
+      if (inf) {
+        const resumen = (inf.resumen || inf.aiResult || "").toString();
+        const html = `<div style="font-family:Arial,sans-serif;width:816px;padding:40px;color:#111;"><h1 style="color:#1e3a8a;font-size:18pt;text-align:center;">DIAGNÓSTICO DE CONDICIONES DE SALUD</h1><h2 style="text-align:center;color:#374151;font-size:13pt;">${_sanitize(empName)}</h2><p style="text-align:center;color:#6b7280;font-size:10pt;">Población evaluada: ${inf.totalPacientes || ""} · ${_sanitize(inf.periodo || "")} · ${_sanitize(inf.fecha || "")}</p><hr/><div style="font-size:10pt;line-height:1.6;white-space:pre-wrap;">${_sanitize(resumen).replace(/\n/g, "<br/>")}</div></div>`;
+        const blob = await _htmlToPdfBlobMod(html);
+        zip.file("02_Informe_Epidemiologico.pdf", blob); total++;
+      }
+    } catch (e) { console.warn("[ZIP] informe:", e?.message); }
+    // 3) Cuenta de cobro
+    try {
+      const bill = savedBillsList.find((b) => b && !b._deleted && (b.companyId === selectedCompanyReport || (b.clientNit || "").replace(/[^0-9]/g, "").includes(nitClean) || (b.clientName || "").toUpperCase() === empName.toUpperCase()));
+      if (bill) {
+        const html = `<div style="font-family:Arial,sans-serif;width:816px;padding:48px;color:#111;"><div style="text-align:center;border-bottom:3px solid #c2410c;padding-bottom:12px;margin-bottom:20px;"><p style="font-size:22pt;font-weight:900;text-transform:uppercase;margin:0;">Cuenta de Cobro</p><p style="font-size:11pt;color:#6b7280;margin:4px 0;">No. ${String(bill.number || "1").padStart(3, "0")} · ${_sanitize(bill.date || "")}</p></div><p><b>Cliente:</b> ${_sanitize(bill.clientName || empName)}</p><p><b>NIT:</b> ${_sanitize(bill.clientNit || comp.nit || "")}</p><p style="margin-top:14px;"><b>Concepto:</b><br/>${_sanitize(bill.concept || "Servicios médicos ocupacionales")}</p><div style="margin-top:24px;text-align:right;"><p style="font-size:18pt;font-weight:900;color:#065f46;">Total: $${Number(bill.amount || 0).toLocaleString("es-CO")}</p>${bill.amountWords ? `<p style="font-size:9pt;color:#6b7280;">(${_sanitize(bill.amountWords)})</p>` : ""}</div></div>`;
+        const blob = await _htmlToPdfBlobMod(html);
+        zip.file("03_Cuenta_de_Cobro_No" + String(bill.number || "1").padStart(3, "0") + ".pdf", blob); total++;
+      }
+    } catch (e) { console.warn("[ZIP] cuenta:", e?.message); }
+    // 4) Carta de custodia
+    try {
+      let cartas = null;
+      if (_WORKER_TOKEN) { try { cartas = await _workerGet("siso_cartas_custodia"); } catch {} }
+      const cust = (cartas || savedInformes || []).find((c) => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase()) && (c.tipo === "custodia" || c.docTitulo || c.firma || c.firmaSrc));
+      if (cust) {
+        const html = _buildCartaCustodiaHTML(cust);
+        const blob = await _htmlToPdfBlobMod(html);
+        zip.file("04_Carta_de_Custodia.pdf", blob); total++;
+      }
+    } catch (e) { console.warn("[ZIP] custodia:", e?.message); }
+
+    if (!total) { showAlert("⚠️ No se pudo generar ningún documento. Verifica que la empresa tenga documentos emitidos."); return; }
+    try {
+      const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "Paquete_" + empName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 25) + "_" + (emitidoEmpresa?.periodo || new Date().toISOString().slice(0, 7)) + ".zip";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      showAlert("✅ Paquete descargado\n\n• " + total + " documento(s) en el ZIP");
+    } catch (e) { showAlert("Error generando el ZIP: " + (e?.message || "")); }
+  };
+
   const [reporteActiveTab, setReporteActiveTab] = useState("estadisticas"); // 'estadisticas' | 'certificados'
   const [certSelected, setCertSelected] = useState({}); // {[patientId]: bool}
   const [reportStartDate, setReportStartDate] = useState("");
@@ -31084,6 +31241,21 @@ Esta historia clínica debe conservarse mínimo 20 años.
               >
                 📤 Enviar TODO a Empresa
               </button>
+            )}
+            {/* Constancia de "Emitido" — retroactiva (lee los docs ya publicados) */}
+            {selectedCompanyReport && emitidoEmpresa?.emitido && (
+              <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-300 rounded-lg px-3 py-1.5 no-print">
+                <span className="text-emerald-700 text-sm font-black">✅ Emitido</span>
+                <span className="text-[10px] text-emerald-700">
+                  {emitidoEmpresa.fecha ? "el " + emitidoEmpresa.fecha : ""} · {emitidoEmpresa.n} doc{emitidoEmpresa.n !== 1 ? "s" : ""}
+                  {" "}({emitidoEmpresa.docs.certificados > 0 ? "📄" : ""}{emitidoEmpresa.docs.informe ? "📋" : ""}{emitidoEmpresa.docs.cuenta ? "💰" : ""}{emitidoEmpresa.docs.custodia ? "📁" : ""})
+                </span>
+                <button
+                  onClick={() => _descargarPaqueteEmpresa()}
+                  title="Descargar los documentos emitidos en un ZIP"
+                  className="ml-1 bg-gray-800 hover:bg-gray-900 text-white text-[10px] font-black rounded px-2 py-1"
+                >📦 Descargar ZIP</button>
+              </div>
             )}
           </div>
 
