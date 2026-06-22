@@ -18088,6 +18088,16 @@ function AppInner() {
   const [showExamSuggs, setShowExamSuggs] = useState(false);
   const [diagExamen, setDiagExamen] = useState("");
   const [justExamen, setJustExamen] = useState("");
+  // FIX 2026-06-22: hidratar los espejos locales de la sección de exámenes desde
+  // `data`. La IA escribe los exámenes/diagnóstico/justificación en data.solicitudExamenes*
+  // (y se persisten + muestran en el portal), pero la UI de la HC renderiza desde estos
+  // estados locales. Sin esta sincronización, los exámenes sugeridos por IA (o los de una
+  // HC reabierta) no aparecían ni se podían imprimir dentro de la historia clínica.
+  // Sin bucle: los botones manuales asignan la MISMA referencia a examList y a
+  // data.solicitudExamenes, por lo que el efecto queda en no-op tras edición manual.
+  useEffect(() => { setExamList(data.solicitudExamenes || []); }, [data.solicitudExamenes]);
+  useEffect(() => { setDiagExamen(data.solicitudExamenesDiag || ""); }, [data.solicitudExamenesDiag]);
+  useEffect(() => { setJustExamen(data.solicitudExamenesJust || ""); }, [data.solicitudExamenesJust]);
   const [printPreview, setPrintPreview] = useState(null); // 'prescripcion'|'examenes'|'incapacidad'|null
   const [selectedCompanyReport, setSelectedCompanyReport] = useState("");
   // FASE: constancia de "Emitido" — derivada de los documentos YA publicados en el
