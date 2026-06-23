@@ -20732,6 +20732,68 @@ function AppInner() {
     },
     [aiConfig]
   );
+  // ══════════════════════════════════════════════════════════════════════════
+  // buildFullContextHC — Construye contexto completo de la HC para prompts IA
+  // Incluye: perfil cargo, antecedentes, maniobras, examen osteomuscular,
+  // agudeza visual, exámenes especiales, paraclínicos
+  // ══════════════════════════════════════════════════════════════════════════
+  const buildFullContextHC = (d) => {
+    const hallazgos = Object.entries(d.examenFisicoSistemas || {})
+      .filter(([, v]) => v?.estado === "Anormal")
+      .map(([k, v]) => `${k}: ${v.hallazgo}`)
+      .join("; ") || "Sin hallazgos patológicos";
+    const antecedentes = Object.entries(d.antecedentesAgrupados || {})
+      .filter(([, v]) => v?.val)
+      .map(([k, v]) => `${k}: ${v.det || "Sí"}`)
+      .join(" | ") || "Niega antecedentes relevantes";
+    const riesgos = Object.entries(d.riesgos || {})
+      .filter(([, v]) => v === true)
+      .map(([k]) => k)
+      .join(", ") || "No reportados";
+    const maniobras = Object.entries(d.maniobrasOsteomusculares || {})
+      .filter(([, v]) => v?.estado === "Anormal")
+      .map(([k, v]) => `${k}: ${v.hallazgo || v.nombre || k}`)
+      .join("; ") || "Ninguna positiva";
+    const osteo = d.examenOsteomuscular || {};
+    const osteoRes = [
+      osteo.columna && osteo.columna !== "Normal" ? `Columna: ${osteo.columna}` : "",
+      osteo.miembrosSup && osteo.miembrosSup !== "Normal" ? `Miembros sup: ${osteo.miembrosSup}` : "",
+      osteo.miembrosInf && osteo.miembrosInf !== "Normal" ? `Miembros inf: ${osteo.miembrosInf}` : "",
+      osteo.postural && osteo.postural !== "Normal" ? `Postural: ${osteo.postural}` : "",
+      osteo.hallazgos ? `Hallazgos: ${osteo.hallazgos}` : "",
+      osteo.diagnosticoFuncional ? `Dx funcional: ${osteo.diagnosticoFuncional}` : "",
+    ].filter(Boolean).join("; ") || "Sin alteraciones osteomusculares";
+    const paraclinicos = Object.entries(d.paraclinicosCheck || {})
+      .filter(([k, v]) => v === true && k !== "otros")
+      .map(([k]) => k).join(", ");
+    const paraclinicosFull = [paraclinicos, d.paraclinicosCheck?.otros].filter(Boolean).join(", ") || "Ninguno";
+    const av = d.agudezaVisual || {};
+    const agudeza = (av.lejanaOD || av.lejanaOI)
+      ? `OD ${av.lejanaOD || "N/R"} / OI ${av.lejanaOI || "N/R"} (lejos) | OD ${av.proximaOD || "N/R"} / OI ${av.proximaOI || "N/R"} (cerca) | Corrección: ${av.correccion ? "Sí" : "No"}`
+      : "N/R";
+    const enf = (d.enfasisExamen || "GENERAL").toUpperCase();
+    let examenEspecial = "";
+    if (enf.includes("ALTURA")) {
+      const e = d.examenAlturas || {};
+      examenEspecial = `TRABAJO EN ALTURAS — Romberg: ${e.romberg || "N/R"} | Marcha: ${e.marcha || "N/R"} | Vértigo: ${e.vertigo || "N/R"} | Coordinación: ${e.coordinacion || "N/R"} | Nistagmus: ${e.nistagmus || "N/R"} | Test miedo: ${e.testMiedo || "N/R"} | Obs: ${e.observaciones || ""}`;
+    } else if (enf.includes("ALIMENTO")) {
+      const e = d.examenAlimentos || {};
+      examenEspecial = `MANIPULACIÓN ALIMENTOS — Piel/faneras: ${e.pielFaneras || "N/R"} | ORL: ${e.orl || "N/R"} | GI: ${e.gastrointestinal || "N/R"} | Obs: ${e.observaciones || ""}`;
+    } else if (enf.includes("CONFIN")) {
+      const e = d.examenConfinados || {};
+      examenEspecial = `ESPACIOS CONFINADOS — CV: ${e.cardiovascular || "N/R"} | Resp: ${e.respiratorio || "N/R"} | Neuro: ${e.neurologico || "N/R"} | Psico: ${e.psicologico || "N/R"} | ORL: ${e.otorrino || "N/R"} | EPP: ${e.usoEpp || "N/R"}`;
+    }
+    const perfilCargo = [
+      d.perfilCargo_funciones ? `Funciones: ${d.perfilCargo_funciones}` : "",
+      d.perfilCargo_demandasFisicas ? `Demandas físicas: ${d.perfilCargo_demandasFisicas}` : "",
+      d.perfilCargo_demandasMentales ? `Demandas mentales: ${d.perfilCargo_demandasMentales}` : "",
+      d.perfilCargo_factoresRiesgo ? `Factores de riesgo cargo: ${d.perfilCargo_factoresRiesgo}` : "",
+      d.perfilCargo_nivelExposicion ? `Nivel exposición: ${d.perfilCargo_nivelExposicion}` : "",
+      d.perfilCargo_medidasControl ? `Medidas de control: ${d.perfilCargo_medidasControl}` : "",
+      d.perfilCargo_tiempoAcumulado ? `Tiempo acumulado: ${d.perfilCargo_tiempoAcumulado}` : "",
+    ].filter(Boolean).join("\n  ") || "No diligenciado";
+    return { hallazgos, antecedentes, riesgos, maniobras, osteoRes, paraclinicosFull, agudeza, examenEspecial, perfilCargo };
+  };
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
   const generateAIAnalysis = async () => {
     if (_aiRunningRef.current) return; // guard síncrono contra doble-click
@@ -20787,22 +20849,34 @@ function AppInner() {
       return "Evalúa la aptitud del trabajador según los hallazgos clínicos actuales. Las recomendaciones deben ser específicas para el cargo, la empresa y los riesgos identificados.";
     })();
 
-    const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en evaluaciones ocupacionales en Colombia (ingresos, egresos, periódicos, reintegros, post-incapacidad). Analiza con criterio clínico-ocupacional experto la siguiente historia y genera el concepto médico ocupacional conforme a Res. 1843/2025 (norma vigente - deroga Res. 2346/2007). Devuelve ÚNICAMENTE JSON.
-DATOS DEL TRABAJADOR: Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} (${
-      data.actividadEconomica || "N/E"
-    }) | Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen}
-Edad: ${data.edad}a | Género: ${data.genero} | Escolaridad: ${
-      data.escolaridad
-    } | ARL: ${data.arl || "N/R"}
-Signos vitales: TA ${data.ta || "N/R"} | FC ${data.fc || "N/R"} | IMC ${
-      data.imc || "N/R"
-    } | Talla ${data.talla || "N/R"}cm | Peso ${data.peso || "N/R"}kg
-Hallazgos físicos patológicos: ${hallazgos}
-Antecedentes personales relevantes: ${antecedentes}
-Riesgos ocupacionales identificados: ${riesgos}
-Hábitos: Tabaquismo ${data.habitos?.fuma} | Alcohol ${
-      data.habitos?.alcohol
-    } | Actividad física ${data.habitos?.deporte}
+    const ctx = buildFullContextHC(data);
+    const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en evaluaciones ocupacionales en Colombia (ingresos, egresos, periódicos, reintegros, post-incapacidad). Analiza con criterio clínico-ocupacional experto la siguiente historia clínica COMPLETA y genera el concepto médico ocupacional conforme a Res. 1843/2025 (norma vigente - deroga Res. 2346/2007). Devuelve ÚNICAMENTE JSON.
+═══ DATOS DEL TRABAJADOR ═══
+Nombre: ${data.nombres || "N/E"} | Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} (${data.actividadEconomica || "N/E"})
+Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen} | ARL: ${data.arl || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
+Edad: ${data.edad}a | Género: ${data.genero} | Escolaridad: ${data.escolaridad || "N/E"}
+Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Tipo contrato: ${data.tipoContrato || "N/R"}
+Motivo de consulta: ${data.motivoConsulta || "N/E"}
+═══ PERFIL DEL CARGO (Res. 1843/2025 Art. 29) ═══
+  ${ctx.perfilCargo}
+═══ SIGNOS VITALES Y ANTROPOMETRÍA ═══
+TA ${data.ta || "N/R"} | FC ${data.fc || "N/R"} | FR ${data.fr || "N/R"} | Temp ${data.temp || "N/R"} | IMC ${data.imc || "N/R"} | Talla ${data.talla || "N/R"}cm | Peso ${data.peso || "N/R"}kg
+═══ ANTECEDENTES PERSONALES ═══
+${ctx.antecedentes}
+═══ HÁBITOS Y ESTILO DE VIDA ═══
+Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Psicoactivas ${data.habitos?.psicoactivas || "No"} | Actividad física ${data.habitos?.deporte || "No"}
+═══ RIESGOS OCUPACIONALES IDENTIFICADOS ═══
+${ctx.riesgos}
+═══ HALLAZGOS EXAMEN FÍSICO (solo anormales) ═══
+${ctx.hallazgos}
+═══ MANIOBRAS OSTEOMUSCULARES POSITIVAS ═══
+${ctx.maniobras}
+═══ EXAMEN OSTEOMUSCULAR ═══
+${ctx.osteoRes}
+═══ AGUDEZA VISUAL ═══
+${ctx.agudeza}
+${ctx.examenEspecial ? `═══ EXAMEN ESPECIAL ═══\n${ctx.examenEspecial}\n` : ""}═══ PARACLÍNICOS SOLICITADOS/REALIZADOS ═══
+${ctx.paraclinicosFull}
 CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba.
 JSON REQUERIDO (sin markdown, sin texto adicional):
@@ -20986,6 +21060,7 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
   // ── GENERACIÓN IA SOLO RESTRICCIONES ─────────────────────────────────────
   const generateAIRestricciones = async () => {
     setIsGeneratingRestr(true);
+    const ctx = buildFullContextHC(data);
     const hallazgosAnorm =
       Object.entries(data.examenFisicoSistemas || {})
         .filter(([, v]) => v.estado === "Anormal")
@@ -21012,7 +21087,10 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
 
 ════════ HISTORIA CLÍNICA COMPLETA DEL TRABAJADOR ════════
 Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Tipo examen: ${data.tipoExamen}
-Edad: ${data.edad} años | Género: ${data.genero} | ARL: ${data.arl || "N/R"}
+Edad: ${data.edad} años | Género: ${data.genero} | ARL: ${data.arl || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
+Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Tipo contrato: ${data.tipoContrato || "N/R"}
+Perfil del cargo (Res. 1843/2025 Art. 29):
+  ${ctx.perfilCargo}
 Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
 Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
 Antecedentes relevantes: ${antec}
@@ -21020,6 +21098,9 @@ Riesgos ocupacionales identificados: ${riesgos}
 Hallazgos PATOLÓGICOS al examen físico: ${hallazgosAnorm}
 Sistemas NORMALES al examen: ${hallazgosNorm || "No registrados"}
 Maniobras osteomusculares positivas: ${osteo}
+Examen osteomuscular: ${ctx.osteoRes}
+Agudeza visual: ${ctx.agudeza}
+${ctx.examenEspecial ? `Examen especial: ${ctx.examenEspecial}\n` : ""}Paraclínicos solicitados/realizados: ${ctx.paraclinicosFull}
 Diagnósticos activos (CIE-10): ${dxActivos}
 Concepto de aptitud previo: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA: ${data.analisisIA ? data.analisisIA.substring(0, 400) + "..." : "No disponible"}
@@ -21065,6 +21146,7 @@ JSON REQUERIDO (sin markdown):
   // ── GENERACIÓN IA SOLO RECOMENDACIONES ───────────────────────────────────
   const generateAIRecomendaciones = async () => {
     setIsGeneratingReco(true);
+    const ctx = buildFullContextHC(data);
     const hallazgosReco =
       Object.entries(data.examenFisicoSistemas || {})
         .filter(([, v]) => v.estado === "Anormal")
@@ -21084,11 +21166,18 @@ JSON REQUERIDO (sin markdown):
 Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Actividad económica: ${data.actividadEconomica || "N/E"}
 Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen || "N/E"}
 Edad: ${data.edad} años | Género: ${data.genero} | Escolaridad: ${data.escolaridad || "N/R"}
+Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
+Perfil del cargo (Res. 1843/2025 Art. 29):
+  ${ctx.perfilCargo}
 Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
-Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
+Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Psicoactivas ${data.habitos?.psicoactivas || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
 Antecedentes relevantes: ${antecReco}
 Riesgos ocupacionales identificados: ${riesgosReco}
 Hallazgos patológicos al examen físico: ${hallazgosReco}
+Maniobras osteomusculares positivas: ${ctx.maniobras}
+Examen osteomuscular: ${ctx.osteoRes}
+Agudeza visual: ${ctx.agudeza}
+${ctx.examenEspecial ? `Examen especial: ${ctx.examenEspecial}\n` : ""}Paraclínicos solicitados/realizados: ${ctx.paraclinicosFull}
 Diagnósticos activos (CIE-10): ${dxRecoActivos}
 Concepto de aptitud: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA previo: ${data.analisisIA ? data.analisisIA.substring(0, 500) + "..." : "No disponible"}
