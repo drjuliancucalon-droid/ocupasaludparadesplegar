@@ -22514,6 +22514,110 @@ const handleLogin = (u, p) => {
     goTo("historia");
     logAccess("Apertura", newId, "general"); // AUDIT: Res. 1888/2025 RDA
   };
+  // FIX 2026-06-24: abrirHCDesdeAgenda HOISTEADA a nivel App.
+  // Antes estaba definida DENTRO de renderAgenda, pero el modal de elección de
+  // tipo de HC (HC Ocupacional / HC General) se renderiza en el render principal,
+  // FUERA del scope de renderAgenda → al hacer clic lanzaba ReferenceError y el
+  // botón no hacía nada. Ahora es accesible tanto desde la agenda como desde el modal.
+  const abrirHCDesdeAgenda = (ag, tipo) => {
+    // Buscar paciente existente (importado de encuesta o creado previo) por
+    // docNumero para cargar TODOS sus datos (no solo los del agendamiento).
+    const docKey = String(ag.docNumero || "").trim();
+    const baseListPac = (typeof patientsListRef !== "undefined" && patientsListRef?.current)
+      ? patientsListRef.current : patientsList;
+    const pacExist = docKey
+      ? baseListPac.find(p => String(p.docNumero || "").trim() === docKey)
+      : null;
+    const newId = pacExist?.id || ("pac_" + Date.now());
+    if (tipo === "ocupacional") {
+      // Spread paciente completo + sobreescribir control de HC
+      const baseFromPac = pacExist ? { ...pacExist } : {};
+      setData({
+        ...initialOccupPatientState,
+        ...baseFromPac,
+        // Datos del agendamiento sobre el paciente (por si actualizó algo en agenda)
+        nombres: ag.nombre || baseFromPac.nombres || "",
+        docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
+        docNumero: ag.docNumero || baseFromPac.docNumero || "",
+        fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
+        edad: ag.edad || baseFromPac.edad || "",
+        genero: ag.genero || baseFromPac.genero || "",
+        estadoCivil: ag.estadoCivil || baseFromPac.estadoCivil || "",
+        escolaridad: ag.escolaridad || baseFromPac.escolaridad || "",
+        celular: ag.celular || baseFromPac.celular || "",
+        telefono: ag.telefono || baseFromPac.telefono || "",
+        email: ag.email || baseFromPac.email || "",
+        residencia: ag.residencia || baseFromPac.residencia || "",
+        zonaResidencia: ag.zonaResidencia || baseFromPac.zonaResidencia || "",
+        estrato: ag.estrato || baseFromPac.estrato || "",
+        eps: ag.eps || baseFromPac.eps || "",
+        arl: ag.arl || baseFromPac.arl || "",
+        afp: ag.afp || baseFromPac.afp || "",
+        nivelRiesgoARL: ag.nivelRiesgoARL || baseFromPac.nivelRiesgoARL || "",
+        cargo: ag.cargo || baseFromPac.cargo || "",
+        dependencia: ag.dependencia || baseFromPac.dependencia || "",
+        tipoContrato: ag.tipoContrato || baseFromPac.tipoContrato || "",
+        turnoTrabajo: ag.turnoTrabajo || baseFromPac.turnoTrabajo || "",
+        antiguedadEmpresa: ag.antiguedadEmpresa || baseFromPac.antiguedadEmpresa || "",
+        grupoSanguineo: ag.grupoSanguineo || baseFromPac.grupoSanguineo || "",
+        empresaId: baseFromPac.empresaId || ag.empresaId || "particular",
+        empresaNombre: baseFromPac.empresaNombre || ag.empresa || "PARTICULAR / INDEPENDIENTE",
+        empresaNit: baseFromPac.empresaNit || ag.empresaNit || "",
+        actividadEconomica: baseFromPac.actividadEconomica || "",
+        motivoConsulta: ag.tipoConsulta || baseFromPac.motivoConsulta || "",
+        // Control HC
+        id: newId,
+        type: "ocupacional",
+        _medicoId: ag.medicoId,
+        _agendaId: ag.id,
+        estadoHistoria: "Abierta",
+        fechaRegistro: new Date().toISOString(),
+        fechaExamen: new Date().toISOString().split("T")[0],
+        codigoVerificacion: "",
+        conteoEdiciones: 0,
+        motivoEdicion: "",
+        folioHC: "",
+        versionDocumento: 1,
+        riesgos: baseFromPac.riesgos
+          ? { ...baseFromPac.riesgos }
+          : { ...initialOccupPatientState.riesgos },
+        antecedentesAgrupados: baseFromPac.antecedentesAgrupados
+          ? JSON.parse(JSON.stringify(baseFromPac.antecedentesAgrupados))
+          : initialOccupPatientState.antecedentesAgrupados,
+      });
+      setDataType("ocupacional");
+      setActiveTab("form");
+    } else {
+      const baseFromPac = pacExist ? { ...pacExist } : {};
+      setData({
+        ...initialGeneralPatientState,
+        ...baseFromPac,
+        nombres: ag.nombre || baseFromPac.nombres || "",
+        docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
+        docNumero: ag.docNumero || baseFromPac.docNumero || "",
+        fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
+        edad: ag.edad || baseFromPac.edad || "",
+        genero: ag.genero || baseFromPac.genero || "",
+        celular: ag.celular || baseFromPac.celular || "",
+        telefono: ag.telefono || baseFromPac.telefono || "",
+        email: ag.email || baseFromPac.email || "",
+        residencia: ag.residencia || baseFromPac.residencia || "",
+        eps: ag.eps || baseFromPac.eps || "",
+        arl: ag.arl || baseFromPac.arl || "",
+        cargo: ag.cargo || baseFromPac.cargo || "",
+        id: newId,
+        type: "general",
+        _medicoId: ag.medicoId,
+        _agendaId: ag.id,
+        estadoHistoria: "Abierta",
+        fechaRegistro: new Date().toISOString(),
+      });
+      setDataType("general");
+      setActiveTab("formGeneral");
+    }
+    setHcChoiceAgenda(null);
+    setView("historia");
+  };
   // Guardar pacientes bajo la clave del usuario activo (aislamiento por médico)
   // ── IPS: si el usuario tiene empresaId, usar storage compartido de empresa ──
   // PROTECCIÓN ANTI-REGRESIÓN para _syncPatients
@@ -34949,6 +35053,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       disabled={encuestasSyncStatus === 'saving'}
                       onClick={() => {
                         setEncuestasSyncStatus('saving');
+                        // FIX 2026-06-24: también MERGE a D1 (antes solo SB overwrite)
+                        if (_WORKER_TOKEN) { _writeArrayMergeD1("siso_encuestas", encuestas, "id").catch(() => {}); }
                         _sbSet("siso_encuestas", encuestas)
                           .then(ok => setEncuestasSyncStatus(ok ? 'ok' : 'error'))
                           .catch(() => setEncuestasSyncStatus('error'));
@@ -35049,8 +35155,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                   let pacientesEnD1 = false;
                                   if (_WORKER_TOKEN) {
                                     try {
-                                      const ok1 = await _workerSet(`siso_db_patients_${patSuf}`, updatedPats);
-                                      const ok2 = await _workerSet(`siso_patients_${patSuf}`, updatedPats);
+                                      // FIX 2026-06-24: MERGE anti-regresión (no overwrite crudo).
+                                      // Antes _workerSet sobrescribía D1 con [...local, ...nuevos];
+                                      // si la vista local estaba incompleta se borraban pacientes que
+                                      // solo existían en D1. _writeArrayMergeD1 preserva esos extras.
+                                      const ok1 = await _writeArrayMergeD1(`siso_db_patients_${patSuf}`, updatedPats, "id");
+                                      const ok2 = await _writeArrayMergeD1(`siso_patients_${patSuf}`, updatedPats, "id");
                                       pacientesEnD1 = ok1 && ok2;
                                     } catch (e) { console.warn("[importar] D1 patients write:", e?.message); }
                                   }
@@ -35074,7 +35184,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                     const updEnc3 = encuestas.map(e => e.id === enc.id ? { ...e, estado: "importada" } : e);
                                     setEncuestas(updEnc3);
                                     if (_WORKER_TOKEN) {
-                                      try { await _workerSet("siso_encuestas", updEnc3); } catch (e) { console.warn("[importar] D1 encuestas:", e?.message); }
+                                      // FIX 2026-06-24: MERGE por id (no overwrite). Preserva el cambio
+                                      // de estado "importada" en esta encuesta y conserva las demás de D1.
+                                      try { await _writeArrayMergeD1("siso_encuestas", updEnc3, "id"); } catch (e) { console.warn("[importar] D1 encuestas:", e?.message); }
                                     }
                                     try { localStorage.setItem("siso_encuestas", JSON.stringify(updEnc3)); } catch (e) { console.warn("[importar] LS quota encuestas:", e?.message); }
                                     _sbSet("siso_encuestas", updEnc3);
@@ -35393,6 +35505,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                               const duplicados = newResps.length - nuevos.length;
                               const merged = [...existing, ...nuevos];
 
+                              // FIX 2026-06-24: persistir también a D1 (la lectura prioriza D1).
+                              // Antes solo se escribía a Supabase → los trabajadores importados por
+                              // Excel no aparecían si D1 tenía una copia previa. `merged` ya incluye
+                              // lo existente en D1 (se leyó D1 primero), así que el overwrite es seguro.
+                              if (_WORKER_TOKEN) { try { await _workerSet(`siso_encuesta_resp_${enc.token}`, merged); } catch (e) { console.warn("[excel-import] D1 resp:", e?.message); } }
                               await _sbSet(`siso_encuesta_resp_${enc.token}`, merged);
                               setImportExcelModal(null);
                               // Refrescar la vista de la encuesta
@@ -46929,105 +47046,8 @@ th{background:#fee2e2;font-weight:900;text-align:left;color:#7f1d1d;}
       // Mostrar modal de elección de tipo de HC
       setHcChoiceAgenda(ag);
     };
-    const abrirHCDesdeAgenda = (ag, tipo) => {
-      // FIX URGENTE: buscar paciente existente (importado de encuesta o creado previo)
-      // por docNumero para cargar TODOS sus datos (no solo los del agendamiento).
-      const docKey = String(ag.docNumero || "").trim();
-      const baseListPac = (typeof patientsListRef !== "undefined" && patientsListRef?.current)
-        ? patientsListRef.current : patientsList;
-      const pacExist = docKey
-        ? baseListPac.find(p => String(p.docNumero || "").trim() === docKey)
-        : null;
-      const newId = pacExist?.id || ("pac_" + Date.now());
-      if (tipo === "ocupacional") {
-        // Spread paciente completo + sobreescribir control de HC
-        const baseFromPac = pacExist ? { ...pacExist } : {};
-        setData({
-          ...initialOccupPatientState,
-          ...baseFromPac,
-          // Datos del agendamiento sobre el paciente (por si actualizó algo en agenda)
-          nombres: ag.nombre || baseFromPac.nombres || "",
-          docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
-          docNumero: ag.docNumero || baseFromPac.docNumero || "",
-          fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
-          edad: ag.edad || baseFromPac.edad || "",
-          genero: ag.genero || baseFromPac.genero || "",
-          estadoCivil: ag.estadoCivil || baseFromPac.estadoCivil || "",
-          escolaridad: ag.escolaridad || baseFromPac.escolaridad || "",
-          celular: ag.celular || baseFromPac.celular || "",
-          telefono: ag.telefono || baseFromPac.telefono || "",
-          email: ag.email || baseFromPac.email || "",
-          residencia: ag.residencia || baseFromPac.residencia || "",
-          zonaResidencia: ag.zonaResidencia || baseFromPac.zonaResidencia || "",
-          estrato: ag.estrato || baseFromPac.estrato || "",
-          eps: ag.eps || baseFromPac.eps || "",
-          arl: ag.arl || baseFromPac.arl || "",
-          afp: ag.afp || baseFromPac.afp || "",
-          nivelRiesgoARL: ag.nivelRiesgoARL || baseFromPac.nivelRiesgoARL || "",
-          cargo: ag.cargo || baseFromPac.cargo || "",
-          dependencia: ag.dependencia || baseFromPac.dependencia || "",
-          tipoContrato: ag.tipoContrato || baseFromPac.tipoContrato || "",
-          turnoTrabajo: ag.turnoTrabajo || baseFromPac.turnoTrabajo || "",
-          antiguedadEmpresa: ag.antiguedadEmpresa || baseFromPac.antiguedadEmpresa || "",
-          grupoSanguineo: ag.grupoSanguineo || baseFromPac.grupoSanguineo || "",
-          empresaId: baseFromPac.empresaId || ag.empresaId || "particular",
-          empresaNombre: baseFromPac.empresaNombre || ag.empresa || "PARTICULAR / INDEPENDIENTE",
-          empresaNit: baseFromPac.empresaNit || ag.empresaNit || "",
-          actividadEconomica: baseFromPac.actividadEconomica || "",
-          motivoConsulta: ag.tipoConsulta || baseFromPac.motivoConsulta || "",
-          // Control HC
-          id: newId,
-          type: "ocupacional",
-          _medicoId: ag.medicoId,
-          _agendaId: ag.id,
-          estadoHistoria: "Abierta",
-          fechaRegistro: new Date().toISOString(),
-          fechaExamen: new Date().toISOString().split("T")[0],
-          codigoVerificacion: "",
-          conteoEdiciones: 0,
-          motivoEdicion: "",
-          folioHC: "",
-          versionDocumento: 1,
-          riesgos: baseFromPac.riesgos
-            ? { ...baseFromPac.riesgos }
-            : { ...initialOccupPatientState.riesgos },
-          antecedentesAgrupados: baseFromPac.antecedentesAgrupados
-            ? JSON.parse(JSON.stringify(baseFromPac.antecedentesAgrupados))
-            : initialOccupPatientState.antecedentesAgrupados,
-        });
-        setDataType("ocupacional");
-        setActiveTab("form");
-      } else {
-        const baseFromPac = pacExist ? { ...pacExist } : {};
-        setData({
-          ...initialGeneralPatientState,
-          ...baseFromPac,
-          nombres: ag.nombre || baseFromPac.nombres || "",
-          docTipo: ag.docTipo || baseFromPac.docTipo || "CC",
-          docNumero: ag.docNumero || baseFromPac.docNumero || "",
-          fechaNacimiento: ag.fechaNacimiento || baseFromPac.fechaNacimiento || "",
-          edad: ag.edad || baseFromPac.edad || "",
-          genero: ag.genero || baseFromPac.genero || "",
-          celular: ag.celular || baseFromPac.celular || "",
-          telefono: ag.telefono || baseFromPac.telefono || "",
-          email: ag.email || baseFromPac.email || "",
-          residencia: ag.residencia || baseFromPac.residencia || "",
-          eps: ag.eps || baseFromPac.eps || "",
-          arl: ag.arl || baseFromPac.arl || "",
-          cargo: ag.cargo || baseFromPac.cargo || "",
-          id: newId,
-          type: "general",
-          _medicoId: ag.medicoId,
-          _agendaId: ag.id,
-          estadoHistoria: "Abierta",
-          fechaRegistro: new Date().toISOString(),
-        });
-        setDataType("general");
-        setActiveTab("formGeneral");
-      }
-      setHcChoiceAgenda(null);
-      setView("historia");
-    };
+    // abrirHCDesdeAgenda fue HOISTEADA a nivel App (ver definición junto a
+    // handleNewGeneralHistory) para que el modal de elección de HC pueda llamarla.
     const marcarAtendido = (agId) => {
       const upd = agendados.map((a) =>
         a.id === agId ? { ...a, estado: "atendido", horaFin: horaActual() } : a
@@ -59783,7 +59803,23 @@ body{padding-top:52px;}
                 }
               } else if (k === "siso_encuestas") {
                 const v = await _workerGet(k);
-                if (Array.isArray(v)) setEncuestas(v);
+                if (Array.isArray(v)) {
+                  // FIX 2026-06-24: MERGE por id/token (no REEMPLAZO). Igual que empresas:
+                  // antes setEncuestas(v) borraba encuestas/respuestas locales que la otra
+                  // sesión aún no tenía. Ahora se preservan.
+                  setEncuestas((prev) => {
+                    const keyOf = (e) => String(e?.id || e?.token || "");
+                    const merged = [...v];
+                    const seen = new Set(merged.map(keyOf).filter(Boolean));
+                    for (const le of (prev || [])) {
+                      const kk = keyOf(le);
+                      if (kk && seen.has(kk)) continue;
+                      merged.push(le);
+                      if (kk) seen.add(kk);
+                    }
+                    return merged;
+                  });
+                }
               }
             }
           } catch (e) {
