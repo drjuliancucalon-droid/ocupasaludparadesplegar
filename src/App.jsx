@@ -22107,16 +22107,37 @@ const handleLogin = (u, p) => {
           const cloudComps = cloud?.[userCompKeyCloud]?.value
             || cloud?.["siso_companies_" + _storageUserId]?.value
             || cloud?.["siso_companies_shared"]?.value;
-          if (
-            Array.isArray(cloudComps) &&
-            cloudComps.length > 0 &&  // nunca sobreescribir con lista vacía
-            cloudComps.length >= localComps.length
-          ) {
-            setCompanies(cloudComps);
-            _ls.setItem(userCompKey, JSON.stringify(cloudComps));
-            // Si la clave propia está vacía en Supabase, migrar desde shared
-            if (!cloud?.[userCompKeyCloud]?.value || cloud[userCompKeyCloud].value.length === 0) {
-              _sbSet(userCompKeyCloud, cloudComps);
+          if (Array.isArray(cloudComps) && cloudComps.length > 0) {
+            // FIX 2026-06-24: MERGE por id (no REEMPLAZO) al cargar empresas desde nube.
+            // Antes: si la nube (o el fallback "shared") tenía cantidad >= local, REEMPLAZABA
+            // toda la lista local — borrando empresas recién creadas en este dispositivo que
+            // aún no estaban en esa copia de nube (caso "drogas timbio": la empresa no aparecía
+            // pero su encuesta sí, porque la encuesta vive en otra clave). Ahora se preserva
+            // todo: empresas de la nube + empresas locales que no estén ya por id ni por NIT.
+            const _normNit = (c) => (c?.nit || "").toString().replace(/[^0-9]/g, "");
+            const merged = [...cloudComps];
+            const _ids = new Set(merged.filter((c) => c && c.id != null).map((c) => String(c.id)));
+            const _nits = new Set(merged.map(_normNit).filter(Boolean));
+            for (const lc of localComps) {
+              if (!lc) continue;
+              const idStr = lc.id != null ? String(lc.id) : null;
+              const nit = _normNit(lc);
+              if (idStr && _ids.has(idStr)) continue; // ya presente por id
+              if (nit && _nits.has(nit)) continue; // ya presente por NIT
+              merged.push(lc);
+              if (idStr) _ids.add(idStr);
+              if (nit) _nits.add(nit);
+            }
+            setCompanies(merged);
+            _ls.setItem(userCompKey, JSON.stringify(merged));
+            // Re-sincronizar a la nube si el merge preservó empresas locales que no estaban
+            // en la copia de nube, o si la clave propia estaba vacía en Supabase.
+            if (
+              merged.length !== cloudComps.length ||
+              !cloud?.[userCompKeyCloud]?.value ||
+              cloud[userCompKeyCloud].value.length === 0
+            ) {
+              _sbSet(userCompKeyCloud, merged);
             }
           } else if (localComps.length === 0) {
             // Si no hay empresas propias, verificar clave legacy compartida
@@ -59738,7 +59759,28 @@ body{padding-top:52px;}
                 if (Array.isArray(v)) setAtencionesCerradas(v);
               } else if (k === "siso_companies_drcucalon" || k === "siso_companies_shared") {
                 const v = await _workerGet(k);
-                if (Array.isArray(v) && v.length > 0) setCompanies(v);
+                if (Array.isArray(v) && v.length > 0) {
+                  // FIX 2026-06-24: MERGE por id/NIT (no REEMPLAZO). Antes este watcher
+                  // hacía setCompanies(v) y borraba empresas recién creadas en ESTE
+                  // dispositivo que la otra sesión aún no tenía (caso "drogas timbio").
+                  setCompanies((prev) => {
+                    const _normNit = (c) => (c?.nit || "").toString().replace(/[^0-9]/g, "");
+                    const merged = [...v];
+                    const _ids = new Set(merged.filter((c) => c && c.id != null).map((c) => String(c.id)));
+                    const _nits = new Set(merged.map(_normNit).filter(Boolean));
+                    for (const lc of (prev || [])) {
+                      if (!lc) continue;
+                      const idStr = lc.id != null ? String(lc.id) : null;
+                      const nit = _normNit(lc);
+                      if (idStr && _ids.has(idStr)) continue;
+                      if (nit && _nits.has(nit)) continue;
+                      merged.push(lc);
+                      if (idStr) _ids.add(idStr);
+                      if (nit) _nits.add(nit);
+                    }
+                    return merged;
+                  });
+                }
               } else if (k === "siso_encuestas") {
                 const v = await _workerGet(k);
                 if (Array.isArray(v)) setEncuestas(v);
