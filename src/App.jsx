@@ -18000,6 +18000,96 @@ function AppInner() {
         console.warn("[saveInforme] publish excepción:", e?.message);
       }
     }
+    // 5° FASE 2 D: al guardar una CUSTODIA, limpiar custodias HUÉRFANAS de la misma
+    // empresa (periodos SIN atenciones reales, p.ej. una de "mayo" del default viejo)
+    // en savedInformes, siso_cartas_custodia y el portal. Conserva las de meses CON
+    // atenciones (criterio del usuario). El match para BORRAR es estricto (id/NIT/
+    // nombre exactos) para no tocar custodias de otra empresa.
+    if (informe?.tipo === "custodia") {
+      try {
+        const _cdNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+        let _emp = companies.find((c) => c.id === informe.empresaId);
+        if (!_emp && informe.empresaNit) { const iN = _cdNit(informe.empresaNit); if (iN) _emp = companies.find((c) => { const cN = _cdNit(c.nit); return cN && (cN === iN || cN.startsWith(iN) || iN.startsWith(cN)); }); }
+        if (!_emp && informe.empresaNombre) { const iNom = informe.empresaNombre.trim().toUpperCase(); if (iNom && iNom !== "NOMBRE DE LA EMPRESA") _emp = companies.find((c) => (c.nombre || "").trim().toUpperCase() === iNom); }
+        if (_emp) {
+          const _empNit = _cdNit(_emp.nit);
+          const _empNom = (_emp.nombre || "").trim().toUpperCase();
+          // Periodos (YYYY-MM) con atenciones reales de la empresa
+          const _validP = new Set();
+          (patientsList || []).forEach((p) => {
+            if (!p) return;
+            const pN = _cdNit(p.empresaNit);
+            const _belongs = p.empresaId === _emp.id
+              || (_empNom && (p.empresaNombre || "").trim().toUpperCase() === _empNom)
+              || (_empNit && pN && (pN === _empNit || pN.startsWith(_empNit) || _empNit.startsWith(pN)));
+            if (!_belongs) return;
+            const ym = (p.fechaExamen || p.fechaRegistro || "").slice(0, 7);
+            if (/^\d{4}-\d{2}$/.test(ym)) _validP.add(ym);
+          });
+          const _esDeEmp = (cust) => {
+            if (!cust) return false;
+            if (cust.empresaId && cust.empresaId === _emp.id) return true;
+            const dN = _cdNit(cust.empresaNit);
+            if (_empNit && dN && dN === _empNit) return true;
+            const dNom = (cust.empresaNombre || "").trim().toUpperCase();
+            if (_empNom && dNom && dNom === _empNom) return true;
+            return false;
+          };
+          const _perDe = (cust) => { const m = (cust.periodo || "").match(/^(\d{4}-\d{2})/); return m ? m[1] : (cust.fecha || "").slice(0, 7); };
+          const _esHuerfana = (i) => i.id !== informe.id && i.tipo === "custodia" && _esDeEmp(i) && !_validP.has(_perDe(i));
+          // 1) savedInformes
+          const _huerfanas = updated.filter(_esHuerfana);
+          if (_huerfanas.length > 0) {
+            const _limpio = updated.filter((i) => !_esHuerfana(i));
+            setSavedInformes(_limpio);
+            try { localStorage.setItem("siso_informes", JSON.stringify(_limpio)); } catch {}
+            if (_WORKER_TOKEN) { _writeArrayMergeD1("siso_informes", _limpio, "id").catch(() => {}); _writeArrayMergeD1(sufKey, _limpio, "id").catch(() => {}); }
+            _sbSet("siso_informes", _limpio).catch(() => {});
+            _sbSet(sufKey, _limpio).catch(() => {});
+            console.warn(`[custodia] huérfanas removidas de savedInformes: ${_huerfanas.length}`);
+          }
+          // 2) siso_cartas_custodia
+          try {
+            const _cartas = JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]");
+            if (Array.isArray(_cartas) && _cartas.length) {
+              const _cl = _cartas.filter((c) => !(c && c.id !== informe.id && _esDeEmp(c) && !_validP.has(_perDe(c))));
+              if (_cl.length !== _cartas.length) {
+                localStorage.setItem("siso_cartas_custodia", JSON.stringify(_cl));
+                if (_WORKER_TOKEN) { _workerSet("siso_cartas_custodia", _cl).catch(() => {}); }
+                _sbSet("siso_cartas_custodia_" + (currentUser?.user || "shared"), _cl).catch(() => {});
+              }
+            }
+          } catch {}
+          // 3) Portal: quitar la custodia de periodos huérfanos; eliminar periodos vacíos.
+          // Solo escribe si la lectura tuvo éxito (no sobreescribe con vacío).
+          if (_empNit && _empNit.length >= 3) {
+            try {
+              let _pKey = `siso_portal_empresa_docs_${_empNit}`;
+              let _pData = null;
+              if (_WORKER_TOKEN) { try { _pData = await _workerGet(_pKey); } catch {} }
+              if (!_pData && _empNit.length > 6) { const _alt = `siso_portal_empresa_docs_${_empNit.slice(0, -1)}`; try { const _a = await _workerGet(_alt); if (_a) { _pKey = _alt; _pData = _a; } } catch {} }
+              if (!_pData) { try { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.${_pKey}&select=value`, { headers: _getSbHeaders() }); const d = await r.json(); _pData = d[0]?.value || null; } catch {} }
+              if (_pData && Array.isArray(_pData.periodos)) {
+                let _cambio = false;
+                _pData.periodos = _pData.periodos.filter((per) => {
+                  if (!per) return false;
+                  const ym = (per.periodo || "").match(/^(\d{4}-\d{2})/)?.[1] || (per.fecha || "").slice(0, 7);
+                  if (per.custodia && ym && !_validP.has(ym)) { per.custodia = null; _cambio = true; }
+                  if (!per.custodia && !per.informe && !per.certificados && !per.cuenta) { _cambio = true; return false; }
+                  return true;
+                });
+                if (_cambio) {
+                  _pData.updatedAt = new Date().toISOString();
+                  if (_WORKER_TOKEN) { try { await _workerSet(_pKey, _pData); } catch {} }
+                  _sbSet(_pKey, _pData).catch(() => {});
+                  console.warn("[custodia] portal limpiado de custodias huérfanas (NIT " + _empNit + ")");
+                }
+              }
+            } catch (e) { console.warn("[custodia] limpieza portal:", e?.message); }
+          }
+        }
+      } catch (e) { console.warn("[custodia] limpieza huérfanas excepción:", e?.message); }
+    }
   };
   const saveEmailConfig = (cfg) => {
     setEmailConfig(cfg);
