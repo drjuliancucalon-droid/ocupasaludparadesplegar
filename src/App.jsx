@@ -34168,17 +34168,33 @@ Esta historia clínica debe conservarse mínimo 20 años.
     // Cada empresa debe tener: Certificados, Informe sociodemográfico, Carta de
     // custodia y Cuenta de cobro. Reusa la misma lógica del panel Envío Integral.
     const _docsNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+    // Custodias en clave dedicada (algunas se guardan ahí además de en savedInformes).
+    const _cartasCustodiaLS = (() => { try { return JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]"); } catch { return []; } })();
+    // Emparejador TOLERANTE doc↔empresa: por id, por nombre, o por NIT (igual o
+    // prefijo, ambos no vacíos). Resuelve empresas recreadas con id nuevo cuyos
+    // documentos quedaron con el id viejo pero mismo NIT/nombre (caso HOTEL CAMINO
+    // REAL: el portal los mostraba pero el inventario por-id los marcaba como falta).
+    const _docBelongsTo = (doc, c) => {
+      if (!doc || !c) return false;
+      if (doc.empresaId && doc.empresaId === c.id) return true;
+      if (doc.companyId && doc.companyId === c.id) return true;
+      const cNom = (c.nombre || "").trim().toUpperCase();
+      const dNom = (doc.empresaNombre || doc.clientName || "").trim().toUpperCase();
+      if (cNom && dNom && cNom === dNom) return true;
+      const cNit = _docsNormNit(c.nit);
+      const dNit = _docsNormNit(doc.empresaNit || doc.clientNit);
+      if (cNit && dNit && (cNit === dNit || cNit.startsWith(dNit) || dNit.startsWith(cNit))) return true;
+      return false;
+    };
+    const _findCustodia = (c) =>
+      savedInformes.find((i) => i.tipo === "custodia" && _docBelongsTo(i, c)) ||
+      _cartasCustodiaLS.find((cc) => _docBelongsTo(cc, c)) || null;
+    const _findBill = (c) => savedBillsList.find((b) => !b._deleted && _docBelongsTo(b, c)) || null;
     const _docsInventoryFor = (c) => {
-      const nit = _docsNormNit(c.nit);
-      const matchEmpId = (eid) => eid && eid === c.id;
-      const certCount = patientsList.filter(
-        (p) => (p.empresaId === c.id || (nit && _docsNormNit(p.empresaNit) === nit)) && p.estadoHistoria === "Cerrada"
-      ).length;
-      const socio = savedInformes.some((i) => i.empresaId === c.id && !i.tipo);
-      const custodia = savedInformes.some((i) => i.empresaId === c.id && i.tipo === "custodia");
-      const cuenta = savedBillsList.some(
-        (b) => (b.companyId === c.id || matchEmpId(b.empresaId) || b.clientName === c.nombre || (nit && _docsNormNit(b.clientNit || b.empresaNit) === nit)) && !b._deleted
-      );
+      const certCount = patientsList.filter((p) => _docBelongsTo(p, c) && p.estadoHistoria === "Cerrada").length;
+      const socio = savedInformes.some((i) => !i.tipo && _docBelongsTo(i, c));
+      const custodia = !!_findCustodia(c);
+      const cuenta = !!_findBill(c);
       const faltantes = [];
       if (certCount === 0) faltantes.push("Certificados");
       if (!socio) faltantes.push("Informe sociodemográfico");
@@ -34186,14 +34202,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
       if (!cuenta) faltantes.push("Cuenta de cobro");
       return { certCount, certs: certCount > 0, socio, custodia, cuenta, faltantes, completos: 4 - faltantes.length };
     };
-    // ── Visores (reusan builders existentes a nivel módulo) ──
+    // ── Visores / creadores: chip VERDE = ver el documento; chip ROJO = crearlo. ──
     const _verCertificados = async (c) => {
       try {
-        const nit = _docsNormNit(c.nit);
-        const certsEmp = patientsList.filter(
-          (p) => (p.empresaId === c.id || (nit && _docsNormNit(p.empresaNit) === nit)) && p.estadoHistoria === "Cerrada"
-        );
-        if (certsEmp.length === 0) { showAlert("Esta empresa no tiene certificados (HC cerradas)."); return; }
+        const certsEmp = patientsList.filter((p) => _docBelongsTo(p, c) && p.estadoHistoria === "Cerrada");
+        if (certsEmp.length === 0) { showAlert(`"${c.nombre}" no tiene certificados.\nSe generan al CERRAR la HC de cada paciente.`); return; }
         const hidratados = [];
         for (const p of certsEmp) {
           const cc = (p.docNumero || "").replace(/\s/g, "");
@@ -34205,22 +34218,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
       } catch (e) { showAlert("Error generando certificados: " + (e?.message || "")); }
     };
     const _verCustodia = (c) => {
-      const cust = savedInformes.find((i) => i.empresaId === c.id && i.tipo === "custodia");
-      if (!cust) { showAlert("No hay carta de custodia guardada para esta empresa."); return; }
-      _abrirVentanaPDF(_buildCartaCustodiaHTML(cust), `Carta Custodia — ${c.nombre}`);
+      const cust = _findCustodia(c);
+      if (cust) { _abrirVentanaPDF(_buildCartaCustodiaHTML(cust), `Carta Custodia — ${c.nombre}`); return; }
+      showAlert(`"${c.nombre}" no tiene carta de custodia. Te llevo a crearla; al guardar quedará publicada en el portal.`);
+      goTo("custodia");
     };
     const _verCuenta = (c) => {
-      const nit = _docsNormNit(c.nit);
-      const bill = savedBillsList.find(
-        (b) => (b.companyId === c.id || b.clientName === c.nombre || (nit && _docsNormNit(b.clientNit || b.empresaNit) === nit)) && !b._deleted
-      );
-      if (!bill) { showAlert("No hay cuenta de cobro para esta empresa."); return; }
-      _abrirVentanaPDF(_buildCuentaCobroHTMLMod(bill), `Cuenta de Cobro — ${c.nombre}`);
+      const bill = _findBill(c);
+      if (bill) { _abrirVentanaPDF(_buildCuentaCobroHTMLMod(bill), `Cuenta de Cobro — ${c.nombre}`); return; }
+      showAlert(`"${c.nombre}" no tiene cuenta de cobro. Te llevo a crearla.`);
+      goTo("bill");
     };
-    const _verInforme = () => {
-      setCompaniesTab("lista");
+    const _verInforme = (c) => {
+      const has = savedInformes.some((i) => !i.tipo && _docBelongsTo(i, c));
+      try { setSelectedCompanyReport(c.id); } catch {}
       goTo("reporte");
-      showAlert("El informe sociodemográfico se ve e imprime en Reportes (botón 'Descargar / Imprimir Informe').");
+      showAlert(has
+        ? `El informe sociodemográfico de "${c.nombre}" se ve e imprime en Reportes.`
+        : `"${c.nombre}" no tiene informe sociodemográfico. Te llevo a Reportes para generarlo (empresa preseleccionada).`);
     };
     const _docChipCls = (ok) =>
       "text-[10px] font-black px-2 py-0.5 rounded-full border transition cursor-pointer " +
