@@ -1,6 +1,6 @@
 // src/pages/CartaCustodia.jsx — Módulo Carta de Custodia (monolito OcupaSalud)
 // Réplica exacta del documento oficial de Historias Clínicas Ocupacionales
-import React, { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 
 const MONTHS_ES = [
   "enero","febrero","marzo","abril","mayo","junio",
@@ -206,9 +206,9 @@ export default function CartaCustodia({
   // puede ajustarlo luego con el selector manual (este efecto solo corre al
   // cambiar la empresa seleccionada).
   const _ccNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
-  const _mesDeAtenciones = (compId) => {
+  const _atencionesInfo = (compId) => {
     const comp = (companies || []).find(c => c.id === compId);
-    if (!comp) return null;
+    if (!comp) return { total: 0, entries: [], sugerido: null };
     const cNit = _ccNormNit(comp.nit);
     const cNom = (comp.nombre || "").trim().toUpperCase();
     const pac = (patientsList || []).filter(p => {
@@ -224,17 +224,30 @@ export default function CartaCustodia({
       const f = (p.fechaExamen || p.fechaRegistro || "").slice(0, 7);
       if (/^\d{4}-\d{2}$/.test(f)) counts[f] = (counts[f] || 0) + 1;
     });
-    const entries = Object.entries(counts);
-    if (entries.length === 0) return null;
-    entries.sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])); // más frecuente; desempate: más reciente
-    const [yy, mm] = entries[0][0].split("-").map(Number);
-    return { mes: mm - 1, anio: yy };
+    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])); // más frecuente; desempate: más reciente
+    let sugerido = null;
+    if (entries.length) { const [yy, mm] = entries[0][0].split("-").map(Number); sugerido = { mes: mm - 1, anio: yy }; }
+    return { total: pac.length, entries, sugerido };
   };
+  // Info de atenciones de la empresa seleccionada (recalcula cuando cargan los
+  // pacientes). Se usa para el autollenado del mes y para el diagnóstico visible.
+  const _atInfo = useMemo(
+    () => _atencionesInfo(selectedCompanyId),
+    [selectedCompanyId, patientsList, companies] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // FASE 2 (fix tiempo): autollena el mes UNA vez por empresa, en cuanto haya
+  // datos. Si los pacientes cargan tarde, reintenta. No pisa un cambio manual
+  // (una vez autollenada la empresa, no vuelve a tocar el mes).
+  const _autoMesRef = useRef("");
   useEffect(() => {
     if (!selectedCompanyId) return;
-    const r = _mesDeAtenciones(selectedCompanyId);
-    if (r) { setMesVal(r.mes); setAnioVal(r.anio); }
-  }, [selectedCompanyId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (_autoMesRef.current === selectedCompanyId) return;
+    if (_atInfo.sugerido) {
+      setMesVal(_atInfo.sugerido.mes);
+      setAnioVal(_atInfo.sugerido.anio);
+      _autoMesRef.current = selectedCompanyId;
+    }
+  }, [selectedCompanyId, _atInfo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lista de cartas guardadas (tipo "custodia")
   const cartasGuardadas = useMemo(
@@ -276,6 +289,8 @@ export default function CartaCustodia({
 
   // Cargar una carta guardada en el formulario para editar
   const handleEditarCarta = useCallback((carta) => {
+    // No autollenar el mes al EDITAR una carta guardada: respetar su mes guardado.
+    _autoMesRef.current = carta.empresaId || "";
     setSelectedCompanyId(carta.empresaId || "");
     if (carta.fecha) setFechaCarta(carta.fecha);
     if (typeof carta.mes === "number") setMesVal(carta.mes);
@@ -416,6 +431,27 @@ export default function CartaCustodia({
                   min="2020" max="2035"
                   className="w-20 text-xs border border-gray-300 rounded-lg px-2 py-2 focus:outline-none focus:ring-2 focus:ring-emerald-400" />
               </div>
+              {/* Diagnóstico de atenciones (FASE 2): qué detecta el sistema, para
+                  no depurar a ciegas el autollenado del mes. */}
+              {selectedCompanyId && (
+                <div className="mt-1.5 text-[10px] bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-blue-800 leading-snug">
+                  {_atInfo.total === 0 ? (
+                    <span>🔎 <b>0 atenciones</b> detectadas localmente para esta empresa. Si tiene HC cerradas, espera a que carguen los datos (el nombre del médico debe verse completo) o revisa el enlace empresa↔paciente.</span>
+                  ) : (
+                    <span>
+                      🔎 <b>{_atInfo.total} atención(es)</b> · meses: {_atInfo.entries.map(([ym, n]) => `${MONTHS_ES[parseInt(ym.split("-")[1], 10) - 1]} ${ym.split("-")[0]} (${n})`).join(", ")}
+                      {_atInfo.sugerido && <> → sugerido: <b className="capitalize">{MONTHS_ES[_atInfo.sugerido.mes]} {_atInfo.sugerido.anio}</b></>}
+                      {_atInfo.sugerido && (
+                        <button type="button"
+                          onClick={() => { setMesVal(_atInfo.sugerido.mes); setAnioVal(_atInfo.sugerido.anio); }}
+                          className="ml-2 px-2 py-0.5 bg-blue-600 text-white rounded font-bold hover:bg-blue-700">
+                          Usar sugerido
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Ciudad */}
