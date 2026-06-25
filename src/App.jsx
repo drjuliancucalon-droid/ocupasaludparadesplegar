@@ -19049,6 +19049,36 @@ function AppInner() {
     } catch {}
   }, []);
 
+  // FIX 2026-06-25: deduplicar la firma redundante de la copia LS de pacientes.
+  // `_firma` (firma base64 del médico) se repetía en cada paciente ≈ misma imagen
+  // → ~3.8MB en localStorage. Esta pasada única la quita de la copia LS cuando es
+  // igual a la firma activa (recuperable por activeSignature en el render). El
+  // estado React en memoria conserva _firma para la sesión actual.
+  const _firmaDedupDoneRef = useRef(false);
+  useEffect(() => {
+    if (_firmaDedupDoneRef.current) return;
+    if (!currentUser?.user || !activeSignature) return;
+    _firmaDedupDoneRef.current = true;
+    try {
+      const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
+      const k = _patKey(sid);
+      const raw = _ls.getItem(k);
+      if (!raw) return;
+      const list = JSON.parse(raw);
+      if (!Array.isArray(list)) return;
+      let changed = false;
+      const slim = list.map((p) => {
+        if (p && p._firma && p._firma === activeSignature) { changed = true; const { _firma, ...rest } = p; return rest; }
+        return p;
+      });
+      if (changed) {
+        const out = JSON.stringify(slim);
+        _ls.setItem(k, out);
+        console.warn(`[firma-dedup] LS pacientes ${(raw.length / 1024) | 0}KB → ${(out.length / 1024) | 0}KB`);
+      }
+    } catch (e) { console.warn("[firma-dedup]", e?.message); }
+  }, [currentUser, activeSignature]);
+
   // FIX 2026-06-15: Garbage collector de chunks temporales D1.
   // Cuando _workerSet falla mid-flight, deja claves __new{ts}__cN y __new{ts}__meta
   // que el cleanup con .catch(()=>{}) no logra borrar siempre. Acumuladas, llenan D1.
@@ -19125,12 +19155,19 @@ function AppInner() {
           return true;
         });
         if (noEnD1.length > 0) {
-          console.warn(`[AUDIT] ⚠️ ${noEnD1.length} HCs en LS NO presentes en D1, encolando subida...`);
+          console.warn(`[AUDIT] ⚠️ ${noEnD1.length} HCs en LS NO presentes en D1, subiendo a D1...`);
           const merged = [...remote, ...noEnD1];
           const slim = merged.map(_slimPatient);
-          _enqueuePendingD1(_patKey(sid), slim);
-          _enqueuePendingD1(_patKeyCloud(sid), slim);
-          setPendingD1Count(Object.keys(_getPendingD1()).length);
+          // FIX 2026-06-25: subir DIRECTO a D1 (con chunking interno) en vez de
+          // encolar el array completo (~4MB) en localStorage, que reventaba la cuota.
+          // Estamos online: acabamos de leer `remote` de D1.
+          try {
+            const _ok1 = await _workerSet(_patKey(sid), slim);
+            const _ok2 = await _workerSet(_patKeyCloud(sid), slim);
+            console.log(_ok1 && _ok2
+              ? `[AUDIT] ✅ ${noEnD1.length} HC(s) subida(s) a D1`
+              : "[AUDIT] subida parcial a D1 — reintentará el auto-sync");
+          } catch (e) { console.warn("[AUDIT] subida a D1 falló:", e?.message); }
         } else {
           console.log("[AUDIT] ✅ LS ↔ D1 sincronizados");
         }
@@ -22688,6 +22725,25 @@ const handleLogin = (u, p) => {
   // recientes que existen en D1.
   // Threshold conservador: 3 pacientes (permite borrados legítimos puntuales).
   const _PAT_REGRESSION_THRESHOLD = 3;
+  // FIX 2026-06-25: la firma del médico (`_firma`, base64) se repetía en CADA
+  // paciente (la misma imagen) → ~3.8MB redundantes en localStorage (383 HCs).
+  // La firma vive aparte (siso_doctor_signature / activeSignature) y el render ya
+  // hace fallback, así que en la COPIA LOCAL la quitamos cuando es igual a la firma
+  // activa. Se conservan firmas distintas (multi-médico). El estado React en memoria
+  // y los certificados ya emitidos NO se tocan.
+  const _stripFirmaLS = (list) => {
+    if (!activeSignature || !Array.isArray(list)) return list;
+    let changed = false;
+    const out = list.map((p) => {
+      if (p && p._firma && p._firma === activeSignature) {
+        changed = true;
+        const { _firma, ...rest } = p;
+        return rest;
+      }
+      return p;
+    });
+    return changed ? out : list;
+  };
   const _syncPatients = (list) => {
     const _suid = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
@@ -22698,7 +22754,7 @@ const handleLogin = (u, p) => {
     // Comportamiento síncrono inmediato — preserva el contrato del caller:
     // LS se escribe ya con `list`. Si después detectamos regresión vs D1
     // hacemos merge y re-escribimos LS + estado React.
-    _ls.setItem(key, JSON.stringify(list));
+    _ls.setItem(key, JSON.stringify(_stripFirmaLS(list)));
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
@@ -22740,7 +22796,7 @@ const handleLogin = (u, p) => {
               finalList = [...list, ...extras];
               console.warn(`[_syncPatients] MERGE anti-regresión: cliente=${list.length}, D1=${remote.length}, +${extras.length} preservados = ${finalList.length}`);
               // Persistir merge en LS + React state — tolerante a quota
-              try { _ls.setItem(key, JSON.stringify(finalList)); } catch (e) {
+              try { _ls.setItem(key, JSON.stringify(_stripFirmaLS(finalList))); } catch (e) {
                 console.warn("[_syncPatients] LS quota:", e?.message);
               }
               try { setPatientsList(finalList); } catch {}
