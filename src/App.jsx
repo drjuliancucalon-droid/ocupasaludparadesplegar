@@ -19155,35 +19155,44 @@ function AppInner() {
     } catch {}
   }, []);
 
-  // FIX 2026-06-25: deduplicar la firma redundante de la copia LS de pacientes.
+  // FIX 2026-06-25 (v2): deduplicar la firma redundante de la copia LS de pacientes.
   // `_firma` (firma base64 del médico) se repetía en cada paciente ≈ misma imagen
-  // → ~3.8MB en localStorage. Esta pasada única la quita de la copia LS cuando es
-  // igual a la firma activa (recuperable por activeSignature en el render). El
-  // estado React en memoria conserva _firma para la sesión actual.
+  // → ~3.8MB en localStorage. CRÍTICO: la v1 exigía `activeSignature` cargada, pero
+  // si los datos del médico no cargan (sesión degradada), nunca corría y el LS se
+  // llenaba al punto de no poder ni escribir un timestamp. Ahora detecta la firma
+  // MÁS REPETIDA entre los pacientes (la del médico) y la quita SIN depender de
+  // activeSignature. Escribe un valor más pequeño en la misma clave → funciona
+  // aunque el LS esté lleno (libera espacio). Conserva firmas distintas.
   const _firmaDedupDoneRef = useRef(false);
   useEffect(() => {
     if (_firmaDedupDoneRef.current) return;
-    if (!currentUser?.user || !activeSignature) return;
-    _firmaDedupDoneRef.current = true;
+    if (!currentUser?.user) return;
     try {
       const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
       const k = _patKey(sid);
       const raw = _ls.getItem(k);
       if (!raw) return;
       const list = JSON.parse(raw);
-      if (!Array.isArray(list)) return;
+      if (!Array.isArray(list) || list.length === 0) return;
+      // Firma a quitar: la más repetida (≥2 pacientes), o la activa como respaldo.
+      const counts = {};
+      for (const p of list) { if (p && typeof p._firma === "string" && p._firma.length > 100) counts[p._firma] = (counts[p._firma] || 0) + 1; }
+      const dom = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      const target = (dom && dom[1] >= 2) ? dom[0] : (activeSignature || null);
+      if (!target) { return; } // aún sin datos; reintenta cuando carguen pacientes
+      _firmaDedupDoneRef.current = true;
       let changed = false;
       const slim = list.map((p) => {
-        if (p && p._firma && p._firma === activeSignature) { changed = true; const { _firma, ...rest } = p; return rest; }
+        if (p && p._firma === target) { changed = true; const { _firma, ...rest } = p; return rest; }
         return p;
       });
       if (changed) {
         const out = JSON.stringify(slim);
         _ls.setItem(k, out);
-        console.warn(`[firma-dedup] LS pacientes ${(raw.length / 1024) | 0}KB → ${(out.length / 1024) | 0}KB`);
+        console.warn(`[firma-dedup] LS pacientes ${(raw.length / 1024) | 0}KB → ${(out.length / 1024) | 0}KB (firma x${dom ? dom[1] : "activa"})`);
       }
     } catch (e) { console.warn("[firma-dedup]", e?.message); }
-  }, [currentUser, activeSignature]);
+  }, [currentUser, patientsList, activeSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 2026-06-15: Garbage collector de chunks temporales D1.
   // Cuando _workerSet falla mid-flight, deja claves __new{ts}__cN y __new{ts}__meta
@@ -22838,10 +22847,20 @@ const handleLogin = (u, p) => {
   // activa. Se conservan firmas distintas (multi-médico). El estado React en memoria
   // y los certificados ya emitidos NO se tocan.
   const _stripFirmaLS = (list) => {
-    if (!activeSignature || !Array.isArray(list)) return list;
+    if (!Array.isArray(list) || list.length === 0) return list;
+    // FIX 2026-06-25 (v2): quitar la firma activa O la MÁS REPETIDA (la del médico),
+    // sin depender de que activeSignature esté cargada (evita re-inflar el LS).
+    let target = activeSignature || null;
+    if (!target) {
+      const counts = {};
+      for (const p of list) { if (p && typeof p._firma === "string" && p._firma.length > 100) counts[p._firma] = (counts[p._firma] || 0) + 1; }
+      const dom = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      if (dom && dom[1] >= 2) target = dom[0];
+    }
+    if (!target) return list;
     let changed = false;
     const out = list.map((p) => {
-      if (p && p._firma && p._firma === activeSignature) {
+      if (p && p._firma === target) {
         changed = true;
         const { _firma, ...rest } = p;
         return rest;
