@@ -17787,7 +17787,19 @@ function AppInner() {
   // realmente persistió en D1 antes de mostrar "✅ Guardado".
   const _publicarAlPortalEmpresa = async (informe) => {
     try {
-      const emp = companies.find(c => c.id === informe.empresaId);
+      // FASE 2: búsqueda TOLERANTE de la empresa (id → NIT → nombre). Antes solo
+      // por id exacto: si la empresa se recreó con id nuevo, la custodia/informe
+      // quedaba huérfano y NO se publicaba al portal ("empresa no encontrada").
+      const _ppNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+      let emp = companies.find(c => c.id === informe.empresaId);
+      if (!emp && informe.empresaNit) {
+        const iNit = _ppNormNit(informe.empresaNit);
+        if (iNit) emp = companies.find(c => { const cN = _ppNormNit(c.nit); return cN && (cN === iNit || cN.startsWith(iNit) || iNit.startsWith(cN)); });
+      }
+      if (!emp && informe.empresaNombre) {
+        const iNom = informe.empresaNombre.trim().toUpperCase();
+        if (iNom && iNom !== "NOMBRE DE LA EMPRESA") emp = companies.find(c => (c.nombre || "").trim().toUpperCase() === iNom);
+      }
       if (!emp) return { ok: false, error: "empresa no encontrada" };
       const nit = (emp.nit || "").toString().replace(/[^0-9]/g, "");
       if (!nit || nit.length < 3) return { ok: false, error: "NIT inválido" };
@@ -56570,6 +56582,7 @@ body{font-family:Arial,sans-serif;margin:0;background:#f5f5f5}
       activeDoctorData={activeDoctorData}
       activeSignature={activeSignature}
       companies={companies}
+      patientsList={patientsList}
       saveInforme={saveInforme}
       savedInformes={savedInformes}
       goTo={goTo}

@@ -1,6 +1,6 @@
 // src/pages/CartaCustodia.jsx — Módulo Carta de Custodia (monolito OcupaSalud)
 // Réplica exacta del documento oficial de Historias Clínicas Ocupacionales
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 
 const MONTHS_ES = [
   "enero","febrero","marzo","abril","mayo","junio",
@@ -158,6 +158,7 @@ export default function CartaCustodia({
   activeDoctorData,
   activeSignature,
   companies,
+  patientsList,
   saveInforme,
   savedInformes,
   goTo,
@@ -195,9 +196,45 @@ export default function CartaCustodia({
     [companies, selectedCompanyId]
   );
   const empresaNombre  = selectedCompany?.nombre || selectedCompany?.empresaNombre || "NOMBRE DE LA EMPRESA";
+  const empresaNitSel  = selectedCompany ? `${selectedCompany.nit || ""}${selectedCompany.dv ? "-" + selectedCompany.dv : ""}` : "";
   const ciudadDisplay  = selectedCompany?.ciudad || ciudadDest;
   const mesTexto       = MONTHS_ES[mesVal];
   const fechaTexto     = formatDateEs(fechaCarta);
+
+  // FASE 2: al seleccionar empresa, fijar el mes/año del mes con MÁS atenciones
+  // reales (fechaExamen) de esa empresa, en vez de "mes anterior". El usuario
+  // puede ajustarlo luego con el selector manual (este efecto solo corre al
+  // cambiar la empresa seleccionada).
+  const _ccNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+  const _mesDeAtenciones = (compId) => {
+    const comp = (companies || []).find(c => c.id === compId);
+    if (!comp) return null;
+    const cNit = _ccNormNit(comp.nit);
+    const cNom = (comp.nombre || "").trim().toUpperCase();
+    const pac = (patientsList || []).filter(p => {
+      if (!p) return false;
+      if (p.empresaId === compId) return true;
+      if (cNom && (p.empresaNombre || "").trim().toUpperCase() === cNom) return true;
+      const pN = _ccNormNit(p.empresaNit);
+      if (cNit && pN && (cNit === pN || cNit.startsWith(pN) || pN.startsWith(cNit))) return true;
+      return false;
+    });
+    const counts = {};
+    pac.forEach(p => {
+      const f = (p.fechaExamen || p.fechaRegistro || "").slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(f)) counts[f] = (counts[f] || 0) + 1;
+    });
+    const entries = Object.entries(counts);
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])); // más frecuente; desempate: más reciente
+    const [yy, mm] = entries[0][0].split("-").map(Number);
+    return { mes: mm - 1, anio: yy };
+  };
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    const r = _mesDeAtenciones(selectedCompanyId);
+    if (r) { setMesVal(r.mes); setAnioVal(r.anio); }
+  }, [selectedCompanyId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Lista de cartas guardadas (tipo "custodia")
   const cartasGuardadas = useMemo(
@@ -211,6 +248,7 @@ export default function CartaCustodia({
       id: "inf_cust_" + Date.now(),
       empresaId: selectedCompanyId,
       empresaNombre,
+      empresaNit: empresaNitSel, // FASE 2: identificador estable (no cambia si el id de la empresa cambia)
       tipo: "custodia",
       periodo: `${anioVal}-${String(mesVal + 1).padStart(2, "0")}`,
       fecha: fechaCarta,
@@ -234,7 +272,7 @@ export default function CartaCustodia({
     showAlert("✅ Carta de Custodia guardada para " + empresaNombre);
     // Cambiar al tab de guardadas para que la vea de inmediato
     setTimeout(() => setActiveTab("guardadas"), 800);
-  }, [selectedCompanyId, empresaNombre, fechaCarta, mesVal, anioVal, ciudadDisplay, docNombre, docLicencia, docCC, docTitulo, docEmail, docCel, docCiudad, firmaSrc, saveInforme, showAlert]);
+  }, [selectedCompanyId, empresaNombre, empresaNitSel, fechaCarta, mesVal, anioVal, ciudadDisplay, docNombre, docLicencia, docCC, docTitulo, docEmail, docCel, docCiudad, firmaSrc, saveInforme, showAlert]);
 
   // Cargar una carta guardada en el formulario para editar
   const handleEditarCarta = useCallback((carta) => {
