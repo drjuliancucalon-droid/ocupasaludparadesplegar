@@ -18744,6 +18744,10 @@ function AppInner() {
   // ── EMPRESAS (component-level to avoid React #310) ──
   const [companiesTab, setCompaniesTab] = useState("lista");
   const [editingCompany, setEditingCompany] = useState(null);
+  // FASE 1 (inventario de documentos por empresa)
+  const [docsSoloIncompletas, setDocsSoloIncompletas] = useState(false);
+  const [docsAIResumen, setDocsAIResumen] = useState("");
+  const [docsAILoading, setDocsAILoading] = useState(false);
   const [loadingEncuestas, setLoadingEncuestas] = useState(false);
   const [encuestasSyncStatus, setEncuestasSyncStatus] = useState(null); // null|'saving'|'ok'|'error'
   const [empresaPortalCodes, setEmpresaPortalCodes] = useState({}); // nit → codigoAcceso cargado desde Supabase
@@ -34160,6 +34164,92 @@ Esta historia clínica debe conservarse mínimo 20 años.
       );
     })();
     // companiesTab, editingCompany are component-level state (avoid React #310)
+    // ── FASE 1: Inventario de documentos por empresa (determinístico, local) ──
+    // Cada empresa debe tener: Certificados, Informe sociodemográfico, Carta de
+    // custodia y Cuenta de cobro. Reusa la misma lógica del panel Envío Integral.
+    const _docsNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+    const _docsInventoryFor = (c) => {
+      const nit = _docsNormNit(c.nit);
+      const matchEmpId = (eid) => eid && eid === c.id;
+      const certCount = patientsList.filter(
+        (p) => (p.empresaId === c.id || (nit && _docsNormNit(p.empresaNit) === nit)) && p.estadoHistoria === "Cerrada"
+      ).length;
+      const socio = savedInformes.some((i) => i.empresaId === c.id && !i.tipo);
+      const custodia = savedInformes.some((i) => i.empresaId === c.id && i.tipo === "custodia");
+      const cuenta = savedBillsList.some(
+        (b) => (b.companyId === c.id || matchEmpId(b.empresaId) || b.clientName === c.nombre || (nit && _docsNormNit(b.clientNit || b.empresaNit) === nit)) && !b._deleted
+      );
+      const faltantes = [];
+      if (certCount === 0) faltantes.push("Certificados");
+      if (!socio) faltantes.push("Informe sociodemográfico");
+      if (!custodia) faltantes.push("Carta de custodia");
+      if (!cuenta) faltantes.push("Cuenta de cobro");
+      return { certCount, certs: certCount > 0, socio, custodia, cuenta, faltantes, completos: 4 - faltantes.length };
+    };
+    // ── Visores (reusan builders existentes a nivel módulo) ──
+    const _verCertificados = async (c) => {
+      try {
+        const nit = _docsNormNit(c.nit);
+        const certsEmp = patientsList.filter(
+          (p) => (p.empresaId === c.id || (nit && _docsNormNit(p.empresaNit) === nit)) && p.estadoHistoria === "Cerrada"
+        );
+        if (certsEmp.length === 0) { showAlert("Esta empresa no tiene certificados (HC cerradas)."); return; }
+        const hidratados = [];
+        for (const p of certsEmp) {
+          const cc = (p.docNumero || "").replace(/\s/g, "");
+          let pd = null;
+          if (_WORKER_TOKEN && cc) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
+          hidratados.push(pd || p);
+        }
+        _abrirVentanaPDF(_buildCertificadosEmpresaHTML(hidratados), `Certificados — ${c.nombre} (${hidratados.length})`);
+      } catch (e) { showAlert("Error generando certificados: " + (e?.message || "")); }
+    };
+    const _verCustodia = (c) => {
+      const cust = savedInformes.find((i) => i.empresaId === c.id && i.tipo === "custodia");
+      if (!cust) { showAlert("No hay carta de custodia guardada para esta empresa."); return; }
+      _abrirVentanaPDF(_buildCartaCustodiaHTML(cust), `Carta Custodia — ${c.nombre}`);
+    };
+    const _verCuenta = (c) => {
+      const nit = _docsNormNit(c.nit);
+      const bill = savedBillsList.find(
+        (b) => (b.companyId === c.id || b.clientName === c.nombre || (nit && _docsNormNit(b.clientNit || b.empresaNit) === nit)) && !b._deleted
+      );
+      if (!bill) { showAlert("No hay cuenta de cobro para esta empresa."); return; }
+      _abrirVentanaPDF(_buildCuentaCobroHTMLMod(bill), `Cuenta de Cobro — ${c.nombre}`);
+    };
+    const _verInforme = () => {
+      setCompaniesTab("lista");
+      goTo("reporte");
+      showAlert("El informe sociodemográfico se ve e imprime en Reportes (botón 'Descargar / Imprimir Informe').");
+    };
+    const _docChipCls = (ok) =>
+      "text-[10px] font-black px-2 py-0.5 rounded-full border transition cursor-pointer " +
+      (ok ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" : "bg-red-50 text-red-600 border-red-200 hover:bg-red-100");
+    const _generarResumenDocsIA = async () => {
+      try {
+        setDocsAILoading(true);
+        setDocsAIResumen("");
+        const filas = companies.map((c) => {
+          const inv = _docsInventoryFor(c);
+          return `- ${c.nombre} (NIT ${c.nit || "N/R"}): Certificados=${inv.certCount}, Sociodemográfico=${inv.socio ? "Sí" : "No"}, Custodia=${inv.custodia ? "Sí" : "No"}, CuentaCobro=${inv.cuenta ? "Sí" : "No"} → completos ${inv.completos}/4${inv.faltantes.length ? ` · faltan: ${inv.faltantes.join(", ")}` : ""}`;
+        }).join("\n");
+        const prompt =
+          `Eres asistente administrativo de una IPS de salud ocupacional en Colombia. ` +
+          `A continuación el inventario REAL (ya calculado) de documentos por empresa. ` +
+          `Cada empresa debe tener 4 documentos: Certificados, Informe sociodemográfico, Carta de custodia y Cuenta de cobro. ` +
+          `NO inventes datos ni cambies los números; solo redacta un resumen ejecutivo claro y una priorización de acciones.\n\n` +
+          `INVENTARIO:\n${filas}\n\n` +
+          `Redacta en español, formato: (1) Panorama general (cuántas empresas completas vs incompletas, totales por tipo de documento faltante), ` +
+          `(2) Empresas a priorizar y por qué (las que ya tienen certificados emitidos pero les falta custodia/cuenta son urgentes), ` +
+          `(3) Lista de acciones concretas por empresa incompleta. Conciso y accionable.`;
+        const txt = await callAI(prompt, false);
+        setDocsAIResumen((txt || "").trim() || "La IA no devolvió texto.");
+      } catch (e) {
+        setDocsAIResumen("⚠️ No se pudo generar el resumen IA: " + (e?.message || "error"));
+      } finally {
+        setDocsAILoading(false);
+      }
+    };
     return (
       <div className="min-h-screen bg-gray-50 font-sans">
         {renderNavbar()}
@@ -34208,6 +34298,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
           <div className="flex gap-1 mb-4 bg-white rounded-xl p-1 shadow-sm border border-gray-100">
             {[
               { k: "lista", l: "🏢 Empresas" },
+              { k: "documentos", l: "📄 Documentos" },
               { k: "nueva", l: "➕ Nueva Empresa" },
               { k: "convenios", l: "🤝 Convenios" },
               { k: "encuestas", l: "📋 Encuestas" },
@@ -34407,6 +34498,29 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         </button>
                       </div>
                     </div>
+                    {/* FASE 1: Inventario de documentos (clic para ver) */}
+                    {(() => {
+                      const inv = _docsInventoryFor(c);
+                      return (
+                        <div className="mt-2 pt-2 border-t border-gray-100 flex flex-wrap items-center gap-1.5">
+                          <button type="button" title="Ver certificados" onClick={() => _verCertificados(c)} className={_docChipCls(inv.certs)}>
+                            📄 Certif: {inv.certCount}
+                          </button>
+                          <button type="button" title="Ver informe sociodemográfico" onClick={() => _verInforme(c)} className={_docChipCls(inv.socio)}>
+                            📊 Sociodem: {inv.socio ? "✓" : "✗"}
+                          </button>
+                          <button type="button" title="Ver carta de custodia" onClick={() => _verCustodia(c)} className={_docChipCls(inv.custodia)}>
+                            📁 Custodia: {inv.custodia ? "✓" : "✗"}
+                          </button>
+                          <button type="button" title="Ver cuenta de cobro" onClick={() => _verCuenta(c)} className={_docChipCls(inv.cuenta)}>
+                            🧾 Cuenta: {inv.cuenta ? "✓" : "✗"}
+                          </button>
+                          <span className={"text-[10px] font-black px-2 py-0.5 rounded-full ml-auto " + (inv.completos === 4 ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800")}>
+                            {inv.completos}/4{inv.faltantes.length ? ` · falta: ${inv.faltantes.join(", ")}` : " ✓ completo"}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     {/* Tarifas rápidas */}
                     {(c.tarifaIngreso ||
                       c.tarifaPeriodico ||
@@ -34978,6 +35092,100 @@ Esta historia clínica debe conservarse mínimo 20 años.
               </button>
             </div>
           )}
+
+          {/* TAB: DOCUMENTOS (inventario por empresa) — FASE 1 */}
+          {companiesTab === "documentos" && (() => {
+            const filas = _visibleCompanies
+              .map((c) => ({ c, inv: _docsInventoryFor(c) }))
+              .filter((r) => (docsSoloIncompletas ? r.inv.completos < 4 : true))
+              .sort((a, b) => a.inv.completos - b.inv.completos);
+            const tot = { certs: 0, socio: 0, custodia: 0, cuenta: 0, completas: 0 };
+            _visibleCompanies.forEach((c) => {
+              const inv = _docsInventoryFor(c);
+              if (inv.certs) tot.certs++;
+              if (inv.socio) tot.socio++;
+              if (inv.custodia) tot.custodia++;
+              if (inv.cuenta) tot.cuenta++;
+              if (inv.completos === 4) tot.completas++;
+            });
+            const totalEmp = _visibleCompanies.length;
+            return (
+              <div className="space-y-3">
+                {/* Totales */}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {[
+                    { l: "Completas", v: `${tot.completas}/${totalEmp}`, cls: "bg-emerald-50 border-emerald-200" },
+                    { l: "Con certificados", v: tot.certs, cls: "bg-blue-50 border-blue-200" },
+                    { l: "Con sociodemográfico", v: tot.socio, cls: "bg-blue-50 border-blue-200" },
+                    { l: "Con custodia", v: tot.custodia, cls: "bg-blue-50 border-blue-200" },
+                    { l: "Con cuenta cobro", v: tot.cuenta, cls: "bg-blue-50 border-blue-200" },
+                  ].map((k) => (
+                    <div key={k.l} className={"rounded-xl border p-2 text-center " + k.cls}>
+                      <p className="text-lg font-black text-gray-800">{k.v}</p>
+                      <p className="text-[9px] font-bold text-gray-500 uppercase">{k.l}</p>
+                    </div>
+                  ))}
+                </div>
+                {/* Controles */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="flex items-center gap-1.5 text-xs font-bold text-gray-600 cursor-pointer">
+                    <input type="checkbox" checked={docsSoloIncompletas} onChange={(e) => setDocsSoloIncompletas(e.target.checked)} />
+                    Solo incompletas
+                  </label>
+                  <button
+                    onClick={_generarResumenDocsIA}
+                    disabled={docsAILoading}
+                    className="ml-auto px-3 py-1.5 bg-purple-700 text-white text-[11px] font-black rounded-xl hover:bg-purple-800 disabled:opacity-50"
+                  >
+                    {docsAILoading ? "🤖 Generando..." : "🤖 Resumen IA"}
+                  </button>
+                </div>
+                {docsAIResumen && (
+                  <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">
+                    {docsAIResumen}
+                  </div>
+                )}
+                {/* Tabla */}
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-gray-50 text-gray-500 text-[10px] uppercase">
+                        <th className="p-2 text-left">Empresa</th>
+                        <th className="p-2 text-center">📄 Certif.</th>
+                        <th className="p-2 text-center">📊 Sociodem.</th>
+                        <th className="p-2 text-center">📁 Custodia</th>
+                        <th className="p-2 text-center">🧾 Cuenta</th>
+                        <th className="p-2 text-center">Completitud</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filas.length === 0 && (
+                        <tr><td colSpan={6} className="p-4 text-center text-gray-400 italic">Sin empresas para mostrar.</td></tr>
+                      )}
+                      {filas.map(({ c, inv }) => (
+                        <tr key={c.id} className="border-t border-gray-100">
+                          <td className="p-2">
+                            <p className="font-black text-gray-800">{c.nombre}</p>
+                            <p className="text-[9px] text-gray-400">NIT: {c.nit || "N/R"}</p>
+                          </td>
+                          <td className="p-2 text-center"><button onClick={() => _verCertificados(c)} className={_docChipCls(inv.certs)}>{inv.certCount}</button></td>
+                          <td className="p-2 text-center"><button onClick={() => _verInforme(c)} className={_docChipCls(inv.socio)}>{inv.socio ? "✓" : "✗"}</button></td>
+                          <td className="p-2 text-center"><button onClick={() => _verCustodia(c)} className={_docChipCls(inv.custodia)}>{inv.custodia ? "✓" : "✗"}</button></td>
+                          <td className="p-2 text-center"><button onClick={() => _verCuenta(c)} className={_docChipCls(inv.cuenta)}>{inv.cuenta ? "✓" : "✗"}</button></td>
+                          <td className="p-2 text-center">
+                            <span className={"text-[10px] font-black px-2 py-0.5 rounded-full " + (inv.completos === 4 ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800")}>
+                              {inv.completos}/4
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-gray-400 italic">Inventario calculado localmente (sin red). Clic en cada celda para ver/imprimir el documento.</p>
+              </div>
+            );
+          })()}
 
           {/* TAB: CONVENIOS RESUMEN */}
           {companiesTab === "convenios" && (
