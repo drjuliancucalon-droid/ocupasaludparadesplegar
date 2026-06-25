@@ -534,14 +534,42 @@ const _workerGet = async (key) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const _PENDING_D1_KEY = "siso_pending_d1_writes";
 const _PENDING_D1_MAX_RETRIES = 20;
+// FIX 2026-06-24: tope de tamaño por entrada de la cola de pendientes.
+// Los arrays grandes (p.ej. la lista de 383 pacientes) NO deben duplicarse aquí:
+// ya viven en localStorage bajo su propia clave y se re-sincronizan en cada
+// guardado + en el AUDIT de arranque. Encolar copias completas reventaba la cuota
+// de localStorage (QuotaExceededError → "[pending] enqueue falló").
+const _PENDING_D1_MAX_VALUE = 60 * 1024; // 60KB serializado por entrada
+const _pendingSize = (v) => { try { return JSON.stringify(v).length; } catch { return Infinity; } };
 const _enqueuePendingD1 = (key, value) => {
-  try {
-    const raw = localStorage.getItem(_PENDING_D1_KEY) || "{}";
-    const pending = JSON.parse(raw);
-    pending[key] = { value, ts: Date.now(), retries: 0 };
-    localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(pending));
-    return true;
-  } catch (e) { console.warn("[pending] enqueue falló:", e?.message); return false; }
+  let serializedLen;
+  try { serializedLen = JSON.stringify(value).length; } catch { return false; }
+  // No encolar valores gigantes: se re-sincronizan por la vía normal (auto-sync/AUDIT).
+  if (serializedLen > _PENDING_D1_MAX_VALUE) {
+    console.warn(`[pending] omitido ${key} (${(serializedLen / 1024) | 0}KB > tope) — se re-sincroniza en el próximo guardado`);
+    return false;
+  }
+  const write = (p) => localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(p));
+  const pending = _getPendingD1();
+  pending[key] = { value, ts: Date.now(), retries: 0 };
+  try { write(pending); return true; }
+  catch (e1) {
+    // Cuota llena: purgar entradas pesadas existentes y reintentar.
+    try {
+      const slim = {};
+      for (const [k, v] of Object.entries(pending)) {
+        if (k !== key && _pendingSize(v) <= _PENDING_D1_MAX_VALUE) slim[k] = v;
+      }
+      slim[key] = { value, ts: Date.now(), retries: 0 };
+      write(slim);
+      console.warn(`[pending] cuota llena → purgadas entradas pesadas, reencolado ${key}`);
+      return true;
+    } catch {
+      // Último recurso: dejar solo este item.
+      try { write({ [key]: { value, ts: Date.now(), retries: 0 } }); return true; }
+      catch (e3) { console.warn("[pending] enqueue falló (cuota):", e3?.message); return false; }
+    }
+  }
 };
 const _getPendingD1 = () => {
   try { return JSON.parse(localStorage.getItem(_PENDING_D1_KEY) || "{}"); } catch { return {}; }
@@ -18954,6 +18982,14 @@ function AppInner() {
     if (!_WORKER_TOKEN) return;
     const processQueue = async () => {
       const pending = _getPendingD1();
+      // FIX 2026-06-24: purgar entradas heredadas demasiado grandes que hayan
+      // inflado la cuota de localStorage antes de este fix. No se pierde nada:
+      // son arrays que ya viven en LS y se re-sincronizan por guardado/auto-sync.
+      let _trimmed = false;
+      for (const _k of Object.keys(pending)) {
+        if (_pendingSize(pending[_k]?.value) > _PENDING_D1_MAX_VALUE) { delete pending[_k]; _trimmed = true; }
+      }
+      if (_trimmed) { try { localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(pending)); } catch {} }
       const keys = Object.keys(pending);
       if (keys.length === 0) {
         setPendingD1Count(0);
@@ -18986,6 +19022,31 @@ function AppInner() {
     const boot = setTimeout(processQueue, 10_000);
     const interval = setInterval(processQueue, 30_000);
     return () => { clearTimeout(boot); clearInterval(interval); };
+  }, []);
+
+  // FIX 2026-06-24: limpieza de borradores de autoguardado huérfanos.
+  // `siso_autosave_<id>` se escribe en cada autoguardado pero NUNCA se borraba →
+  // se acumulaban copias completas de HC en localStorage hasta agotar la cuota
+  // (causa de fondo del QuotaExceededError aunque "se maneje poco"). La recuperación
+  // ya ignora borradores de >24h, así que purgarlos no pierde nada recuperable.
+  useEffect(() => {
+    try {
+      const ahora = Date.now();
+      const MAX_EDAD = 24 * 60 * 60 * 1000; // 24h
+      let purgados = 0;
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (!k || !k.startsWith("siso_autosave_") || k.startsWith("siso_autosave_cloud_")) continue;
+        let fresco = false;
+        try {
+          const v = JSON.parse(localStorage.getItem(k) || "{}");
+          const ts = v?._autoSaved;
+          if (ts && (ahora - new Date(ts).getTime()) < MAX_EDAD) fresco = true;
+        } catch {}
+        if (!fresco) { try { localStorage.removeItem(k); purgados++; } catch {} }
+      }
+      if (purgados > 0) console.warn(`[autosave] purgados ${purgados} borrador(es) huérfano(s) (>24h) para liberar cuota`);
+    } catch {}
   }, []);
 
   // FIX 2026-06-15: Garbage collector de chunks temporales D1.
@@ -22829,6 +22890,9 @@ const handleLogin = (u, p) => {
     else list.push(toSave);
     setPatientsList(list);
     _syncPatients(list);
+    // FIX 2026-06-24: el borrador de autoguardado ya no es necesario tras guardar
+    // (los datos están en la lista). Borrarlo evita que se acumule en localStorage.
+    try { _ls.removeItem("siso_autosave_" + toSave.id); } catch {}
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus(""), 2500);
     _setHcDirty(false);
