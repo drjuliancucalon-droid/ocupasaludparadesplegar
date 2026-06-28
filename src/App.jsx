@@ -170,7 +170,11 @@ const _ls = {
     try {
       localStorage.setItem(k, String(v));
     } catch {
+      // localStorage lleno → no perder el dato. Antes iba solo a RAM volátil
+      // (se perdía al recargar). Ahora también se persiste en IndexedDB (GBs).
       _memStore[k] = String(v);
+      try { _idbSet(k, JSON.parse(String(v))).catch(() => {}); }
+      catch { _idbSet(k, String(v)).catch(() => {}); }
     }
   },
   removeItem: (k) => {
