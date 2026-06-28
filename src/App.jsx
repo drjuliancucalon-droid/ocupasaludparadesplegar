@@ -8,6 +8,8 @@ import ContabilidadV2 from "./pages/ContabilidadV2";
 import VersionWatcher from "./components/VersionWatcher";
 import D1ChangesWatcher from "./components/D1ChangesWatcher";
 import StorageHealth from "./components/StorageHealth";
+// ETAPA 1 (migración a IndexedDB): espejo local completo (cuota de GBs, offline).
+import { idbSet as _idbSet } from "./utils/offlineDB";
 import {
   User,
   FileText,
@@ -17982,6 +17984,7 @@ function AppInner() {
     // 2° LS con try/catch (quota)
     try { localStorage.setItem("siso_informes", JSON.stringify(updated)); }
     catch (e) { console.warn("[saveInforme] LS quota:", e?.message); }
+    _idbSet("siso_informes", updated).catch(() => {}); // ETAPA 1: espejo a IndexedDB
 
     // 3° SB en background (backup, no bloquea)
     _sbSet(sufKey, updated).catch((e) => console.warn("[saveInforme] SB falló:", e?.message));
@@ -19704,6 +19707,7 @@ function AppInner() {
           if (key === "siso_atenciones_cerradas" && Array.isArray(value)) {
             // Supabase siempre es la fuente de verdad — sin comparar tamaños.
             setAtencionesCerradas(value);
+            _idbSet("siso_atenciones_cerradas", value).catch(() => {}); // ETAPA 1: espejo a IndexedDB
             try {
               const _jv = JSON.stringify(value);
               _ls.setItem("siso_atenciones_cerradas", _jv);
@@ -22891,6 +22895,7 @@ const handleLogin = (u, p) => {
     // LS se escribe ya con `list`. Si después detectamos regresión vs D1
     // hacemos merge y re-escribimos LS + estado React.
     _ls.setItem(key, JSON.stringify(_stripFirmaLS(list)));
+    _idbSet(key, list).catch(() => {}); // ETAPA 1: espejo COMPLETO (con firmas) en IndexedDB
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
@@ -22932,6 +22937,7 @@ const handleLogin = (u, p) => {
               finalList = [...list, ...extras];
               console.warn(`[_syncPatients] MERGE anti-regresión: cliente=${list.length}, D1=${remote.length}, +${extras.length} preservados = ${finalList.length}`);
               // Persistir merge en LS + React state — tolerante a quota
+              _idbSet(key, finalList).catch(() => {}); // ETAPA 1: espejo del merge
               try { _ls.setItem(key, JSON.stringify(_stripFirmaLS(finalList))); } catch (e) {
                 console.warn("[_syncPatients] LS quota:", e?.message);
               }
@@ -23018,6 +23024,7 @@ const handleLogin = (u, p) => {
       : currentUser?.user || "shared";
     const key = _compKey(_suid2);
     const cloudKey = _compKeyCloud(_suid2);
+    _idbSet(key, list).catch(() => {}); // ETAPA 1: espejo a IndexedDB
     // LS con try/catch (quota)
     try { _ls.setItem(key, JSON.stringify(list)); }
     catch (e) { console.warn("[_syncCompanies] LS quota:", e?.message); }
