@@ -8,8 +8,8 @@ import ContabilidadV2 from "./pages/ContabilidadV2";
 import VersionWatcher from "./components/VersionWatcher";
 import D1ChangesWatcher from "./components/D1ChangesWatcher";
 import StorageHealth from "./components/StorageHealth";
-// ETAPA 1 (migración a IndexedDB): espejo local completo (cuota de GBs, offline).
-import { idbSet as _idbSet } from "./utils/offlineDB";
+// ETAPA 1/2 (migración a IndexedDB): espejo local completo (cuota de GBs, offline).
+import { idbSet as _idbSet, idbGet as _idbGet } from "./utils/offlineDB";
 import {
   User,
   FileText,
@@ -19207,6 +19207,37 @@ function AppInner() {
     run("siso_cartas_custodia", "firma", "custodias");
     if (!retry) _firmaDedupDoneRef.current = true;
   }, [currentUser, patientsList, atencionesCerradas, activeSignature]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ETAPA 2: hidratar desde IndexedDB SOLO si un array grande quedó vacío tras la
+  // carga normal (localStorage vacío + nube caída/500). Usa setState funcional con
+  // guarda: si ya hay datos, NO los pisa. Hace la app resiliente sin depender de la
+  // nube ni reescribir las lecturas síncronas. Corre una vez, tras la ventana de carga.
+  const _idbHydrateDoneRef = useRef(false);
+  useEffect(() => {
+    if (_idbHydrateDoneRef.current) return;
+    if (!currentUser?.user) return;
+    _idbHydrateDoneRef.current = true;
+    const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
+    const t = setTimeout(async () => {
+      try {
+        const [idbPats, idbAt, idbComp] = await Promise.all([
+          _idbGet(_patKey(sid)).catch(() => null),
+          _idbGet("siso_atenciones_cerradas").catch(() => null),
+          _idbGet(_compKey(sid)).catch(() => null),
+        ]);
+        if (Array.isArray(idbPats) && idbPats.length > 0) {
+          setPatientsList((prev) => (prev && prev.length > 0) ? prev : (console.warn(`[idb-hydrate] pacientes desde IndexedDB: ${idbPats.length}`), idbPats));
+        }
+        if (Array.isArray(idbAt) && idbAt.length > 0) {
+          setAtencionesCerradas((prev) => (prev && prev.length > 0) ? prev : (console.warn(`[idb-hydrate] atenciones desde IndexedDB: ${idbAt.length}`), idbAt));
+        }
+        if (Array.isArray(idbComp) && idbComp.length > 0) {
+          setCompanies((prev) => (prev && prev.length > 0) ? prev : (console.warn(`[idb-hydrate] empresas desde IndexedDB: ${idbComp.length}`), idbComp));
+        }
+      } catch (e) { console.warn("[idb-hydrate]", e?.message); }
+    }, 4000); // tras la ventana de carga inicial (LS + nube)
+    return () => clearTimeout(t);
+  }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 2026-06-15: Garbage collector de chunks temporales D1.
   // Cuando _workerSet falla mid-flight, deja claves __new{ts}__cN y __new{ts}__meta
