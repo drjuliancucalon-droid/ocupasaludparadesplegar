@@ -19163,36 +19163,47 @@ function AppInner() {
   // MÁS REPETIDA entre los pacientes (la del médico) y la quita SIN depender de
   // activeSignature. Escribe un valor más pequeño en la misma clave → funciona
   // aunque el LS esté lleno (libera espacio). Conserva firmas distintas.
-  const _firmaDedupDoneRef = useRef(false);
-  useEffect(() => {
-    if (_firmaDedupDoneRef.current) return;
-    if (!currentUser?.user) return;
+  // NIVEL 1: dedup de firma redundante en TODAS las claves grandes de LS, no solo
+  // pacientes. `siso_atenciones_cerradas` (HC cerradas) era el "elefante" que volvía
+  // a llenar el LS. Procesa: pacientes, atenciones (2 claves) y cartas de custodia.
+  // Devuelve false SOLO si hay datos pero aún no se detecta firma dominante (reintenta).
+  const _dedupFirmaLSKey = (k, campo, label) => {
     try {
-      const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
-      const k = _patKey(sid);
       const raw = _ls.getItem(k);
-      if (!raw) return;
+      if (!raw || raw.length < 40000) return true; // <40KB: no vale la pena
       const list = JSON.parse(raw);
-      if (!Array.isArray(list) || list.length === 0) return;
-      // Firma a quitar: la más repetida (≥2 pacientes), o la activa como respaldo.
+      if (!Array.isArray(list) || list.length === 0) return true;
       const counts = {};
-      for (const p of list) { if (p && typeof p._firma === "string" && p._firma.length > 100) counts[p._firma] = (counts[p._firma] || 0) + 1; }
+      for (const p of list) { const f = p && p[campo]; if (typeof f === "string" && f.length > 100) counts[f] = (counts[f] || 0) + 1; }
       const dom = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
       const target = (dom && dom[1] >= 2) ? dom[0] : (activeSignature || null);
-      if (!target) { return; } // aún sin datos; reintenta cuando carguen pacientes
-      _firmaDedupDoneRef.current = true;
+      if (!target) return false; // hay data pero sin firma dominante aún → reintentar
       let changed = false;
       const slim = list.map((p) => {
-        if (p && p._firma === target) { changed = true; const { _firma, ...rest } = p; return rest; }
+        if (p && p[campo] === target) { changed = true; const c = { ...p }; delete c[campo]; return c; }
         return p;
       });
       if (changed) {
         const out = JSON.stringify(slim);
         _ls.setItem(k, out);
-        console.warn(`[firma-dedup] LS pacientes ${(raw.length / 1024) | 0}KB → ${(out.length / 1024) | 0}KB (firma x${dom ? dom[1] : "activa"})`);
+        console.warn(`[firma-dedup] ${label} ${(raw.length / 1024) | 0}KB → ${(out.length / 1024) | 0}KB (x${dom ? dom[1] : "activa"})`);
       }
-    } catch (e) { console.warn("[firma-dedup]", e?.message); }
-  }, [currentUser, patientsList, activeSignature]); // eslint-disable-line react-hooks/exhaustive-deps
+      return true;
+    } catch (e) { console.warn("[firma-dedup]", label, e?.message); return true; }
+  };
+  const _firmaDedupDoneRef = useRef(false);
+  useEffect(() => {
+    if (_firmaDedupDoneRef.current) return;
+    if (!currentUser?.user) return;
+    const sid = currentUser.empresaId ? "empresa_" + currentUser.empresaId : currentUser.user;
+    let retry = false;
+    const run = (k, campo, label) => { if (_dedupFirmaLSKey(k, campo, label) === false) retry = true; };
+    run(_patKey(sid), "_firma", "pacientes");
+    run("siso_atenciones_cerradas", "_firma", "atenciones");
+    run(`siso_atenciones_${sid}`, "_firma", "atenciones-usuario");
+    run("siso_cartas_custodia", "firma", "custodias");
+    if (!retry) _firmaDedupDoneRef.current = true;
+  }, [currentUser, patientsList, atencionesCerradas, activeSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // FIX 2026-06-15: Garbage collector de chunks temporales D1.
   // Cuando _workerSet falla mid-flight, deja claves __new{ts}__cN y __new{ts}__meta
