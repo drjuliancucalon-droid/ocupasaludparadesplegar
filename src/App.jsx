@@ -13444,9 +13444,13 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     (data.nombres || "") +
     "</title>" +
     "<style>" +
-    "@page{size:letter portrait;margin:18mm 20mm 18mm 20mm;}" +
+    // FIX 2026-07-02: margen consolidado en el wrapper #_certFit (ver más abajo)
+    // en vez de repartido entre @page y body — necesario para que el script de
+    // "ajustar a una sola hoja" pueda medir/escalar de forma confiable, incluso
+    // cuando varios certificados se concatenan en un solo documento (portal).
+    "@page{size:letter portrait;margin:0;}" +
     "*{margin:0;padding:0;box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}" +
-    'body{font-family:"Segoe UI",Arial,sans-serif;font-size:10.5pt;color:#111;padding:18mm 20mm 14mm;}' +
+    'body{font-family:"Segoe UI",Arial,sans-serif;font-size:10.5pt;color:#111;padding:0;}' +
     "table{border-collapse:collapse;page-break-inside:auto;}" +
     "tr{page-break-inside:avoid;page-break-after:auto;break-inside:avoid;}" +
     "td,th{page-break-inside:avoid;break-inside:avoid;}" +
@@ -13454,7 +13458,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     ".np-dl{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}" +
     ".np-dl button{background:#065f46;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:900;font-size:11pt;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);}" +
     ".np-dl p{font-size:8pt;color:#6b7280;text-align:right;}" +
-    "@media print{.np-dl{display:none!important;}body{padding:15mm 20mm;}.pat-box,.concepto-box,.sec,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}}" +
+    "@media print{.np-dl{display:none!important;}.pat-box,.concepto-box,.sec,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}}" +
     /* ── HEADER ── */
     ".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #065f46;padding-bottom:10px;margin-bottom:14px;}" +
     ".hdr-brand{display:flex;align-items:center;gap:10px;}" +
@@ -13502,6 +13506,11 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     /* ── CONSENT ── */
     ".consent{margin-top:8px;font-size:7pt;color:#9ca3af;line-height:1.4;border-top:1px dashed #e5e7eb;padding-top:6px;}" +
     "</style></head><body>" +
+    // FIX 2026-07-02: wrapper "una sola hoja" — todo el margen de la página
+    // vive aquí (33mm arriba/abajo, 40mm izq/der = suma de lo que antes tenían
+    // @page + body por separado). El script al final mide su altura real y,
+    // si excede una hoja carta, reduce la escala (piso 70%) para que quepa.
+    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:33mm 40mm;">' +
     /* ── HEADER ─────────────────────────────────────────────── */
     '<div class="hdr">' +
     '<div class="hdr-brand">' +
@@ -13693,6 +13702,26 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     "Las respuestas dadas fueron consideradas verídicas. " +
     "Se autoriza al doctor para suministrar la Historia Clínica a la EPS y a las personas o entidades contempladas en la legislación vigente, para el buen cumplimiento del sistema de seguridad y salud en el trabajo. " +
     "Res. 1843/2025 · Ley 1581/2012 · Ley 23/1981.</div>" +
+    "</div>" + // cierra el wrapper "una sola hoja"
+    // FIX 2026-07-02: script de ajuste a una sola hoja. Usa document.currentScript
+    // (no un id) para que funcione correctamente aunque este certificado se
+    // concatene con otros (portal de empresa: varios trabajadores en un mismo
+    // documento) — cada script solo mide/escala SU PROPIO wrapper anterior,
+    // nunca toca <body> (que es compartido entre certificados concatenados).
+    // Nunca recorta texto: si ni al 70% de escala cabe, el excedente fluye a
+    // una segunda hoja de forma natural.
+    "<script>(function(){" +
+    "var w=document.currentScript.previousElementSibling;if(!w)return;" +
+    "function f(){try{" +
+    "var mm=96/25.4;var innerH=1056-2*33*mm;var h=w.scrollHeight;" +
+    "if(h>innerH){" +
+    "var s=Math.max(0.70,innerH/h);" +
+    'w.style.transformOrigin="top center";' +
+    'w.style.transform="scale("+s+")";' +
+    'w.style.marginBottom=(-(h*(1-s)))+"px";' +
+    "}}catch(e){}}" +
+    'if(document.readyState==="complete")f();else window.addEventListener("load",f);' +
+    "})();</script>" +
     "</body></html>"
   );
 };
