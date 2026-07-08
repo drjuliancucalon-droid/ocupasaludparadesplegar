@@ -13458,7 +13458,12 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     ".np-dl{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}" +
     ".np-dl button{background:#065f46;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:900;font-size:11pt;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);}" +
     ".np-dl p{font-size:8pt;color:#6b7280;text-align:right;}" +
-    "@media print{.np-dl{display:none!important;}.pat-box,.concepto-box,.sec,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}}" +
+    // FIX 2026-07-08: .sec (Recomendaciones/Restricciones) ya NO evita partirse
+    // entre páginas — con 15-20+ ítems mide más que una hoja, y "avoid" forzaba
+    // TODO el bloque a una hoja nueva (y aun así lo partía), causando saltos.
+    // Ahora fluye de forma continua; page-break-inside:avoid se aplica a cada
+    // <li> individual para que ningún ítem se corte a mitad de frase.
+    "@media print{.np-dl{display:none!important;}.pat-box,.concepto-box,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}.sec li{break-inside:avoid;page-break-inside:avoid;}}" +
     /* ── HEADER ── */
     ".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #065f46;padding-bottom:10px;margin-bottom:14px;}" +
     ".hdr-brand{display:flex;align-items:center;gap:10px;}" +
@@ -13703,22 +13708,27 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     "Se autoriza al doctor para suministrar la Historia Clínica a la EPS y a las personas o entidades contempladas en la legislación vigente, para el buen cumplimiento del sistema de seguridad y salud en el trabajo. " +
     "Res. 1843/2025 · Ley 1581/2012 · Ley 23/1981.</div>" +
     "</div>" + // cierra el wrapper "una sola hoja"
-    // FIX 2026-07-02: script de ajuste a una sola hoja. Usa document.currentScript
-    // (no un id) para que funcione correctamente aunque este certificado se
-    // concatene con otros (portal de empresa: varios trabajadores en un mismo
-    // documento) — cada script solo mide/escala SU PROPIO wrapper anterior,
-    // nunca toca <body> (que es compartido entre certificados concatenados).
-    // Nunca recorta texto: si ni al 70% de escala cabe, el excedente fluye a
-    // una segunda hoja de forma natural.
+    // FIX 2026-07-08: cambiado de transform:scale() a "zoom". transform es
+    // puramente visual — el motor de impresión de Chrome/Chromium calcula la
+    // paginación real usando el tamaño SIN transformar, así que al imprimir o
+    // "Guardar como PDF" el ajuste no se respetaba (se veía bien en pantalla,
+    // distorsionado al imprimir). "zoom" sí re-calcula el layout real (el
+    // elemento efectivamente ocupa menos espacio), por lo que la paginación de
+    // impresión lo respeta correctamente. Ya no hace falta compensar con
+    // margin-bottom negativo (zoom no deja hueco reservado como transform).
+    // Usa document.currentScript (no un id) para que funcione aunque este
+    // certificado se concatene con otros (portal de empresa: varios
+    // trabajadores en un mismo documento) — cada script solo mide/escala SU
+    // PROPIO wrapper anterior, nunca toca <body> (compartido entre certificados
+    // concatenados). Nunca recorta texto: si ni al 70% de escala cabe, el
+    // excedente fluye a una segunda hoja de forma natural.
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
     "function f(){try{" +
     "var mm=96/25.4;var innerH=1056-2*33*mm;var h=w.scrollHeight;" +
     "if(h>innerH){" +
     "var s=Math.max(0.70,innerH/h);" +
-    'w.style.transformOrigin="top center";' +
-    'w.style.transform="scale("+s+")";' +
-    'w.style.marginBottom=(-(h*(1-s)))+"px";' +
+    "w.style.zoom=s;" +
     "}}catch(e){}}" +
     'if(document.readyState==="complete")f();else window.addEventListener("load",f);' +
     "})();</script>" +
