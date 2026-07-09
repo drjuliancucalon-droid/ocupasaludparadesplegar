@@ -13386,11 +13386,11 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
       )
     ) {
       return (
-        '<ul style="margin:5px 0 0;padding-left:20px;">' +
+        '<ul style="margin:3px 0 0;padding-left:16px;column-count:2;column-gap:20px;">' +
         lines
           .map(
             (l) =>
-              '<li style="margin-bottom:3px;font-size:9.5pt;">' +
+              '<li style="margin-bottom:1px;font-size:9pt;line-height:1.2;">' +
               l
                 .replace(/^[•*\-]+\s*/, "")
                 .replace(/^\d+\.\s*/, "")
@@ -13465,18 +13465,24 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // <li> individual para que ningún ítem se corte a mitad de frase.
     "@media print{.np-dl{display:none!important;}.pat-box,.concepto-box,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}.sec li{break-inside:avoid;page-break-inside:avoid;}}" +
     /* ── HEADER ── */
-    ".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #065f46;padding-bottom:10px;margin-bottom:14px;}" +
+    // FIX 2026-07-09: espaciado vertical general reducido (hdr/title/subtitle/
+    // intro/pat-box/concepto-box/sec/alerta) + listas de Recomendaciones y
+    // Restricciones en 2 columnas (ver fmtBlocks) — el certificado de RETIRO
+    // con hallazgos extensos medía casi el doble de una hoja; esto usa todo
+    // el ancho disponible y reduce la altura real en vez de solo encoger con
+    // zoom (que dejaba texto minúsculo y aun así no cabía en una hoja).
+    ".hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #065f46;padding-bottom:6px;margin-bottom:8px;}" +
     ".hdr-brand{display:flex;align-items:center;gap:10px;}" +
     ".hdr-logo{width:44px;height:44px;border-radius:10px;background:#065f46;display:flex;align-items:center;justify-content:center;font-size:20pt;color:#fff;font-weight:900;flex-shrink:0;}" +
     ".hdr-name{font-size:13pt;font-weight:900;color:#065f46;text-transform:uppercase;letter-spacing:1px;}" +
     ".hdr-sub{font-size:8pt;color:#6b7280;margin-top:1px;}" +
     ".hdr-ref{text-align:right;font-size:8pt;color:#6b7280;line-height:1.5;}" +
     /* ── TITLE ── */
-    ".title{text-align:center;font-size:16pt;font-weight:900;text-transform:uppercase;letter-spacing:3px;margin:10px 0 4px;}" +
-    ".subtitle{text-align:center;font-size:9pt;color:#6b7280;margin-bottom:10px;}" +
-    ".intro{font-size:9.5pt;color:#374151;margin-bottom:10px;line-height:1.5;}" +
+    ".title{text-align:center;font-size:16pt;font-weight:900;text-transform:uppercase;letter-spacing:3px;margin:6px 0 3px;}" +
+    ".subtitle{text-align:center;font-size:9pt;color:#6b7280;margin-bottom:6px;}" +
+    ".intro{font-size:9.5pt;color:#374151;margin-bottom:6px;line-height:1.5;}" +
     /* ── PATIENT BOX ── */
-    ".pat-box{border:1.5px solid #d1d5db;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;page-break-inside:avoid;}" +
+    ".pat-box{border:1.5px solid #d1d5db;border-radius:8px;padding:7px 12px;margin-bottom:6px;display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;page-break-inside:avoid;}" +
     ".pat-field{display:flex;flex-direction:column;}" +
     ".pat-label{font-size:7.5pt;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;}" +
     ".pat-val{font-size:10.5pt;font-weight:700;color:#111;}" +
@@ -13484,18 +13490,18 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     ".concepto-lbl{text-align:center;font-size:8pt;font-weight:900;text-transform:uppercase;letter-spacing:2px;color:#6b7280;margin:6px 0 4px;}" +
     ".concepto-box{border:2px solid " +
     aptBg +
-    ";border-radius:8px;padding:14px 20px;text-align:center;margin-bottom:10px;background:" +
+    ";border-radius:8px;padding:9px 16px;text-align:center;margin-bottom:6px;background:" +
     aptBg +
     ";page-break-inside:avoid;}" +
     ".concepto-txt{font-size:16pt;font-weight:900;text-transform:uppercase;color:#fff;line-height:1.3;}" +
     ".concepto-note{font-size:8pt;color:#e5e7eb;margin-top:4px;}" +
     /* ── SECTIONS ── */
-    ".sec{margin-bottom:10px;}" +
-    ".sec-title{font-size:9pt;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:#111;border-bottom:2px solid #d1d5db;padding-bottom:3px;margin-bottom:6px;}" +
+    ".sec{margin-bottom:6px;}" +
+    ".sec-title{font-size:9pt;font-weight:900;text-transform:uppercase;letter-spacing:1px;color:#111;border-bottom:2px solid #d1d5db;padding-bottom:1px;margin-bottom:3px;}" +
     ".pill{display:inline-block;background:#fef9c3;border:1px solid #fde047;color:#78350f;padding:2px 8px;border-radius:4px;font-size:8.5pt;margin:2px;}" +
     ".pill.ok{background:#f0fdf4;border-color:#86efac;color:#14532d;}" +
     /* ── ALERTA ── */
-    ".alerta{background:#fef9c3;border:1px solid #fde047;padding:7px 12px;border-radius:6px;font-size:8.5pt;color:#713f12;margin-bottom:10px;page-break-inside:avoid;}" +
+    ".alerta{background:#fef9c3;border:1px solid #fde047;padding:5px 10px;border-radius:6px;font-size:8.5pt;color:#713f12;margin-bottom:6px;page-break-inside:avoid;}" +
     /* ── FIRMA ROW ── */
     ".firma-row{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:end;border-top:2px solid #d1d5db;padding-top:12px;margin-top:4px;page-break-inside:avoid;}" +
     ".firma-col{display:flex;flex-direction:column;align-items:center;text-align:center;}" +
@@ -13516,7 +13522,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // líneas cortas y más altura total, empujando el certificado a 2 páginas.
     // El script al final mide la altura real y, si aun así excede una hoja,
     // reduce la escala (piso 70%) para que quepa.
-    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:14mm 16mm;">' +
+    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:12mm 16mm;">' +
     /* ── HEADER ─────────────────────────────────────────────── */
     '<div class="hdr">' +
     '<div class="hdr-brand">' +
@@ -13723,10 +13729,15 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // PROPIO wrapper anterior, nunca toca <body> (compartido entre certificados
     // concatenados). Nunca recorta texto: si ni al 70% de escala cabe, el
     // excedente fluye a una segunda hoja de forma natural.
+    // FIX 2026-07-09: el presupuesto de altura restaba el padding DOS veces
+    // (scrollHeight ya incluye el padding propio del wrapper, así que volver
+    // a restarlo hacía creer que había menos espacio del real y encogía de
+    // más). Ahora se compara contra la hoja completa (1056px = 11in@96dpi)
+    // menos un colchón de seguridad fijo de 24px.
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
     "function f(){try{" +
-    "var mm=96/25.4;var innerH=1056-2*14*mm;var h=w.scrollHeight;" +
+    "var innerH=1056-24;var h=w.scrollHeight;" +
     "if(h>innerH){" +
     "var s=Math.max(0.70,innerH/h);" +
     "w.style.zoom=s;" +
