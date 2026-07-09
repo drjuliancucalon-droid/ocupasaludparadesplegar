@@ -13589,7 +13589,11 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     '<div class="pat-field"><span class="pat-label">Fecha</span><span class="pat-val">' +
     (data.fechaCierre || data.fechaExamen || "--") +
     "</span></div>" +
-    '<div class="pat-field"><span class="pat-label">Vigencia</span><span class="pat-val">' +
+    // FIX 2026-07-09: Vigencia ocupa el ancho completo del recuadro (no la
+    // mitad) — suele traer un texto largo de justificación clínica y
+    // partirlo a media columna lo hacía envolver en muchas más líneas de
+    // las necesarias, desperdiciando el ancho de la hoja.
+    '<div class="pat-field" style="grid-column:1/-1;"><span class="pat-label">Vigencia</span><span class="pat-val">' +
     vigencia +
     "</span></div>" +
     "</div>" +
@@ -13737,7 +13741,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
     "function f(){try{" +
-    "var innerH=1056-24;var h=w.scrollHeight;" +
+    "var innerH=1056-80;var h=w.scrollHeight;" +
     "if(h>innerH){" +
     "var s=Math.max(0.70,innerH/h);" +
     "w.style.zoom=s;" +
