@@ -13726,7 +13726,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
     "function f(){try{" +
-    "var mm=96/25.4;var innerH=1056-2*33*mm;var h=w.scrollHeight;" +
+    "var mm=96/25.4;var innerH=1056-2*14*mm;var h=w.scrollHeight;" +
     "if(h>innerH){" +
     "var s=Math.max(0.70,innerH/h);" +
     "w.style.zoom=s;" +
