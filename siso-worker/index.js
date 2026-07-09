@@ -6,6 +6,9 @@
 const ALLOWED_ORIGINS = [
   "https://ocupasaludparadesplegar.pages.dev",
   "https://ocupasaludparadesplegar-f4q.pages.dev",
+  // Refactor en desarrollo (siso-appultimo): comparte este mismo backend/D1
+  // mientras se construye. Ver también el sufijo permitido en corsHeaders.
+  "https://siso-appultimo-arp.pages.dev",
   "http://localhost:5173",
   "http://localhost:4173",
 ];
@@ -21,7 +24,8 @@ function corsHeaders(origin) {
   const allowed =
     ALLOWED_ORIGINS.includes(origin) ||
     (origin && origin.endsWith(".ocupasaludparadesplegar.pages.dev")) ||
-    (origin && origin.endsWith(".ocupasaludparadesplegar-f4q.pages.dev"));
+    (origin && origin.endsWith(".ocupasaludparadesplegar-f4q.pages.dev")) ||
+    (origin && origin.endsWith(".siso-appultimo-arp.pages.dev"));
   return {
     "Access-Control-Allow-Origin": allowed ? origin : DEFAULT_ORIGIN,
     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
