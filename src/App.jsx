@@ -13992,9 +13992,28 @@ const _abrirVentanaPDF = (html, titulo) => {
   return true;
 };
 
+// FIX 2026-07-09: ajuste "a una sola hoja" para los conversores HTML→PDF vía
+// html2canvas (ZIP), equivalente al zoom que usa la impresión directa pero
+// aplicado a la imagen YA CAPTURADA (html2canvas no soporta CSS zoom, así
+// que no se puede encoger el DOM antes de capturar — ver el <script> de
+// _generarCertificadoHTMLNormalizado). Mismo criterio: encoge hasta un piso
+// del 70%, centrado horizontalmente; si ni así cabe, no hace nada y el
+// llamador sigue con el slicing normal en varias páginas limpias (nunca
+// se recorta ni se distorsiona contenido).
+const _tryFitCanvasOnePage = (pdf, canvas, mg, cW, pcHpx, pxPerMm) => {
+  if (canvas.height <= pcHpx) return false;
+  const s = Math.max(0.70, pcHpx / canvas.height);
+  if (canvas.height * s > pcHpx + 2) return false;
+  const destW = cW * s, destH = (canvas.height * s) / pxPerMm;
+  const xOff = mg + (cW - destW) / 2;
+  pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", xOff, mg, destW, destH);
+  return true;
+};
+
 // Convierte HTML completo → Blob PDF (iframe + html2canvas + jsPDF, multipágina).
 // Versión módulo del conversor del portal, para armar paquetes ZIP.
-const _htmlToPdfBlobMod = (htmlContent) => new Promise((resolve, reject) => {
+// singlePage=true intenta ajustar a una sola hoja (solo para certificados).
+const _htmlToPdfBlobMod = (htmlContent, singlePage) => new Promise((resolve, reject) => {
   const ifr = document.createElement("iframe");
   ifr.style.cssText = "position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;";
   document.body.appendChild(ifr);
@@ -14012,7 +14031,8 @@ const _htmlToPdfBlobMod = (htmlContent) => new Promise((resolve, reject) => {
       const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
       const mg = 12, cW = pW - mg * 2, pcH = pH - mg * 2;
       const pxPerMm = canvas.width / cW, pcHpx = Math.round(pcH * pxPerMm);
-      const totalPages = Math.ceil(canvas.height / pcHpx);
+      let totalPages = Math.ceil(canvas.height / pcHpx);
+      if (singlePage && totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
       for (let pg = 0; pg < totalPages; pg++) {
         if (pg > 0) pdf.addPage();
         const y0 = pg * pcHpx, y1 = Math.min(y0 + pcHpx, canvas.height), slicePx = y1 - y0;
@@ -18412,7 +18432,7 @@ function AppInner() {
         if (!pd) continue;
         try {
           const html = _generarCertificadoDesdePortal(pd); // HTML completo, diseño real
-          const blob = await _htmlToPdfBlobMod(html);
+          const blob = await _htmlToPdfBlobMod(html, true);
           idx++;
           const nm = (pd.nombres || "Trab").replace(/[^a-zA-Z0-9 ]/g, "").trim().substring(0, 28);
           zip.file(`01_Certificados/${String(idx).padStart(2, "0")}_${nm}_${cc}.pdf`, blob); total++;
@@ -33651,7 +33671,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                   const mg = 15, cW = pW - mg*2, pcH = pH - mg*2;
                                   const pxPerMm = canvas.width / cW;
                                   const pcHpx = Math.round(pcH * pxPerMm);
-                                  const totalPages = Math.ceil(canvas.height / pcHpx);
+                                  let totalPages = Math.ceil(canvas.height / pcHpx);
+                                  if (totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
                                   for (let pg = 0; pg < totalPages; pg++) {
                                     if (pg > 0) pdf.addPage();
                                     const y0 = pg * pcHpx, y1 = Math.min(y0 + pcHpx, canvas.height);
@@ -54385,7 +54406,7 @@ ${
     if (_descFTxt) _descListaFiltrada = _descListaFiltrada.filter(p => (p.nombres||"").toLowerCase().includes(_descFTxt)||(p.docNumero||"").includes(_descFTxt));
 
     // Helper HTML→PDF blob
-    const _descHtmlToPdfBlob = (htmlContent) => new Promise((resolve, reject) => {
+    const _descHtmlToPdfBlob = (htmlContent, singlePage) => new Promise((resolve, reject) => {
       const ifr = document.createElement('iframe');
       ifr.style.cssText = 'position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;';
       document.body.appendChild(ifr);
@@ -54403,7 +54424,8 @@ ${
           const pW=pdf.internal.pageSize.getWidth(), pH=pdf.internal.pageSize.getHeight();
           const mg=15, cW=pW-mg*2, pcH=pH-mg*2;
           const pxPerMm=canvas.width/cW, pcHpx=Math.round(pcH*pxPerMm);
-          const totalPages=Math.ceil(canvas.height/pcHpx);
+          let totalPages=Math.ceil(canvas.height/pcHpx);
+          if (singlePage && totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
           for(let pg=0;pg<totalPages;pg++){
             if(pg>0) pdf.addPage();
             const y0=pg*pcHpx, y1=Math.min(y0+pcHpx,canvas.height), slicePx=y1-y0;
@@ -54464,7 +54486,7 @@ ${
         for (const tipo of tiposActivos) {
           try {
             const html = _descGenHtml(p, tipo); if(!html) continue;
-            const blob = await _descHtmlToPdfBlob(html);
+            const blob = await _descHtmlToPdfBlob(html, tipo === "cert");
             const lbl = {cert:"Certificado",deriv:"Derivaciones",formula:"Formula",examen:"Examenes",interconsulta:"Interconsultas"}[tipo]||tipo;
             zip.file(carpeta+"/"+lbl+".pdf", blob); totalDocs++;
           } catch(e){ console.error('[ZIP]',p.nombres,tipo,e); }
