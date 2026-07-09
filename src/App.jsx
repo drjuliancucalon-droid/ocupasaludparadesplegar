@@ -580,6 +580,28 @@ const _enqueuePendingD1 = (key, value) => {
 const _getPendingD1 = () => {
   try { return JSON.parse(localStorage.getItem(_PENDING_D1_KEY) || "{}"); } catch { return {}; }
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AVISO "HCs SIN RESPALDO EN NUBE" (2026-07-09)
+// El array de pacientes/HCs supera el tope de 60KB de la cola de pendientes,
+// así que cuando su escritura a D1 falla (offline, 500) NO queda en la cola y
+// pendingD1Count muestra 0 — el usuario no tenía forma de saber que sus HCs
+// existen solo en este equipo. Este marcador persiste en localStorage hasta
+// que una escritura completa del array a D1 vuelva a tener éxito, y alimenta
+// un badge visible en el header (ver hcSinRespaldo en AppInner).
+// ─────────────────────────────────────────────────────────────────────────────
+const _UNSYNCED_HC_KEY = "siso_hc_sin_respaldo";
+let _unsyncedHCCallback = null; // lo registra AppInner para refrescar el badge
+const _markUnsyncedHC = (failed) => {
+  try {
+    if (failed) localStorage.setItem(_UNSYNCED_HC_KEY, JSON.stringify({ ts: Date.now() }));
+    else localStorage.removeItem(_UNSYNCED_HC_KEY);
+  } catch {}
+  if (_unsyncedHCCallback) { try { _unsyncedHCCallback(!!failed); } catch {} }
+};
+const _hasUnsyncedHC = () => {
+  try { return !!localStorage.getItem(_UNSYNCED_HC_KEY); } catch { return false; }
+};
 const _clearPendingD1 = (key) => {
   try {
     const p = _getPendingD1();
@@ -17789,6 +17811,12 @@ function AppInner() {
   const [pendingD1Count, setPendingD1Count] = useState(() => {
     try { return Object.keys(_getPendingD1()).length; } catch { return 0; }
   });
+  // Aviso "HCs sin respaldo en nube" — ver _markUnsyncedHC (nivel módulo).
+  const [hcSinRespaldo, setHcSinRespaldo] = useState(() => _hasUnsyncedHC());
+  useEffect(() => {
+    _unsyncedHCCallback = setHcSinRespaldo;
+    return () => { _unsyncedHCCallback = null; };
+  }, []);
   // Ref siempre actualizado con el valor más reciente de patientsList.
   // Evita el problema de "stale closure" en funciones async como handleCloseHistory,
   // donde la variable capturada en el closure puede ser una versión anterior.
@@ -19427,9 +19455,11 @@ function AppInner() {
             console.log(_ok1 && _ok2
               ? `[AUDIT] ✅ ${noEnD1.length} HC(s) subida(s) a D1`
               : "[AUDIT] subida parcial a D1 — reintentará el auto-sync");
+            if (_ok1 && _ok2) _markUnsyncedHC(false);
           } catch (e) { console.warn("[AUDIT] subida a D1 falló:", e?.message); }
         } else {
           console.log("[AUDIT] ✅ LS ↔ D1 sincronizados");
+          _markUnsyncedHC(false);
         }
         // Detectar pacientes en D1 que faltan en LS (solo log)
         const lsIds = new Set(lsPats.filter(p => p?.id).map(p => p.id));
@@ -23082,8 +23112,13 @@ const handleLogin = (u, p) => {
           if (!ok1) { _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); }
           const ok2 = await _workerSet(key,      slimFinal).catch(() => false);
           if (!ok2) { _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); }
+          // Aviso "HCs sin respaldo": marca si alguna de las dos escrituras
+          // falló (el array no cabe en la cola de pendientes); limpia cuando
+          // ambas vuelven a lograrse.
+          _markUnsyncedHC(!(ok1 && ok2));
         } catch (e) {
           console.warn("[_syncPatients] async D1 falló:", e?.message);
+          _markUnsyncedHC(true);
         }
       })();
     }
@@ -26136,6 +26171,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
             >
               ⏳ {pendingD1Count} pendiente{pendingD1Count > 1 ? "s" : ""}
             </span>
+          )}
+          {hcSinRespaldo && (
+            <button
+              title={"Hay historias clínicas guardadas SOLO en este equipo que aún no se respaldaron en la nube. NO borre los datos del navegador. Se reintenta automáticamente al recuperar conexión — o haga clic aquí para reintentar ahora."}
+              onClick={() => {
+                try { _syncPatients(patientsListRef.current || []); } catch {}
+              }}
+              className="flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-lg border no-print bg-red-50 text-red-700 border-red-400 animate-pulse cursor-pointer hover:bg-red-100"
+            >
+              ⚠ HCs sin respaldo en nube
+            </button>
           )}
           {["administrador", "medico", "super_admin"].includes(
             currentUser?.role
