@@ -13458,12 +13458,16 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     ".np-dl{position:fixed;bottom:20px;right:20px;z-index:9999;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}" +
     ".np-dl button{background:#065f46;color:#fff;border:none;padding:10px 20px;border-radius:10px;font-weight:900;font-size:11pt;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);}" +
     ".np-dl p{font-size:8pt;color:#6b7280;text-align:right;}" +
+    // DEBUG TEMPORAL 2026-07-09: casilla de diagnóstico en pantalla (nunca en
+    // impresión/PDF) para calibrar el ajuste a una hoja con datos reales.
+    // Quitar junto con el <script> que la llena más abajo cuando ya no haga falta.
+    ".cert-dbg{position:fixed;top:0;left:0;z-index:99999;background:#000;color:#0f0;font:10px monospace;padding:6px;white-space:pre;max-width:320px;}" +
     // FIX 2026-07-08: .sec (Recomendaciones/Restricciones) ya NO evita partirse
     // entre páginas — con 15-20+ ítems mide más que una hoja, y "avoid" forzaba
     // TODO el bloque a una hoja nueva (y aun así lo partía), causando saltos.
     // Ahora fluye de forma continua; page-break-inside:avoid se aplica a cada
     // <li> individual para que ningún ítem se corte a mitad de frase.
-    "@media print{.np-dl{display:none!important;}.pat-box,.concepto-box,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}.sec li{break-inside:avoid;page-break-inside:avoid;}}" +
+    "@media print{.np-dl,.cert-dbg{display:none!important;}.pat-box,.concepto-box,.firma-row,.alerta,.cv-box{break-inside:avoid;page-break-inside:avoid;}.sec li{break-inside:avoid;page-break-inside:avoid;}}" +
     /* ── HEADER ── */
     // FIX 2026-07-09: espaciado vertical general reducido (hdr/title/subtitle/
     // intro/pat-box/concepto-box/sec/alerta) + listas de Recomendaciones y
@@ -13517,6 +13521,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     /* ── CONSENT ── */
     ".consent{margin-top:4px;font-size:7pt;color:#9ca3af;line-height:1.3;border-top:1px dashed #e5e7eb;padding-top:3px;}" +
     "</style></head><body>" +
+    '<div class="cert-dbg">midiendo...</div>' +
     // FIX 2026-07-09: márgenes reducidos a 14mm/16mm (antes 33mm/40mm) para
     // usar el ancho real de la hoja carta — el padding excesivo forzaba
     // líneas cortas y más altura total, empujando el certificado a 2 páginas.
@@ -13738,14 +13743,27 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // a restarlo hacía creer que había menos espacio del real y encogía de
     // más). Ahora se compara contra la hoja completa (1056px = 11in@96dpi)
     // menos un colchón de seguridad fijo de 24px.
+    // FIX 2026-07-09: si este HTML se está capturando dentro de un <iframe>
+    // oculto (window.frameElement no-nulo) para convertirlo a imagen con
+    // html2canvas (exportación ZIP: certificados/informe/cuenta de cobro/
+    // custodia — ver _htmlToPdfBlobMod y sus copias), NO aplicar zoom: esa
+    // librería no soporta bien la propiedad CSS "zoom" y el texto queda
+    // superpuesto. En ese contexto el conversor ya corta el contenido largo
+    // en varias páginas de PDF sin solaparlo, así que no hace falta forzar
+    // una sola hoja ahí — solo se aplica al imprimir/guardar PDF real desde
+    // el navegador (window.open, sin frameElement), donde zoom sí funciona.
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
+    "if(window.frameElement)return;" +
+    "var dbg=w.previousElementSibling;" +
     "function f(){try{" +
-    "var innerH=1056-80;var h=w.scrollHeight;" +
+    "var innerH=1056-80;var h=w.scrollHeight;var s=1;" +
     "if(h>innerH){" +
-    "var s=Math.max(0.70,innerH/h);" +
+    "s=Math.max(0.70,innerH/h);" +
     "w.style.zoom=s;" +
-    "}}catch(e){}}" +
+    "}" +
+    "if(dbg)dbg.textContent='scrollHeight='+h+'px | innerH='+innerH+'px | excede='+(h>innerH)+' | scale='+s.toFixed(3)+' | final='+(h*s).toFixed(0)+'px (hoja=1056px) | paginas~'+Math.ceil((h*s)/1056);" +
+    "}catch(e){if(dbg)dbg.textContent='ERROR: '+e.message;}}" +
     'if(document.readyState==="complete")f();else window.addEventListener("load",f);' +
     "})();</script>" +
     "</body></html>"
