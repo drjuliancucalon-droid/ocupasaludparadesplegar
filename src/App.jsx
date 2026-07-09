@@ -13527,7 +13527,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // líneas cortas y más altura total, empujando el certificado a 2 páginas.
     // El script al final mide la altura real y, si aun así excede una hoja,
     // reduce la escala (piso 70%) para que quepa.
-    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:12mm 12mm;">' +
+    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:12mm 8mm;">' +
     /* ── HEADER ─────────────────────────────────────────────── */
     '<div class="hdr">' +
     '<div class="hdr-brand">' +
