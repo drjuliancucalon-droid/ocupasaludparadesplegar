@@ -13503,9 +13503,9 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     /* ── ALERTA ── */
     ".alerta{background:#fef9c3;border:1px solid #fde047;padding:5px 10px;border-radius:6px;font-size:8.5pt;color:#713f12;margin-bottom:6px;page-break-inside:avoid;}" +
     /* ── FIRMA ROW ── */
-    ".firma-row{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:end;border-top:2px solid #d1d5db;padding-top:12px;margin-top:4px;page-break-inside:avoid;}" +
+    ".firma-row{display:grid;grid-template-columns:1fr auto 1fr;gap:20px;align-items:end;border-top:2px solid #d1d5db;padding-top:8px;margin-top:4px;page-break-inside:avoid;}" +
     ".firma-col{display:flex;flex-direction:column;align-items:center;text-align:center;}" +
-    ".firma-line{width:180px;border-top:1px solid #374151;margin-top:50px;padding-top:5px;}" +
+    ".firma-line{width:180px;border-top:1px solid #374151;margin-top:40px;padding-top:5px;}" +
     ".firma-med-box{text-align:center;}" +
     ".firma-med-name{font-size:11pt;font-weight:900;color:#065f46;}" +
     ".firma-med-sub{font-size:8.5pt;color:#6b7280;margin-top:1px;}" +
@@ -13513,16 +13513,16 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     ".cv-lbl{font-size:7.5pt;font-weight:900;color:#6b7280;text-transform:uppercase;letter-spacing:1px;}" +
     ".cv-code{font-size:14pt;font-family:monospace;font-weight:900;letter-spacing:3px;color:#065f46;margin-top:2px;}" +
     /* ── FOOTER ── */
-    ".footer{margin-top:10px;border-top:1px solid #e5e7eb;padding-top:6px;font-size:7.5pt;color:#9ca3af;display:flex;justify-content:space-between;}" +
+    ".footer{margin-top:6px;border-top:1px solid #e5e7eb;padding-top:3px;font-size:7.5pt;color:#9ca3af;display:flex;justify-content:space-between;}" +
     /* ── CONSENT ── */
-    ".consent{margin-top:8px;font-size:7pt;color:#9ca3af;line-height:1.4;border-top:1px dashed #e5e7eb;padding-top:6px;}" +
+    ".consent{margin-top:4px;font-size:7pt;color:#9ca3af;line-height:1.3;border-top:1px dashed #e5e7eb;padding-top:3px;}" +
     "</style></head><body>" +
     // FIX 2026-07-09: márgenes reducidos a 14mm/16mm (antes 33mm/40mm) para
     // usar el ancho real de la hoja carta — el padding excesivo forzaba
     // líneas cortas y más altura total, empujando el certificado a 2 páginas.
     // El script al final mide la altura real y, si aun así excede una hoja,
     // reduce la escala (piso 70%) para que quepa.
-    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:12mm 16mm;">' +
+    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:12mm 12mm;">' +
     /* ── HEADER ─────────────────────────────────────────────── */
     '<div class="hdr">' +
     '<div class="hdr-brand">' +
