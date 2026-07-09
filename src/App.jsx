@@ -13511,11 +13511,12 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     /* ── CONSENT ── */
     ".consent{margin-top:8px;font-size:7pt;color:#9ca3af;line-height:1.4;border-top:1px dashed #e5e7eb;padding-top:6px;}" +
     "</style></head><body>" +
-    // FIX 2026-07-02: wrapper "una sola hoja" — todo el margen de la página
-    // vive aquí (33mm arriba/abajo, 40mm izq/der = suma de lo que antes tenían
-    // @page + body por separado). El script al final mide su altura real y,
-    // si excede una hoja carta, reduce la escala (piso 70%) para que quepa.
-    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:33mm 40mm;">' +
+    // FIX 2026-07-09: márgenes reducidos a 14mm/16mm (antes 33mm/40mm) para
+    // usar el ancho real de la hoja carta — el padding excesivo forzaba
+    // líneas cortas y más altura total, empujando el certificado a 2 páginas.
+    // El script al final mide la altura real y, si aun así excede una hoja,
+    // reduce la escala (piso 70%) para que quepa.
+    '<div style="width:816px;max-width:100%;margin:0 auto;box-sizing:border-box;padding:14mm 16mm;">' +
     /* ── HEADER ─────────────────────────────────────────────── */
     '<div class="hdr">' +
     '<div class="hdr-brand">' +
