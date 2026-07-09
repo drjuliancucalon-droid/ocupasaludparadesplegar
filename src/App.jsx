@@ -13754,8 +13754,11 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // el navegador (window.open, sin frameElement), donde zoom sí funciona.
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
-    "if(window.frameElement)return;" +
     "var dbg=w.previousElementSibling;" +
+    // La casilla de diagnóstico solo debe verse en pantalla real; html2canvas
+    // (iframe oculto del ZIP) no respeta @media print, así que se oculta
+    // también por JS aquí para que no quede horneada dentro del PDF/imagen.
+    "if(window.frameElement){if(dbg)dbg.style.display='none';return;}" +
     "function f(){try{" +
     "var innerH=1056-80;var h=w.scrollHeight;var s=1;" +
     "if(h>innerH){" +
