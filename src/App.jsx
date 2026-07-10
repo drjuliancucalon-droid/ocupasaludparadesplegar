@@ -592,15 +592,57 @@ const _getPendingD1 = () => {
 // ─────────────────────────────────────────────────────────────────────────────
 const _UNSYNCED_HC_KEY = "siso_hc_sin_respaldo";
 let _unsyncedHCCallback = null; // lo registra AppInner para refrescar el badge
-const _markUnsyncedHC = (failed) => {
+// AUDITORÍA 2026-07-09: generalizado a múltiples fuentes (hc, cuentas,
+// propuestas, informes). Guarda un mapa { fuente: ts } — el badge se muestra
+// mientras CUALQUIER fuente tenga datos sin respaldar, y cada fuente se
+// limpia de forma independiente cuando su subida a D1 vuelve a lograrse.
+const _markUnsyncedHC = (failed, source = "hc") => {
   try {
-    if (failed) localStorage.setItem(_UNSYNCED_HC_KEY, JSON.stringify({ ts: Date.now() }));
+    let m = {};
+    try { m = JSON.parse(localStorage.getItem(_UNSYNCED_HC_KEY) || "{}") || {}; } catch {}
+    if (typeof m !== "object" || Array.isArray(m)) m = {};
+    if (failed) m[source] = Date.now();
+    else delete m[source];
+    if (Object.keys(m).length) localStorage.setItem(_UNSYNCED_HC_KEY, JSON.stringify(m));
     else localStorage.removeItem(_UNSYNCED_HC_KEY);
   } catch {}
-  if (_unsyncedHCCallback) { try { _unsyncedHCCallback(!!failed); } catch {} }
+  if (_unsyncedHCCallback) { try { _unsyncedHCCallback(_hasUnsyncedHC()); } catch {} }
 };
 const _hasUnsyncedHC = () => {
   try { return !!localStorage.getItem(_UNSYNCED_HC_KEY); } catch { return false; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUDITORÍA 2026-07-09: lectura masiva desde D1 para la restauración del login.
+// Antes el login restauraba SOLO desde Supabase (_sbGetMany); cuando Supabase
+// fallaba (500), un navegador nuevo no recibía NADA (cuentas de cobro,
+// propuestas e informes "desaparecían"). D1 es el autoritativo — se lee
+// primero y Supabase queda como fallback por clave.
+// Devuelve el mismo formato que _sbGetMany: { key: { value, updatedAt } }.
+// ─────────────────────────────────────────────────────────────────────────────
+const _d1GetMany = async (keys) => {
+  if (!_WORKER_TOKEN) return null;
+  const out = {};
+  await Promise.all((keys || []).map(async (k) => {
+    try {
+      const v = await _workerGet(k);
+      if (v !== null && v !== undefined) out[k] = { value: v, updatedAt: new Date().toISOString() };
+    } catch {}
+  }));
+  return Object.keys(out).length ? out : null;
+};
+
+// Fusiona un array de la nube con el array local por id: la nube gana en los
+// ids que trae, pero los items locales que la nube NO conoce se preservan
+// (evita que una nube desactualizada borre datos locales recién creados).
+const _mergeCloudLocalById = (cloudVal, localRaw) => {
+  if (!Array.isArray(cloudVal)) return cloudVal;
+  let localArr = [];
+  try { const p = JSON.parse(localRaw || "[]"); if (Array.isArray(p)) localArr = p; } catch {}
+  if (!localArr.length) return cloudVal;
+  const seen = new Set(cloudVal.filter(x => x && x.id != null).map(x => String(x.id)));
+  const extras = localArr.filter(x => x && x.id != null && !seen.has(String(x.id)));
+  return extras.length ? [...cloudVal, ...extras] : cloudVal;
 };
 const _clearPendingD1 = (key) => {
   try {
@@ -1649,7 +1691,18 @@ const _sync = (key, jsonValue) => {
   // recargar la app desde D1 los pacientes "desaparecían". Ahora _sync
   // escribe a D1 cuando la clave es operacional. Fire-and-forget para no
   // bloquear la UI.
-  if (_shouldSyncToD1(key)) {
+  // AUDITORÍA 2026-07-09: guardia anti-borrado. Una sesión con estado vacío
+  // (navegador nuevo que aún no cargó la nube) NUNCA debe pisar la nube con
+  // []. Así se vació siso_saved_reports en D1 el 2026-07-09. Si de verdad se
+  // quiere vaciar una colección protegida, debe hacerse con un borrado
+  // explícito por id (ver _deleteReportSafe/_deleteBillSafe), no escribiendo
+  // la lista vacía completa.
+  const _EMPTY_GUARD = Array.isArray(parsed) && parsed.length === 0 &&
+    ["siso_saved_reports", "siso_cartas_custodia", "siso_atenciones_cerradas", "siso_users"].includes(key);
+  if (_EMPTY_GUARD) {
+    console.warn(`[_sync] BLOQUEADO: intento de escribir [] sobre ${key} en D1 — protegido contra borrado accidental`);
+  }
+  if (_shouldSyncToD1(key) && !_EMPTY_GUARD) {
     _workerSet(key, parsed).catch((e) => {
       console.warn("[_sync] D1 write falló para", key, ":", e?.message);
     });
@@ -18108,6 +18161,7 @@ function AppInner() {
     if (!okD1) {
       console.warn("[saveInforme] D1 write falló — el informe puede perderse en próxima sync");
     }
+    _markUnsyncedHC(!okD1, "informes");
 
     // 2° LS con try/catch (quota)
     try { localStorage.setItem("siso_informes", JSON.stringify(updated)); }
@@ -20457,7 +20511,12 @@ function AppInner() {
       return;
     }
 
-    _sbGetMany([
+    // AUDITORÍA 2026-07-09: antes esta restauración leía SOLO Supabase. Con
+    // Supabase caído (500), un navegador nuevo no restauraba NADA (cuentas,
+    // propuestas, informes "desaparecían"). Ahora: D1 (autoritativo) PRIMERO
+    // en paralelo con Supabase; por clave gana D1 y Supabase rellena las que
+    // D1 no tenga.
+    const _loginCloudKeys = [
       "siso_users",
       // siso_doctor_signature excluida: es base64 pesada, vive en localStorage
       "siso_ai_config_provider",
@@ -20479,23 +20538,28 @@ function AppInner() {
       `siso_cartas_custodia_${_loginUid}`,
       `siso_cartas_custodia`,
       `siso_email_config_${_loginUid}`,
-    ]).then((cloud) => {
-      if (!cloud) {
+    ];
+    Promise.all([
+      _d1GetMany(_loginCloudKeys).catch(() => null),
+      _sbGetMany(_loginCloudKeys).catch(() => null),
+    ]).then(([d1Cloud, sbCloud]) => {
+      const cloud = { ...(sbCloud || {}), ...(d1Cloud || {}) };
+      if (!Object.keys(cloud).length) {
         setSyncStatus("error");
         return;
       }
-      // Para cada colección: si Supabase tiene datos más recientes, actualizar local y estado
+      // Para cada colección: fusionar nube con local por id (la nube gana en
+      // los ids que trae; los items locales que la nube no conoce se
+      // preservan — antes se REEMPLAZABA y una nube desactualizada podía
+      // tapar datos locales recién creados).
       const applyCloud = (key, setter, fallback, localKey) => {
         if (!cloud[key]) return;
         const cloudVal = cloud[key].value;
-        const cloudTs = new Date(cloud[key].updatedAt || 0).getTime();
         const localRaw = _ls.getItem(localKey || key);
-        // Supabase siempre gana: tiene los datos de todos los dispositivos
         if (cloudVal !== null && cloudVal !== undefined) {
-          const asString = JSON.stringify(cloudVal);
-          _ls.setItem(localKey || key, asString);
-          if (Array.isArray(cloudVal)) setter(cloudVal);
-          else setter(cloudVal);
+          const merged = _mergeCloudLocalById(cloudVal, localRaw);
+          _ls.setItem(localKey || key, JSON.stringify(merged));
+          setter(merged);
         }
       };
       // Pacientes: cargados por usuario específico en handleLogin - no cargar genérico
@@ -20531,15 +20595,16 @@ function AppInner() {
           }
         }
       }
-      // Informes guardados
+      // Informes guardados (fusión por id con lo local — no reemplazo)
       {
         const _infSuf = currentUser?.user || "shared";
         const _infData = cloud?.[`siso_informes_${_infSuf}`]?.value
           || cloud?.["siso_informes"]?.value;
         if (Array.isArray(_infData) && _infData.length > 0) {
-          setSavedInformes(_infData);
-          localStorage.setItem("siso_informes", JSON.stringify(_infData));
-          localStorage.setItem(`siso_informes_${_infSuf}`, JSON.stringify(_infData));
+          const _infMerged = _mergeCloudLocalById(_infData, _ls.getItem("siso_informes"));
+          setSavedInformes(_infMerged);
+          localStorage.setItem("siso_informes", JSON.stringify(_infMerged));
+          localStorage.setItem(`siso_informes_${_infSuf}`, JSON.stringify(_infMerged));
         }
       }
       // Cartas de custodia
@@ -20551,7 +20616,7 @@ function AppInner() {
           try { localStorage.setItem("siso_cartas_custodia", JSON.stringify(_custData)); } catch {}
         }
       }
-      // Cuentas de cobro (facturas)
+      // Cuentas de cobro (facturas) — fusión por id con lo local, no reemplazo
       {
         const _billSuf = currentUser?.empresaId
           ? "empresa_" + currentUser.empresaId
@@ -20559,8 +20624,9 @@ function AppInner() {
         const _billData = cloud?.[`siso_saved_bills_${_billSuf}`]?.value
           || cloud?.["siso_saved_bills"]?.value;
         if (Array.isArray(_billData) && _billData.length > 0) {
-          setSavedBillsList(_billData);
-          try { localStorage.setItem(`siso_saved_bills_${_billSuf}`, JSON.stringify(_billData)); } catch {}
+          const _billMerged = _mergeCloudLocalById(_billData, _ls.getItem(`siso_saved_bills_${_billSuf}`) || _ls.getItem("siso_saved_bills"));
+          setSavedBillsList(_billMerged);
+          try { localStorage.setItem(`siso_saved_bills_${_billSuf}`, JSON.stringify(_billMerged)); } catch {}
         }
       }
       // Email config
@@ -20786,7 +20852,8 @@ function AppInner() {
           // ── Datos operativos — usuarios sin base64 de firmas ─────────────────────
           _sbSetSafe("siso_users",                        usersList),  // strip firma/logo
           _sbSet(`siso_saved_bills_${_asSuf}`,            savedBillsList),
-          _sbSet("siso_saved_reports",                    savedReports),
+          // Guardia anti-borrado: no empujar lista vacía sobre la nube
+          ((savedReports || []).length ? _sbSet("siso_saved_reports", savedReports) : Promise.resolve(true)),
           _sbSet("siso_audit_log",                        auditLog),
           _sbSet("siso_mensajes",                         mensajes),
           _sbSet(`siso_agendados_${_asSuf}`,              agendados),
@@ -21897,7 +21964,7 @@ JSON REQUERIDO (estructura exacta):
       ...(_compStripped ? {Empresas: _sbSet(_compKeyCloud(currentUser?.user || "shared"), _compStripped)} : {}),
       "Usuarios y perfiles": _sbSet("siso_users", usersList),
       "Facturas / Cuentas de cobro": _sbSet(`siso_saved_bills_${_bkSuf}`, savedBillsList),
-      "Informes guardados": _sbSet("siso_saved_reports", savedReports),
+      "Informes guardados": ((savedReports || []).length ? _sbSet("siso_saved_reports", savedReports) : Promise.resolve(true)),
       "Log de auditoría": _sbSet("siso_audit_log", auditLog),
       "Mensajes internos": _sbSet("siso_mensajes", mensajes),
       "Agenda / Citas": _sbSet(`siso_agendados_${_bkSuf}`, agendados),
@@ -23164,12 +23231,45 @@ const handleLogin = (u, p) => {
     const k1 = `siso_saved_bills_${_suf()}`, k2 = "siso_saved_bills";
     try { _ls.setItem(k1, JSON.stringify(upd)); } catch {}
     try { _ls.setItem(k2, JSON.stringify(upd)); } catch {}
+    // AUDITORÍA 2026-07-09: los fallos de subida ya no se tragan en silencio —
+    // alimentan el badge "Datos sin respaldo en nube" (fuente "cuentas").
     if (_WORKER_TOKEN) {
-      _writeArrayMergeD1(k1, upd, "id").catch(() => {});
-      _writeArrayMergeD1(k2, upd, "id").catch(() => {});
+      Promise.all([
+        _writeArrayMergeD1(k1, upd, "id"),
+        _writeArrayMergeD1(k2, upd, "id"),
+      ]).then(([a, b]) => _markUnsyncedHC(!(a && b), "cuentas"))
+        .catch(() => _markUnsyncedHC(true, "cuentas"));
+    } else {
+      _markUnsyncedHC(true, "cuentas");
     }
     _sbSet(k1, upd).catch(() => {});
     _sbSet(k2, upd).catch(() => {});
+  };
+  // AUDITORÍA 2026-07-09: persistencia SEGURA de propuestas económicas
+  // (siso_saved_reports). Antes se escribían con _sync → _workerSet directo
+  // (REEMPLAZO total): una sesión con estado vacío pisaba la nube con [] —
+  // así se perdieron las propuestas guardadas. Ahora: MERGE por id en D1
+  // (igual que las cuentas de cobro) + badge "sin respaldo" si falla.
+  const _persistReportsSafe = (upd) => {
+    try { _ls.setItem("siso_saved_reports", JSON.stringify(upd)); } catch {}
+    if (_WORKER_TOKEN) {
+      _writeArrayMergeD1("siso_saved_reports", upd, "id")
+        .then((ok) => _markUnsyncedHC(!ok, "propuestas"))
+        .catch(() => _markUnsyncedHC(true, "propuestas"));
+    } else {
+      _markUnsyncedHC(true, "propuestas");
+    }
+    _sbSet("siso_saved_reports", upd).catch(() => {});
+  };
+  // Borrado seguro de propuesta: lee D1, quita SOLO el id, preserva el resto.
+  const _deleteReportSafe = async (idBorrado, fallbackList) => {
+    const key = "siso_saved_reports";
+    let base = Array.isArray(fallbackList) ? fallbackList : [];
+    if (_WORKER_TOKEN) { try { const r = await _workerGet(key); if (Array.isArray(r) && r.length) base = r; } catch {} }
+    const final = base.filter(r => r && String(r.id) !== String(idBorrado));
+    try { _ls.setItem(key, JSON.stringify(final)); } catch {}
+    if (_WORKER_TOKEN) await _workerSet(key, final).catch(() => {});
+    _sbSet(key, final).catch(() => {});
   };
   // Borrado SEGURO: lee D1, quita SOLO el id borrado, preserva el resto.
   // Evita que un estado local parcial borre facturas de otras sesiones.
@@ -26174,13 +26274,25 @@ Esta historia clínica debe conservarse mínimo 20 años.
           )}
           {hcSinRespaldo && (
             <button
-              title={"Hay historias clínicas guardadas SOLO en este equipo que aún no se respaldaron en la nube. NO borre los datos del navegador. Se reintenta automáticamente al recuperar conexión — o haga clic aquí para reintentar ahora."}
+              title={"Hay datos guardados SOLO en este equipo (HCs, cuentas, propuestas o informes) que aún no se respaldaron en la nube. NO borre los datos del navegador. Se reintenta automáticamente al recuperar conexión — o haga clic aquí para reintentar ahora."}
               onClick={() => {
                 try { _syncPatients(patientsListRef.current || []); } catch {}
+                try { if ((savedBillsList || []).length) _persistBillsSafe(savedBillsList); } catch {}
+                try { if ((savedReports || []).length) _persistReportsSafe(savedReports); } catch {}
+                try {
+                  const _inf = JSON.parse(localStorage.getItem("siso_informes") || "[]");
+                  if (Array.isArray(_inf) && _inf.length && _WORKER_TOKEN) {
+                    Promise.all([
+                      _writeArrayMergeD1("siso_informes", _inf, "id"),
+                      _writeArrayMergeD1("siso_informes_" + (currentUser?.user || "shared"), _inf, "id"),
+                    ]).then(([a, b]) => _markUnsyncedHC(!(a && b), "informes"))
+                      .catch(() => _markUnsyncedHC(true, "informes"));
+                  }
+                } catch {}
               }}
               className="flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-lg border no-print bg-red-50 text-red-700 border-red-400 animate-pulse cursor-pointer hover:bg-red-100"
             >
-              ⚠ HCs sin respaldo en nube
+              ⚠ Datos sin respaldo en nube
             </button>
           )}
           {["administrador", "medico", "super_admin"].includes(
@@ -45120,8 +45232,7 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
                                     onClick={() => showConfirm("¿Eliminar esta propuesta del historial?", () => {
                                       const upd = savedReports.filter(r => r.id !== prop.id);
                                       setSavedReports(upd);
-                                      _sync("siso_saved_reports", JSON.stringify(upd));
-                                      _sbSet("siso_saved_reports", upd);
+                                      _deleteReportSafe(prop.id, upd);
                                     })}
                                     className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold hover:bg-red-200"
                                     title="Eliminar"
@@ -45177,8 +45288,7 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
                       }
                       const upd = [...savedReports, nb];
                       setSavedReports(upd);
-                      _sync("siso_saved_reports", JSON.stringify(upd));
-                      _sbSet("siso_saved_reports", upd);
+                      _persistReportsSafe(upd);
                       setPropForm((p) => ({
                         ...p,
                         numero: String(parseInt(nb.numero, 10) + 1).padStart(
