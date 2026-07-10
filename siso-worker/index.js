@@ -166,6 +166,37 @@ export default {
         return new Response(JSON.stringify({ ok: true, count: rows.length }), { headers });
       }
 
+      // ── POST /store/append — agrega/actualiza UN item dentro de un array
+      // almacenado, con la fusión hecha EN EL SERVIDOR (2026-07-09).
+      // Evita la carrera read-modify-write de clientes concurrentes: varios
+      // trabajadores enviando la encuesta a la vez se pisaban la respuesta
+      // (cada navegador leía la lista, agregaba la suya y reescribía TODO).
+      // Body: { key, item, idField? } — si ya existe un elemento con el mismo
+      // idField se reemplaza; si no, se agrega al final. Nunca borra nada.
+      if (request.method === "POST" && path === "/store/append") {
+        const body = await request.json();
+        const { key, item, idField = "id" } = body || {};
+        if (!key || !item || typeof item !== "object") {
+          return new Response(JSON.stringify({ ok: false, error: "key e item requeridos" }), { status: 400, headers });
+        }
+        const row = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key).first();
+        let arr = [];
+        if (row && row.value) {
+          try {
+            const parsed = JSON.parse(await decompressValue(row.value));
+            if (Array.isArray(parsed)) arr = parsed;
+          } catch {}
+        }
+        const idVal = item[idField];
+        const idx = idVal != null ? arr.findIndex(x => x && String(x[idField]) === String(idVal)) : -1;
+        if (idx >= 0) arr[idx] = item; else arr.push(item);
+        const cv = await compressValue(JSON.stringify(arr));
+        await env.DB.prepare(
+          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+        ).bind(key, cv).run();
+        return new Response(JSON.stringify({ ok: true, count: arr.length }), { headers });
+      }
+
       // ── GET /health — endpoint de healthcheck para FASE 4 monitoring ──
       if (request.method === "GET" && path === "/health") {
         const t0 = Date.now();

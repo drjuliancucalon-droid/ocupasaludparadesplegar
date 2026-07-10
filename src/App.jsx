@@ -14406,12 +14406,27 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
   // Cargar info de la encuesta (empresa, tipo examen) + obtener JWT anónimo para escritura
   React.useEffect(() => {
     if (!token) return;
-    // Usar solo apikey en la cabecera (sb_publishable_* no es JWT válido como Bearer)
-    fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_${token}&select=value`, {
-      headers: { apikey: sbKey }
-    }).then(r => r.json()).then(d => {
-      if (d[0]?.value) setEncInfo(d[0].value);
-    }).catch(() => {});
+    // AUDITORÍA 2026-07-09: metadata D1 PRIMERO (antes solo Supabase — con SB
+    // caído el trabajador no veía empresa/tipo de examen). SB queda de fallback.
+    (async () => {
+      const workerUrl = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerUrl) || "https://siso-api.dr-juliancucalon.workers.dev";
+      const workerToken = (typeof window !== "undefined" && window.__SISO_CONFIG?.workerToken) || "";
+      if (workerToken) {
+        try {
+          const r = await fetch(`${workerUrl}/store/${encodeURIComponent(`siso_encuesta_${token}`)}`, { headers: { "X-Siso-Token": workerToken } });
+          if (r.ok) {
+            const d = await r.json();
+            if (d[0]?.value) { setEncInfo(d[0].value); return; }
+          }
+        } catch {}
+      }
+      // Fallback Supabase (solo apikey — sb_publishable_* no es JWT válido como Bearer)
+      fetch(`${sbUrl}/rest/v1/siso_store?key=eq.siso_encuesta_${token}&select=value`, {
+        headers: { apikey: sbKey }
+      }).then(r => r.json()).then(d => {
+        if (d[0]?.value) setEncInfo(d[0].value);
+      }).catch(() => {});
+    })();
 
     // Obtener JWT anónimo de Supabase para poder escribir con Authorization:Bearer válido
     // (necesario porque RLS requiere un JWT válido para INSERT/UPDATE)
@@ -14551,32 +14566,60 @@ const EncuestaPublicaForm = ({ token, sbUrl, sbKey, onVolver }) => {
 
       // ── 3. Construir la nueva respuesta con ID único para verificación ───
       const respId = "resp_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
-      respuestas.push({
+      const nuevaResp = {
         ...form,
         nombres: form.nombres.trim().toUpperCase(),
         docNumero: form.docNumero.trim(),
         id: respId,
         timestamp: new Date().toISOString(),
         estado: "completa",
-      });
+      };
+      respuestas.push(nuevaResp);
 
-      // ── 4. Intento 1: con JWT anónimo (si fue obtenido al montar) ────────
+      // ── 4a. AUDITORÍA 2026-07-09: intento PRIMARIO vía /store/append ────
+      // La fusión la hace el SERVIDOR (worker D1) en una sola operación:
+      // elimina la carrera entre trabajadores que envían al mismo tiempo
+      // (antes cada navegador leía la lista completa, agregaba su respuesta
+      // y reescribía TODO — el segundo pisaba al primero). Si el endpoint no
+      // está disponible (worker viejo), cae al flujo anterior (4b).
       let saveOk = false;
-      let saveResp = await _tryWrite(respuestas, anonJwtRef.current);
+      let saveResp = null;
+      if (workerToken) {
+        try {
+          const rApp = await _fetchWithTimeout(`${workerUrl}/store/append`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Siso-Token": workerToken },
+            body: JSON.stringify({ key: `siso_encuesta_resp_${token}`, item: nuevaResp, idField: "id" }),
+          }, 10000);
+          if (rApp.ok) {
+            saveOk = await _verifyWrite(respId);
+            if (!saveOk) {
+              await new Promise(res => setTimeout(res, 1200));
+              saveOk = await _verifyWrite(respId);
+            }
+          } else {
+            console.warn("[Encuesta] /store/append respondió", rApp.status, "— fallback a escritura completa");
+          }
+        } catch (e) { console.warn("[Encuesta] /store/append falló:", e.message, "— fallback a escritura completa"); }
+      }
 
-      if (saveResp.ok) {
-        // Verificar lectura de vuelta para confirmar persistencia real
-        saveOk = await _verifyWrite(respId);
-        if (!saveOk) {
-          console.warn("[Encuesta] POST OK pero dato no aparece en lectura — posible demora de Supabase, reintentando...");
-          // Pequeña espera y reintento de verificación
-          await new Promise(res => setTimeout(res, 1500));
+      // ── 4b. Fallback: escritura completa con JWT anónimo (flujo anterior) ─
+      if (!saveOk) {
+        saveResp = await _tryWrite(respuestas, anonJwtRef.current);
+        if (saveResp.ok) {
+          // Verificar lectura de vuelta para confirmar persistencia real
           saveOk = await _verifyWrite(respId);
+          if (!saveOk) {
+            console.warn("[Encuesta] POST OK pero dato no aparece en lectura — posible demora de Supabase, reintentando...");
+            // Pequeña espera y reintento de verificación
+            await new Promise(res => setTimeout(res, 1500));
+            saveOk = await _verifyWrite(respId);
+          }
         }
       }
 
       // ── 5. Intento 2: sin JWT (solo apikey → rol anónimo de Supabase) ───
-      if (!saveOk && !saveResp.ok) {
+      if (!saveOk && saveResp && !saveResp.ok) {
         console.warn("[Encuesta] Intento 1 fallido (status", saveResp.status, "). Reintentando sin Authorization header...");
         saveResp = await _tryWrite(respuestas, null);
         if (saveResp.ok) {
@@ -19654,6 +19697,14 @@ function AppInner() {
           if (!seen.has(uid2)) { seen.add(uid2); merged.push(e); }
         });
       };
+      // AUDITORÍA 2026-07-09: incluir SIEMPRE lo local en el merge. Antes este
+      // refresh reemplazaba estado+LS solo con lo que había en la nube: si una
+      // encuesta recién creada no había logrado subir (D1/SB caídos), recargar
+      // la BORRABA localmente y el link repartido quedaba huérfano. La nube va
+      // primero (gana en ids repetidos), lo local aporta las que falten.
+      const addLocal = () => {
+        try { addAll(JSON.parse(localStorage.getItem("siso_encuestas") || "[]")); } catch {}
+      };
 
       // 1. Worker D1: buscar por prefijo siso_encuestas (incluye todas las variantes)
       if (_WORKER_TOKEN) {
@@ -19666,6 +19717,7 @@ function AppInner() {
             const rows = await r.json();
             rows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
             if (merged.length > 0) {
+              addLocal(); // preservar encuestas locales que la nube no conoce
               setEncuestas(merged);
               try { localStorage.setItem("siso_encuestas", JSON.stringify(merged)); } catch {}
               return; // D1 tiene datos — no consultar Supabase
@@ -19685,6 +19737,7 @@ function AppInner() {
       const rangeRows = r3.ok ? (await r3.json()) : [];
       addAll(sharedEncs); addAll(userEncs);
       rangeRows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
+      addLocal(); // preservar encuestas locales que la nube no conoce
 
       if (merged.length > 0) {
         setEncuestas(merged);
@@ -35775,9 +35828,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       fechaLimite: limite,
                       estado: "activa",
                     };
-                    // Guardar metadata de la encuesta en Supabase
+                    // AUDITORÍA 2026-07-09: metadata también a D1 (antes SOLO
+                    // Supabase — con SB caído el link público no tenía de dónde
+                    // leer empresa/tipo, y si SB fallaba al crear, la metadata
+                    // no quedaba en ninguna parte).
+                    if (_WORKER_TOKEN) {
+                      _workerSet(`siso_encuesta_${token}`, newEnc).catch((e) => console.warn("[crear-encuesta] D1 metadata:", e?.message));
+                    }
                     _sbSet(`siso_encuesta_${token}`, newEnc);
-                    // Guardar array de respuestas vacío
+                    // Guardar array de respuestas vacío (solo SB; el primer
+                    // envío del trabajador lo crea en D1 vía /store/append)
                     _sbSet(`siso_encuesta_resp_${token}`, []);
                     // Guardar en estado local
                     const updated = [...encuestas, newEnc];
@@ -35785,7 +35845,14 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     // FIX 2026-06-09: LS con try/catch + D1 MERGE anti-regresión
                     try { localStorage.setItem("siso_encuestas", JSON.stringify(updated)); }
                     catch (e) { console.warn("[crear-encuesta] LS quota:", e?.message); }
-                    if (_WORKER_TOKEN) { _writeArrayMergeD1("siso_encuestas", updated, "id").catch(()=>{}); }
+                    // AUDITORÍA 2026-07-09: el fallo ya no es silencioso — badge
+                    if (_WORKER_TOKEN) {
+                      _writeArrayMergeD1("siso_encuestas", updated, "id")
+                        .then((ok) => _markUnsyncedHC(!ok, "encuestas"))
+                        .catch(() => _markUnsyncedHC(true, "encuestas"));
+                    } else {
+                      _markUnsyncedHC(true, "encuestas");
+                    }
                     _sbSet("siso_encuestas", updated);
                     // FIX 2026-06-04: usar dominio estable (ver _sisoStableOrigin)
                     // para evitar links a subdominios inmutables con bundles viejos
