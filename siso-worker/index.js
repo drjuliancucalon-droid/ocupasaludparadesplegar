@@ -198,8 +198,21 @@ export default {
       }
 
       // ── GET /health — endpoint de healthcheck para FASE 4 monitoring ──
+      // AUDITORÍA 2026-07-10: los 5 COUNT(*) escanean ~2.300 filas cada uno
+      // (~11K filas leídas POR LLAMADA). Ambas apps (monolito y refactor) lo
+      // llaman cada 2 min → ~7M filas/día con 2 pestañas, superando el límite
+      // gratis de D1 (5M lecturas/día). Por defecto ahora responde con un ping
+      // barato (SELECT 1 ≈ 0 filas); los conteos completos solo con ?full=1.
       if (request.method === "GET" && path === "/health") {
         const t0 = Date.now();
+        if (url.searchParams.get("full") !== "1") {
+          try {
+            await env.DB.prepare("SELECT 1").first();
+            return new Response(JSON.stringify({ ok: true, latencyMs: Date.now() - t0, ts: new Date().toISOString() }), { headers });
+          } catch (e) {
+            return new Response(JSON.stringify({ ok: false, error: e.message, latencyMs: Date.now() - t0 }), { status: 500, headers });
+          }
+        }
         const counts = {};
         try {
           const r1 = await env.DB.prepare("SELECT COUNT(*) AS c FROM siso_store").first();

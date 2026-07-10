@@ -501,6 +501,26 @@ const _workerSet = async (key, value) => {
 const _workerGet = async (key) => {
   if (!_WORKER_TOKEN) return null;
   const direct = await _workerGetRaw(key);
+  // AUDITORÍA 2026-07-10: el refactor (siso-appultimo) troceaba valores
+  // grandes con OTRO esquema — manifiesto {_chunked:true,_chunks:N} en la
+  // clave base + piezas en `${key}_chunk_i_of_N`. Sin esta defensa, el
+  // monolito tomaba el manifiesto COMO SI FUERA el dato (lista de pacientes
+  // = {_chunked:true...}) y al guardar pisaba la clave. Ahora lo detecta,
+  // reconstruye desde las piezas del refactor y devuelve el dato real.
+  if (direct !== null && typeof direct === "object" && !Array.isArray(direct) && direct._chunked === true && Number.isFinite(direct._chunks)) {
+    try {
+      let joined = "";
+      for (let i = 0; i < direct._chunks; i++) {
+        const piece = await _workerGetRaw(`${key}_chunk_${i}_of_${direct._chunks}`);
+        if (piece === null) { console.warn(`[_workerGet] pieza refactor ${i}/${direct._chunks} faltante para ${key}`); return null; }
+        joined += (typeof piece === "string") ? piece : (piece && typeof piece.data === "string" ? piece.data : "");
+      }
+      return JSON.parse(joined);
+    } catch (e) {
+      console.warn(`[_workerGet] reconstrucción formato-refactor falló para ${key}:`, e?.message);
+      return null;
+    }
+  }
   if (direct !== null) return direct;
   const meta = await _workerGetRaw(key + _CHUNK_SUF_META);
   if (!meta || !meta.chunked || !Number.isFinite(meta.count)) return null;
@@ -19292,8 +19312,9 @@ function AppInner() {
     };
     // Chequeo inicial a los 5s de cargar (esperar que la app arranque)
     const boot = setTimeout(checkD1Health, 5000);
-    // Chequeo periódico cada 2 min
-    const interval = setInterval(checkD1Health, 2 * 60 * 1000);
+    // Chequeo periódico cada 5 min (AUDITORÍA 2026-07-10: era 2 min; junto
+    // con el /health barato del worker reduce el gasto de lecturas D1)
+    const interval = setInterval(checkD1Health, 5 * 60 * 1000);
     // Auto-recuperación: si lleva >90s en error, hacer reload silencioso del token
     const retryInterval = setInterval(() => {
       if (lastErrorTs && Date.now() - lastErrorTs > 90_000) {
