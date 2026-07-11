@@ -98,10 +98,19 @@ export default {
       }
 
       // ── GET /store/prefix/:prefix — buscar por prefijo ───────────────
+      // FIX 2026-07-11: excluir PIEZAS de chunks (`__cN`, `__new…`, legacy
+      // `_chunk_i_of_N` del refactor). Con ~70 claves de pacientes chunked
+      // (~500KB c/u) el escaneo completo serializaba decenas de MB y
+      // excedía el límite de CPU/memoria del worker → 500 permanente en
+      // /store/prefix/siso_ (lo usan los syncManager de ambas apps cada
+      // 5 min). Los metadatos `__meta` (pequeños) SÍ se incluyen; las
+      // piezas solo se leen por clave directa vía _workerGet.
       if (request.method === "GET" && path.startsWith("/store/prefix/")) {
         const prefix = decodeURIComponent(path.slice(14));
         const rows = await env.DB.prepare(
-          "SELECT key, value FROM siso_store WHERE key LIKE ? LIMIT 2000"
+          "SELECT key, value FROM siso_store WHERE key LIKE ? " +
+          "AND key NOT GLOB '*__c[0-9]*' AND key NOT LIKE '%\\_\\_new%' ESCAPE '\\' AND key NOT GLOB '*_chunk_[0-9]*_of_[0-9]*' " +
+          "LIMIT 2000"
         ).bind(prefix + "%").all();
         const result = await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: JSON.parse(await decompressValue(r.value)) })));
         return new Response(JSON.stringify(result), { headers });
