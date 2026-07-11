@@ -15028,6 +15028,43 @@ const _portalVerifyPayment = async (base64, mime, amount) => {
   throw new Error("IA no disponible: " + lastErr);
 };
 
+// ── Analizar examen paraclínico (imagen/PDF) con Gemini Vision (2026-07-11) ──
+// Extrae resultados estructurados de un examen subido (audiometría,
+// espirometría, laboratorio, RX, optometría, EKG, etc.) para volcarlos al
+// campo resultadosParaclinicos de la HC, que alimenta los 3 prompts de IA
+// (concepto, restricciones, recomendaciones). Reutiliza la misma
+// infraestructura de visión del verificador de comprobantes.
+const _analizarExamenIA = async (base64, mime, nombreArchivo) => {
+  let cfg = {};
+  try { cfg = JSON.parse(localStorage.getItem("siso_ai_config_provider") || "{}"); } catch {}
+  const key = cfg.keys?.gemini;
+  if (!key) throw new Error("Configura una API Key de Gemini en ⚙️ IA para analizar exámenes.");
+  const prompt = `Eres médico especialista en Medicina del Trabajo. Analiza este examen paraclínico (archivo: ${nombreArchivo || "sin nombre"}) y extrae sus resultados. Responde ÚNICAMENTE con JSON válido sin markdown:
+{"tipoExamen":"tipo de examen identificado (audiometría/espirometría/laboratorio/RX/optometría/EKG/otro)","fechaExamen":"fecha del examen si es visible o N/R","resultadosClave":"resumen conciso de los valores/resultados principales con sus cifras","valoresAnormales":"SOLO los hallazgos fuera de rango o patológicos, con valores; si todo es normal escribe 'Sin alteraciones'","interpretacion":"interpretación clínica breve del examen","relevanciaOcupacional":"implicación para la aptitud laboral y el cargo, en 1-2 frases"}
+Si el archivo NO es un examen médico legible, responde {"error":"descripción del problema"}.`;
+  const models = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"];
+  let lastErr = "Sin key";
+  for (const model of models) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: mime, data: base64 } }] }],
+          generationConfig: { maxOutputTokens: 1000, temperature: 0.1 },
+        }),
+      });
+      if (!r.ok) { lastErr = `${model}: ${r.status}`; continue; }
+      const d = await r.json();
+      const txt = d.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      const match = txt.match(/\{[\s\S]*\}/);
+      if (!match) { lastErr = "Respuesta no válida"; continue; }
+      return JSON.parse(match[0]);
+    } catch (e) { lastErr = e.message; }
+  }
+  throw new Error("IA no disponible: " + lastErr);
+};
+
 // ── Carta de Custodia — réplica del documento (inline styles, sin Tailwind) ─
 const _MONTHS_PORTAL = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
 
@@ -18015,6 +18052,8 @@ function AppInner() {
   });
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingRestr, setIsGeneratingRestr] = useState(false);
+  // FIX 2026-07-11: análisis de exámenes subidos con IA de visión (tab Adjuntos)
+  const [analizandoExamen, setAnalizandoExamen] = useState(false);
   const [isGeneratingReco, setIsGeneratingReco] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
   // ── GUARD: cambios sin guardar en HC ─────────────────────────────────────
@@ -21332,7 +21371,20 @@ function AppInner() {
     let examenEspecial = "";
     if (enf.includes("ALTURA")) {
       const e = d.examenAlturas || {};
-      examenEspecial = `TRABAJO EN ALTURAS — Romberg: ${e.romberg || "N/R"} | Marcha: ${e.marcha || "N/R"} | Vértigo: ${e.vertigo || "N/R"} | Coordinación: ${e.coordinacion || "N/R"} | Nistagmus: ${e.nistagmus || "N/R"} | Test miedo: ${e.testMiedo || "N/R"} | Obs: ${e.observaciones || ""}`;
+      // FIX 2026-07-11: incluir TAMBIÉN audiometría y los paraclínicos
+      // digitados de alturas — antes solo iba la batería neurológica y la
+      // IA nunca veía estos resultados (aunque sí salen en el certificado).
+      const _altParacli = [
+        e.audiometriaOido || e.audiometriaTipo || e.audiometriaStatus ? `Audiometría: ${e.audiometriaOido || "N/R"} (tipo: ${e.audiometriaTipo || "N/R"}${e.audiometriaStatus ? ", estado: " + e.audiometriaStatus : ""}${e.audiometriaObs ? ", obs: " + e.audiometriaObs : ""})` : "",
+        e.paracliLab ? `Laboratorios: ${e.paracliLab}` : "",
+        e.paracliEkg ? `EKG/Holter: ${e.paracliEkg}` : "",
+        e.paracliEspiro ? `Espirometría: ${e.paracliEspiro}` : "",
+        e.paracliOptometria ? `Optometría: ${e.paracliOptometria}` : "",
+        e.paracliRayosX ? `Rx/Imagen Dx: ${e.paracliRayosX}` : "",
+        e.paracliPsico ? `Psicosensométrico: ${e.paracliPsico}` : "",
+        e.paracliOtros ? `Otros: ${e.paracliOtros}` : "",
+      ].filter(Boolean).join(" | ");
+      examenEspecial = `TRABAJO EN ALTURAS — Romberg: ${e.romberg || "N/R"} | Marcha: ${e.marcha || "N/R"} | Vértigo: ${e.vertigo || "N/R"} | Coordinación: ${e.coordinacion || "N/R"} | Nistagmus: ${e.nistagmus || "N/R"} | Test miedo: ${e.testMiedo || "N/R"} | Obs: ${e.observaciones || ""}${_altParacli ? `\nPARACLÍNICOS DE ALTURAS: ${_altParacli}` : ""}`;
     } else if (enf.includes("ALIMENTO")) {
       const e = d.examenAlimentos || {};
       examenEspecial = `MANIPULACIÓN ALIMENTOS — Piel/faneras: ${e.pielFaneras || "N/R"} | ORL: ${e.orl || "N/R"} | GI: ${e.gastrointestinal || "N/R"} | Obs: ${e.observaciones || ""}`;
@@ -21349,7 +21401,28 @@ function AppInner() {
       d.perfilCargo_medidasControl ? `Medidas de control: ${d.perfilCargo_medidasControl}` : "",
       d.perfilCargo_tiempoAcumulado ? `Tiempo acumulado: ${d.perfilCargo_tiempoAcumulado}` : "",
     ].filter(Boolean).join("\n  ") || "No diligenciado";
-    return { hallazgos, antecedentes, riesgos, maniobras, osteoRes, paraclinicosFull, agudeza, examenEspecial, perfilCargo };
+    // FIX 2026-07-11: resultados de exámenes subidos/analizados con IA de
+    // visión (ver _analizarExamenIA y la pestaña Adjuntos) — campo editable
+    // por el médico que ahora alimenta los 3 prompts.
+    const resultadosParacl = (d.resultadosParaclinicos || "").trim() || "Sin resultados de exámenes registrados/analizados";
+    return { hallazgos, antecedentes, riesgos, maniobras, osteoRes, paraclinicosFull, agudeza, examenEspecial, perfilCargo, resultadosParacl };
+  };
+
+  // FIX 2026-07-11: contexto normativo por ÉNFASIS del examen — análogo al
+  // bloque por tipo de examen. Antes el énfasis solo aparecía como dato
+  // ("Énfasis: ALTURAS") sin instrucciones, y quedaba a criterio del modelo
+  // aplicar o no la normativa correspondiente.
+  const _contextoEnfasisHC = (d) => {
+    const enf = (d.enfasisExamen || "GENERAL").toUpperCase();
+    if (enf.includes("ALTURA"))
+      return "ÉNFASIS TRABAJO EN ALTURAS (Res. 4272/2021, que reglamenta el trabajo seguro en alturas y deroga la Res. 1409/2012): DEBES pronunciarte explícitamente sobre la aptitud para trabajo en alturas (labores a 2.00 m o más sobre un plano horizontal inferior). Evalúa y cita los criterios restrictivos: vértigo o trastornos del equilibrio (Romberg, marcha, nistagmus), epilepsia o antecedente convulsivo, fobia a las alturas, patología cardiovascular no controlada (HTA severa, arritmias, síncope), diabetes con hipoglucemias, alteraciones visuales o auditivas severas no corregidas, consumo de alcohol/psicoactivos, trastornos psiquiátricos que comprometan el juicio, y resultados del psicosensométrico si existe. Las restricciones y recomendaciones deben referirse específicamente al uso de sistemas de protección contra caídas, reentrenamiento y periodicidad de la evaluación.";
+    if (enf.includes("ALIMENTO"))
+      return "ÉNFASIS MANIPULACIÓN DE ALIMENTOS (Res. 2674/2013 Art. 11): DEBES pronunciarte sobre la aptitud para manipular alimentos. Evalúa: infecciones de piel y faneras (dermatitis, onicomicosis, heridas infectadas), patología ORL activa (faringoamigdalitis, sinusitis), enfermedad gastrointestinal activa o estado de portador (Salmonella, parasitismo), y hábitos higiénicos. Recomienda coprológico/coprocultivo, frotis faríngeo y KOH de uñas si aplican, y el reconocimiento médico mínimo anual que exige la norma.";
+    if (enf.includes("CONFIN"))
+      return "ÉNFASIS ESPACIOS CONFINADOS (Res. 0491/2020): DEBES pronunciarte sobre la aptitud para ingreso a espacios confinados. Evalúa: capacidad cardiorrespiratoria (espirometría, tolerancia al esfuerzo), claustrofobia y condiciones psicológicas/psiquiátricas, integridad neurológica, condiciones que impidan el uso de equipos de protección respiratoria (SCBA) o el autorrescate, obesidad que limite el paso por accesos estrechos, y patología osteomuscular que impida evacuación de emergencia. Las restricciones deben considerar el trabajo con permisos de ingreso, vigía y plan de rescate.";
+    if (enf.includes("CONDUC"))
+      return "ÉNFASIS CONDUCCIÓN (Res. 217/2014 y exámenes psicosensométricos): DEBES pronunciarte sobre la aptitud para conducir vehículos en misión laboral. Evalúa: agudeza visual y campimetría, visión cromática y estereopsis, audiometría, coordinación motriz y tiempos de reacción, epilepsia/convulsiones, síncope, apnea del sueño y somnolencia diurna, consumo de alcohol/psicoactivos y medicamentos sedantes.";
+    return "";
   };
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
   const generateAIAnalysis = async () => {
@@ -21434,7 +21507,10 @@ ${ctx.osteoRes}
 ${ctx.agudeza}
 ${ctx.examenEspecial ? `═══ EXAMEN ESPECIAL ═══\n${ctx.examenEspecial}\n` : ""}═══ PARACLÍNICOS SOLICITADOS/REALIZADOS ═══
 ${ctx.paraclinicosFull}
+═══ RESULTADOS DE EXÁMENES PARACLÍNICOS (subidos/analizados) ═══
+${ctx.resultadosParacl}
 CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
+${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}` : ""}
 CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba.
 JSON REQUERIDO (sin markdown, sin texto adicional):
 {"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}`;    try {
@@ -21643,7 +21719,7 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
     const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en Colombia, experto en restricciones médico-laborales, reintegro laboral y vigilancia epidemiológica. Con base en la historia clínica COMPLETA del trabajador que se presenta a continuación, genera las restricciones médico-laborales personalizadas y adaptadas a los hallazgos encontrados. Devuelve ÚNICAMENTE JSON.
 
 ════════ HISTORIA CLÍNICA COMPLETA DEL TRABAJADOR ════════
-Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Tipo examen: ${data.tipoExamen}
+Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen || "GENERAL"}
 Edad: ${data.edad} años | Género: ${data.genero} | ARL: ${data.arl || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
 Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Tipo contrato: ${data.tipoContrato || "N/R"}
 Perfil del cargo (Res. 1843/2025 Art. 29):
@@ -21658,12 +21734,13 @@ Maniobras osteomusculares positivas: ${osteo}
 Examen osteomuscular: ${ctx.osteoRes}
 Agudeza visual: ${ctx.agudeza}
 ${ctx.examenEspecial ? `Examen especial: ${ctx.examenEspecial}\n` : ""}Paraclínicos solicitados/realizados: ${ctx.paraclinicosFull}
+Resultados de exámenes paraclínicos (subidos/analizados): ${ctx.resultadosParacl}
 Diagnósticos activos (CIE-10): ${dxActivos}
 Concepto de aptitud previo: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA: ${data.analisisIA ? data.analisisIA.substring(0, 400) + "..." : "No disponible"}
 ══════════════════════════════════════════════════════════
 
-INSTRUCCIONES OBLIGATORIAS:
+${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}\n\n` : ""}INSTRUCCIONES OBLIGATORIAS:
 1. PERSONALIZACIÓN: Cada restricción DEBE derivar directamente de un hallazgo clínico específico encontrado en ESTA historia clínica. Cita el hallazgo que justifica cada restricción.
 2. Si no hay hallazgos patológicos relevantes para una restricción, NO la incluyas. No generes restricciones genéricas sin sustento clínico.
 3. CUANTIFICACIÓN: Cada restricción debe ser operativa y cuantificable: en kg, minutos, grados, frecuencias o porcentajes.
@@ -21735,7 +21812,8 @@ Maniobras osteomusculares positivas: ${ctx.maniobras}
 Examen osteomuscular: ${ctx.osteoRes}
 Agudeza visual: ${ctx.agudeza}
 ${ctx.examenEspecial ? `Examen especial: ${ctx.examenEspecial}\n` : ""}Paraclínicos solicitados/realizados: ${ctx.paraclinicosFull}
-Diagnósticos activos (CIE-10): ${dxRecoActivos}
+Resultados de exámenes paraclínicos (subidos/analizados): ${ctx.resultadosParacl}
+${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}\n` : ""}Diagnósticos activos (CIE-10): ${dxRecoActivos}
 Concepto de aptitud: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA previo: ${data.analisisIA ? data.analisisIA.substring(0, 500) + "..." : "No disponible"}
 ══════════════════════════════════════════════════════════
@@ -41495,6 +41573,79 @@ RESPONDE ÚNICAMENTE JSON VÁLIDO sin texto previo ni bloques markdown:
         </div>
 
         <div className="p-4 space-y-4">
+          {/* FIX 2026-07-11: Análisis de exámenes con IA de visión — el resumen
+              alimenta los prompts de concepto/restricciones/recomendaciones */}
+          {data.estadoHistoria !== "Cerrada" && (
+            <div className="border border-violet-200 rounded-xl p-4 bg-violet-50/50 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="text-xs font-black text-violet-800">🔬 Analizar examen con IA</p>
+                  <p className="text-[10px] text-violet-500 mt-0.5">
+                    Sube una imagen o PDF del examen (audiometría, espirometría, laboratorio, RX...) — la IA extrae los resultados y los incluye en el análisis de la HC, restricciones y recomendaciones.
+                  </p>
+                </div>
+                <input
+                  type="file"
+                  id="examen-ia-input"
+                  accept="application/pdf,image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (!file) return;
+                    if (file.size > 7 * 1024 * 1024) { showAlert("El archivo supera 7MB. Comprime o recorta el examen e intenta de nuevo."); return; }
+                    setAnalizandoExamen(true);
+                    try {
+                      const base64 = await new Promise((res, rej) => {
+                        const rd = new FileReader();
+                        rd.onload = () => res(String(rd.result).split(",")[1] || "");
+                        rd.onerror = () => rej(new Error("No se pudo leer el archivo"));
+                        rd.readAsDataURL(file);
+                      });
+                      const r = await _analizarExamenIA(base64, file.type || "application/pdf", file.name);
+                      if (r?.error) { showAlert("⚠️ La IA no pudo interpretar el archivo: " + r.error); return; }
+                      const resumen = [
+                        `📄 ${file.name} — ${r.tipoExamen || "Examen"}${r.fechaExamen && r.fechaExamen !== "N/R" ? ` (${r.fechaExamen})` : ""}`,
+                        r.resultadosClave ? `• Resultados: ${r.resultadosClave}` : "",
+                        r.valoresAnormales ? `• Hallazgos anormales: ${r.valoresAnormales}` : "",
+                        r.interpretacion ? `• Interpretación: ${r.interpretacion}` : "",
+                        r.relevanciaOcupacional ? `• Relevancia ocupacional: ${r.relevanciaOcupacional}` : "",
+                      ].filter(Boolean).join("\n");
+                      setData((prev) => ({
+                        ...prev,
+                        resultadosParaclinicos: (prev.resultadosParaclinicos ? prev.resultadosParaclinicos + "\n\n" : "") + resumen,
+                      }));
+                      showAlert(`✅ Examen analizado: ${r.tipoExamen || file.name}.\n\nRevisa y ajusta el resumen en el campo "Resultados de exámenes" — este texto será tenido en cuenta por la IA al generar concepto, restricciones y recomendaciones.`);
+                    } catch (err) {
+                      showAlert("❌ Error analizando el examen: " + err.message);
+                    } finally {
+                      setAnalizandoExamen(false);
+                    }
+                  }}
+                />
+                <button
+                  onClick={() => document.getElementById("examen-ia-input")?.click()}
+                  disabled={analizandoExamen}
+                  className="px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-xs font-black rounded-xl transition"
+                >
+                  {analizandoExamen ? "⏳ Analizando..." : "🔬 Subir y analizar examen"}
+                </button>
+              </div>
+              {(data.resultadosParaclinicos || "") !== "" && (
+                <div>
+                  <label className="text-[10px] font-bold text-gray-600 uppercase block mb-1">
+                    Resultados de exámenes (editable — lo verá la IA)
+                  </label>
+                  <textarea
+                    value={data.resultadosParaclinicos || ""}
+                    onChange={(e) => setData((prev) => ({ ...prev, resultadosParaclinicos: e.target.value }))}
+                    rows={6}
+                    className="w-full p-2 border border-violet-200 rounded-lg text-xs font-mono bg-white"
+                  />
+                </div>
+              )}
+            </div>
+          )}
           {/* Upload area */}
           {data.estadoHistoria !== "Cerrada" && (
             <div className="border-2 border-dashed border-teal-300 rounded-xl p-4 bg-teal-50/40 space-y-3">
