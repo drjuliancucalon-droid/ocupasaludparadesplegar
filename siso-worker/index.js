@@ -175,6 +175,55 @@ export default {
         return new Response(JSON.stringify({ ok: true, count: rows.length }), { headers });
       }
 
+      // ── POST /store/chunked — escritura chunked ATÓMICA (2026-07-11) ──
+      // El troceo cliente (piezas __cN escritas una a una) no es atómico:
+      // dos guardados simultáneos (dos pestañas, o monolito + refactor)
+      // entrelazaban piezas de generaciones distintas → hash mismatch →
+      // "CORRUPCIÓN detectada" y lectura descartada. Aquí el servidor
+      // trocea y escribe TODO (piezas + __meta con hash + borrado de la
+      // clave base y de piezas sobrantes) en UN env.DB.batch — transaccional
+      // en D1: los lectores ven la generación vieja o la nueva, nunca mezcla.
+      // Body: { key, value }. Formato 100% compatible con _workerGet del
+      // monolito y _chunkGet del refactor.
+      if (request.method === "POST" && path === "/store/chunked") {
+        const body = await request.json();
+        const { key, value } = body || {};
+        if (!key || value === undefined) {
+          return new Response(JSON.stringify({ ok: false, error: "key y value requeridos" }), { status: 400, headers });
+        }
+        const payload = JSON.stringify(value);
+        // Hash idéntico al _hash64 del monolito (h1 base31 + h2 base127*31)
+        let h1 = 0, h2 = 0;
+        for (let i = 0; i < payload.length; i++) {
+          const c = payload.charCodeAt(i);
+          h1 = ((h1 << 5) - h1 + c) | 0;
+          h2 = ((h2 << 7) - h2 + c * 31) | 0;
+        }
+        const hash = (h1 >>> 0).toString(16) + "_" + (h2 >>> 0).toString(16);
+        const PIECE = 500 * 1024;
+        const pieces = [];
+        for (let off = 0; off < payload.length; off += PIECE) pieces.push(payload.slice(off, off + PIECE));
+        // Piezas viejas a borrar más allá del nuevo count (evita __cN huérfanos)
+        let oldCount = 0;
+        try {
+          const om = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key + "__meta").first();
+          if (om?.value) { const m = JSON.parse(await decompressValue(om.value)); if (m?.chunked && Number.isFinite(m.count)) oldCount = m.count; }
+        } catch {}
+        const up = env.DB.prepare(
+          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+        );
+        const del = env.DB.prepare("DELETE FROM siso_store WHERE key = ?");
+        const meta = { chunked: true, count: pieces.length, totalBytes: payload.length, hash, ts: Date.now() };
+        const batch = [
+          ...pieces.map((p, i) => up.bind(key + "__c" + i, JSON.stringify(p))),
+          up.bind(key + "__meta", JSON.stringify(meta)),
+          del.bind(key), // los lectores caen al __meta
+        ];
+        for (let i = pieces.length; i < oldCount; i++) batch.push(del.bind(key + "__c" + i));
+        await env.DB.batch(batch); // ← transaccional: todo o nada
+        return new Response(JSON.stringify({ ok: true, chunks: pieces.length, hash }), { headers });
+      }
+
       // ── POST /store/append — agrega/actualiza UN item dentro de un array
       // almacenado, con la fusión hecha EN EL SERVIDOR (2026-07-09).
       // Evita la carrera read-modify-write de clientes concurrentes: varios

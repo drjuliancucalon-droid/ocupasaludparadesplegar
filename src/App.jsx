@@ -426,6 +426,29 @@ const _workerSet = async (key, value) => {
   }
 
   // ─── Path chunked (> threshold) ──────────────────────────────────────────
+  // FIX 2026-07-11: intento PRIMARIO vía /store/chunked — el servidor trocea
+  // y escribe piezas+meta+borrado de base en UNA transacción D1. Elimina la
+  // corrupción por escrituras simultáneas (dos pestañas / monolito+refactor
+  // entrelazando piezas → hash mismatch → "CORRUPCIÓN detectada"). Si el
+  // worker desplegado aún no tiene el endpoint, cae al troceo cliente.
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 45000);
+    const r = await fetch(`${_WORKER_URL}/store/chunked`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
+      body: JSON.stringify({ key, value }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(tid);
+    if (r.ok) {
+      const d = await r.json().catch(() => null);
+      if (d && d.ok) return true;
+    }
+    console.warn(`[_workerSet] /store/chunked no disponible (${r.status}) — fallback a troceo cliente para ${key}`);
+  } catch (e) {
+    console.warn(`[_workerSet] /store/chunked falló (${e?.message}) — fallback a troceo cliente para ${key}`);
+  }
   const pieces = [];
   for (let i = 0; i < serialized.length; i += _CHUNK_SIZE) {
     pieces.push(serialized.slice(i, i + _CHUNK_SIZE));
