@@ -191,7 +191,52 @@ export default {
         if (!key || value === undefined) {
           return new Response(JSON.stringify({ ok: false, error: "key y value requeridos" }), { status: 400, headers });
         }
-        const payload = JSON.stringify(value);
+        // ── CANDADO ANTI-ENCOGIMIENTO (2026-07-11) ─────────────────────
+        // Incidente: una pestaña con estado viejo reescribió la lista de
+        // pacientes y borró de la nube los 23 exámenes del día (3 veces).
+        // Para colecciones protegidas, el SERVIDOR fusiona por id con lo ya
+        // almacenado: lo entrante gana por-id (ediciones), pero los
+        // registros existentes que lo entrante NO conoce se PRESERVAN.
+        // Ninguna sesión — ni con código viejo, ni con estado incompleto —
+        // puede volver a encoger estas listas. (Los pacientes nunca se
+        // eliminan individualmente: se archivan con _archivado, así que un
+        // shrink legítimo no existe para estas claves.)
+        let toStore = value;
+        const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_/;
+        if (Array.isArray(value) && _PROTECTED.test(key)) {
+          try {
+            let old = null;
+            const oldRow = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key).first();
+            if (oldRow?.value) {
+              try { old = JSON.parse(await decompressValue(oldRow.value)); } catch {}
+            }
+            if (!Array.isArray(old)) {
+              const om = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key + "__meta").first();
+              if (om?.value) {
+                const m = JSON.parse(await decompressValue(om.value));
+                if (m?.chunked && Number.isFinite(m.count)) {
+                  let joined = "";
+                  for (let i = 0; i < m.count; i++) {
+                    const pr = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(`${key}__c${i}`).first();
+                    if (!pr?.value) { joined = null; break; }
+                    const pv = JSON.parse(await decompressValue(pr.value));
+                    joined += (typeof pv === "string") ? pv : "";
+                  }
+                  if (joined) { try { const p = JSON.parse(joined); if (Array.isArray(p)) old = p; } catch {} }
+                }
+              }
+            }
+            if (Array.isArray(old) && old.length > 0) {
+              const ids = new Set(toStore.filter(x => x && x.id != null).map(x => String(x.id)));
+              const extras = old.filter(x => x && x.id != null && !ids.has(String(x.id)));
+              if (extras.length > 0) {
+                toStore = [...toStore, ...extras];
+                console.log(`[chunked] CANDADO ${key}: +${extras.length} preservados (entrante=${value.length}, final=${toStore.length})`);
+              }
+            }
+          } catch (e) { console.warn(`[chunked] candado ${key} error:`, e.message); }
+        }
+        const payload = JSON.stringify(toStore);
         // Hash idéntico al _hash64 del monolito (h1 base31 + h2 base127*31)
         let h1 = 0, h2 = 0;
         for (let i = 0; i < payload.length; i++) {
