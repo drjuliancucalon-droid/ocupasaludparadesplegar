@@ -433,7 +433,11 @@ const _workerSet = async (key, value) => {
   // worker desplegado aún no tiene el endpoint, cae al troceo cliente.
   try {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 45000);
+    // FIX 2026-07-11: 45s cortaba la subida de ~4.5MB en conexiones con poco
+    // ancho de banda de SUBIDA (consultorio) antes de terminar → caía siempre
+    // al fallback. 180s da margen real; si la red está caída de verdad, el
+    // fetch falla rápido por error de red, no por timeout.
+    const tid = setTimeout(() => ctrl.abort(), 180000);
     const r = await fetch(`${_WORKER_URL}/store/chunked`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Siso-Token": _WORKER_TOKEN },
