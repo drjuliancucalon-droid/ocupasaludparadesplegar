@@ -449,10 +449,27 @@ const _workerSet = async (key, value) => {
       const d = await r.json().catch(() => null);
       if (d && d.ok) return true;
     }
-    console.warn(`[_workerSet] /store/chunked no disponible (${r.status}) — fallback a troceo cliente para ${key}`);
+    console.warn(`[_workerSet] /store/chunked no disponible (${r.status})`);
   } catch (e) {
-    console.warn(`[_workerSet] /store/chunked falló (${e?.message}) — fallback a troceo cliente para ${key}`);
+    console.warn(`[_workerSet] /store/chunked falló (${e?.message})`);
   }
+
+  // AUDITORÍA 2026-07-11: el candado anti-encogimiento del servidor SOLO
+  // vive dentro de /store/chunked. El troceo cliente de abajo (piezas
+  // escritas una por una vía POST /store normal) NO pasa por ese candado —
+  // si /store/chunked falla por un hipo de red y una sesión con estado
+  // incompleto cae a este fallback, puede reproducir el mismo incidente de
+  // pérdida de datos de hoy, por una causa distinta (red, no pestaña vieja).
+  // Para claves protegidas (pacientes/atenciones/HC), NUNCA arriesgar esa
+  // escritura sin candado: se aborta y se marca el aviso "sin respaldo" —
+  // el próximo guardado (autoguardado, cierre de HC, etc.) reintentará por
+  // la vía atómica segura. Claves no protegidas conservan el fallback.
+  const _PROTECTED_KEY = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_/;
+  if (_PROTECTED_KEY.test(key)) {
+    console.warn(`[_workerSet] ${key} es protegida — NO se usa troceo cliente sin candado. Reintentará en el próximo guardado.`);
+    return false;
+  }
+
   const pieces = [];
   for (let i = 0; i < serialized.length; i += _CHUNK_SIZE) {
     pieces.push(serialized.slice(i, i + _CHUNK_SIZE));
@@ -553,17 +570,27 @@ const _workerGet = async (key) => {
   if (!meta || !meta.chunked || !Number.isFinite(meta.count)) return null;
   // FIX 2026-06-16 (velocidad): leer chunks en PARALELO con límite de concurrencia.
   // Antes era secuencial (for+await): 8 chunks × ~1.8s = ~14s. Ahora ~3s.
-  // Pool de 6 lectores; preserva el orden con parts[i].
+  // AUDITORÍA 2026-07-11: pool reducido de 6 a 2 — 6 lecturas de ~500KB
+  // simultáneas sobre QUIC pueden saturar los streams UDP del navegador
+  // (ERR_QUIC_PROTOCOL_ERROR, reportado de forma no secuencial: fallan
+  // chunks 0,1,3,4 pero no 2,5). Con 2 streams el riesgo baja mucho; el
+  // costo es una reconstrucción algo más lenta, aceptable frente al riesgo
+  // de descartar la lectura completa por una pieza corrupta/faltante.
+  // Se agrega además 1 reintento individual por chunk antes de rendirse.
   const parts = new Array(meta.count);
   let _huboError = false;
   let _nextIdx = 0;
-  const _CONC = 6;
+  const _CONC = 2;
   const _lector = async () => {
     while (!_huboError) {
       const i = _nextIdx++;
       if (i >= meta.count) return;
-      const p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
-      if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key}`); return; }
+      let p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+      if (p === null) {
+        await new Promise((res) => setTimeout(res, 300));
+        p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+      }
+      if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key} (tras reintento)`); return; }
       parts[i] = p;
     }
   };

@@ -85,10 +85,20 @@ const _d1Get = async (key) => {
 const _state = {
   isSyncing:     false,
   lastSyncAt:    null,
+  lastFullSyncAt: 0,          // AUDITORÍA 2026-07-11: throttle de la FASE 2 (ver syncNow)
   pendingCount:  0,
   listeners:     new Set(),   // callbacks que reciben actualizaciones de estado
   syncInterval:  null,
 };
+// AUDITORÍA 2026-07-11: /store/prefix/siso_ devuelve ~54MB y tarda hasta
+// 22s con el volumen actual de datos — es una descarga completa de casi
+// toda la base, no un diff. syncNow() se dispara desde varios triggers
+// (evento 'online', timeout inicial, intervalo periódico) que pueden
+// solaparse en segundos, multiplicando ese costo y siendo la causa más
+// probable de los 503/timeouts intermitentes reportados. Este cooldown
+// evita repetir la FASE 2 (descarga D1) si ya corrió hace poco — las
+// fases 1 y 3 (cola offline, auditoría) siguen corriendo siempre.
+const _FULL_SYNC_MIN_GAP_MS = 3 * 60 * 1000;
 
 // ── Notificar a la app del estado de sincronización ──────────────
 const _notify = (status, detail = {}) => {
@@ -251,6 +261,12 @@ export const syncNow = async () => {
     // FIX 2026-06-05: cambio de _sbGetAll() a _d1GetAll() — D1 autoritativo.
     // Esto elimina el bug de sobrescritura donde SB tenía datos viejos y
     // los metía sobre datos nuevos en local.
+    // AUDITORÍA 2026-07-11: throttle — ver _FULL_SYNC_MIN_GAP_MS arriba.
+    const _sinceFull = Date.now() - _state.lastFullSyncAt;
+    if (_sinceFull < _FULL_SYNC_MIN_GAP_MS) {
+      console.log(`[SISO SYNC] Descarga completa omitida (hace ${Math.round(_sinceFull / 1000)}s, cooldown ${_FULL_SYNC_MIN_GAP_MS / 1000}s)`);
+    } else {
+    _state.lastFullSyncAt = Date.now();
     let cloudData = await _d1GetAll().catch(() => null);
     let fuente = 'D1';
     if (!cloudData) {
@@ -280,6 +296,7 @@ export const syncNow = async () => {
         _notify('updated', { count: updated });
       }
     }
+    } // fin del cooldown de la FASE 2
 
     // FASE 3: Flush audit queue
     await _flushAuditQueue();
@@ -425,13 +442,16 @@ export const initSyncManager = () => {
     });
   }
 
-  // Sync periódico cada 5 minutos (cuando hay internet y la pestaña está activa)
+  // Sync periódico cada 10 minutos (cuando hay internet y la pestaña está
+  // activa). AUDITORÍA 2026-07-11: antes 5 min — junto con el cooldown de
+  // _FULL_SYNC_MIN_GAP_MS reduce cuánto se repite la descarga completa de
+  // ~54MB que hoy tardaba hasta 22s.
   _state.syncInterval = setInterval(() => {
     if (document.hidden) return;
     if (navigator.onLine && !_state.isSyncing) {
       syncNow().catch(() => {});
     }
-  }, 5 * 60 * 1000);
+  }, 10 * 60 * 1000);
 
   // Sync inicial al cargar (si hay internet)
   if (navigator.onLine) {
