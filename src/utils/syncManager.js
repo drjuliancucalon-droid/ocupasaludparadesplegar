@@ -41,22 +41,32 @@ const _D1_WORKER_TOKEN = () =>
 
 // Descarga TODAS las claves siso_* de Worker D1.
 // Devuelve formato compatible con _sbGetAll: { key: { value, updatedAt } }
+// FIX 2026-07-12: usa ?raw=1 — el worker salta el JSON.parse por fila
+// (~1900 filas con el volumen actual) y devuelve el texto crudo; el parse
+// se hace aquí, en el cliente, donde sobra CPU/tiempo (a diferencia del
+// límite de 10ms del Workers Free Tier). Cambio opt-in: ningún otro
+// llamador de /store/prefix en el monolito pasa raw=1, así que su
+// comportamiento no cambia.
 const _d1GetAll = async () => {
   const W = _D1_WORKER_URL();
   const TOK = _D1_WORKER_TOKEN();
   if (!W || !TOK) return null;
   try {
-    const r = await fetch(`${W}/store/prefix/siso_`, {
+    const r = await fetch(`${W}/store/prefix/siso_?raw=1`, {
       headers: { 'X-Siso-Token': TOK },
     });
     if (!r.ok) return null;
     const rows = await r.json();
     const out = {};
     for (const row of (rows || [])) {
+      let value = row.value;
+      if (row._raw && typeof value === 'string') {
+        try { value = JSON.parse(value); } catch { /* dejar como string; se ignora igual que un valor no reconocido */ }
+      }
       out[row.key] = {
-        value: row.value,
+        value,
         updatedAt:
-          (row.value && typeof row.value === 'object' && row.value.updatedAt) ||
+          (value && typeof value === 'object' && value.updatedAt) ||
           row.ts ||
           row.updatedAt ||
           new Date().toISOString(),

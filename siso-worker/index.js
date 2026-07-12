@@ -112,7 +112,19 @@ export default {
           "AND key NOT GLOB '*__c[0-9]*' AND key NOT LIKE '%\\_\\_new%' ESCAPE '\\' AND key NOT GLOB '*_chunk_[0-9]*_of_[0-9]*' " +
           "LIMIT 2000"
         ).bind(prefix + "%").all();
-        const result = await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: JSON.parse(await decompressValue(r.value)) })));
+        // FIX 2026-07-12: modo ?raw=1 — opt-in, no cambia el comportamiento
+        // por defecto. El costo real de este endpoint no era el SELECT sino
+        // JSON.parse(decompressValue(...)) por cada fila (~1900 con el
+        // volumen actual). En modo raw se salta el parse — decompressValue
+        // sigue aplicándose (passthrough instantáneo si no hay prefijo
+        // "gz:", así que retrocompatible con datos legacy comprimidos) — y
+        // el cliente hace el parse. Solo lo usa el sync periódico (el
+        // consumidor de mayor volumen); los demás llamadores de esta ruta
+        // siguen recibiendo value ya parseado, sin cambios.
+        const raw = url.searchParams.get("raw") === "1";
+        const result = raw
+          ? await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: await decompressValue(r.value), _raw: true })))
+          : await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: JSON.parse(await decompressValue(r.value)) })));
         return new Response(JSON.stringify(result), { headers });
       }
 
