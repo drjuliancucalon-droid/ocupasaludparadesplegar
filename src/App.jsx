@@ -6618,8 +6618,8 @@ const DEFAULT_RECOMENDACIONES_SELECTED = {
 // ==========================================
 // ==========================================
 // MÓDULO 3: MOTOR DE IA MULTI-PROVEEDOR
-// Modelos verificados activos - Marzo 2026
-// Gemini · Groq · Together AI · OpenRouter
+// Modelos verificados activos - Julio 2026
+// Gemini · Groq · NVIDIA · OpenRouter
 // CORS habilitado en todos - funcionan desde cualquier servidor externo
 // ==========================================
 const AI_CONFIG_VERSION = "2026-03-v2";
@@ -6795,34 +6795,34 @@ const AI_PROVIDERS = {
       );
     },
   },
-  // ── 3. TOGETHER AI - Llama 3.3 70B 100% gratis, robusto ─────────────────
-  together: {
-    name: "Together AI",
+  // ── 3. NVIDIA (NIM / build.nvidia.com) - Catálogo gratis, API compatible OpenAI ──
+  // FIX 2026-07-13: reemplaza a Together AI. Modelos verificados en vivo contra
+  // integrate.api.nvidia.com/v1/models el 2026-07-13.
+  nvidia: {
+    name: "NVIDIA",
     free: true,
     badge: "🟢 Gratis · Muy estable",
-    docs: "api.together.ai",
-    hint: "Key gratuita: api.together.ai → Settings → API Keys - copia la key que empieza por letras/números (NO el código Python)",
-    link: "https://api.together.ai",
+    docs: "build.nvidia.com",
+    hint: "Key gratuita: build.nvidia.com → inicia sesión → cualquier modelo → 'Get API Key'",
+    link: "https://build.nvidia.com",
     call: async (prompt, systemPrompt, apiKey) => {
       if (!apiKey)
         throw new Error(
-          "Together AI: API Key no configurada - obtenla gratis en api.together.ai → Settings → API Keys"
+          "NVIDIA: API Key no configurada - obtenla gratis en build.nvidia.com"
         );
-      // Modelos gratuitos verificados Together AI - marzo 2026
-      // NOTA: los sufijos -Free fueron deprecados; ahora el acceso free
-      // es por tier de cuenta, no por nombre de modelo
+      // Modelos gratuitos verificados en build.nvidia.com - julio 2026
       const tryModels = [
-        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-        "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        "togethercomputer/llama-2-70b-chat",
+        "meta/llama-3.3-70b-instruct",
+        "nvidia/llama-3.1-nemotron-70b-instruct",
+        "nvidia/llama-3.3-nemotron-super-49b-v1",
+        "meta/llama-3.1-8b-instruct",
+        "mistralai/mistral-7b-instruct-v0.3",
       ];
       let lastErr = null;
       for (const model of tryModels) {
         try {
           const res = await fetchWithTimeout(
-            "https://api.together.ai/v1/chat/completions",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
             {
               method: "POST",
               headers: {
@@ -6843,11 +6843,11 @@ const AI_PROVIDERS = {
           if (!res.ok) {
             const errData = await res.json().catch(() => ({}));
             const msg = errData?.error?.message || res.statusText;
-            lastErr = new Error(`Together/${model} [${res.status}]: ${msg}`);
+            lastErr = new Error(`NVIDIA/${model} [${res.status}]: ${msg}`);
             if (res.status === 401 || res.status === 403) {
               // Key inválida - no tiene sentido seguir probando modelos
               throw new Error(
-                `Together AI [401]: API Key inválida. Ve a api.together.ai → Settings → API Keys y copia SOLO la key (texto largo, no el código Python).`
+                `NVIDIA [401]: API Key inválida. Ve a build.nvidia.com y genera una nueva key.`
               );
             }
             continue;
@@ -6855,11 +6855,11 @@ const AI_PROVIDERS = {
           const data = await res.json();
           const text = data.choices?.[0]?.message?.content;
           if (text?.trim().length > 5) return text.trim();
-          lastErr = new Error(`Together/${model}: respuesta vacía`);
+          lastErr = new Error(`NVIDIA/${model}: respuesta vacía`);
         } catch (e) {
           if (e.message?.includes("API Key inválida")) throw e; // re-throw 401 immediately
           if (e.name === "AbortError") {
-            lastErr = new Error(`Together/${model}: timeout`);
+            lastErr = new Error(`NVIDIA/${model}: timeout`);
             continue;
           }
           lastErr = e;
@@ -6868,7 +6868,7 @@ const AI_PROVIDERS = {
       throw (
         lastErr ||
         new Error(
-          "Together AI: todos los modelos fallaron - renueva tu key en api.together.ai"
+          "NVIDIA: todos los modelos fallaron - renueva tu key en build.nvidia.com"
         )
       );
     },
@@ -9529,7 +9529,7 @@ const _FortalezaPass = ({ pw }) => {
 // SEC-F1-06: Content Security Policy via meta tag
 const SecurityHeaders = () => (
   <>
-    <meta httpEquiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.groq.com https://api.together.xyz https://openrouter.ai https://api.anthropic.com; font-src 'self' https:; frame-ancestors 'none';" />
+    <meta httpEquiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.groq.com https://integrate.api.nvidia.com https://openrouter.ai https://api.anthropic.com; font-src 'self' https:; frame-ancestors 'none';" />
     <meta httpEquiv="X-Content-Type-Options" content="nosniff" />
     <meta httpEquiv="X-Frame-Options" content="DENY" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
@@ -10813,21 +10813,21 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         "💡 Tip: Groq es el más rápido pero tiene límite de 30 peticiones/minuto",
       ],
     },
-    together: {
-      label: "Together AI",
-      sub: "Llama 3.3 70B · Muy estable",
-      badge: "🟢 Gratis · Sin límite diario",
+    nvidia: {
+      label: "NVIDIA",
+      sub: "Llama 3.3 70B · Nemotron · Muy estable",
+      badge: "🟢 Gratis · Catálogo NIM",
       badgeClass: "bg-teal-100 text-teal-800",
-      link: "https://api.together.ai/settings/api-keys",
+      link: "https://build.nvidia.com",
       color: "teal",
       steps: [
         "1️⃣ Haz clic en el botón 'Obtener key →' de abajo",
-        "2️⃣ Clic en 'Sign Up' o 'Continue with Google' (cuenta gratis)",
-        "3️⃣ En el panel, ve a Settings → API Keys (menú izquierdo)",
-        "4️⃣ Clic en 'Create new API key' → ponle nombre → crear",
-        "5️⃣ Copia la key que aparece (solo se muestra una vez)",
+        "2️⃣ Inicia sesión con cuenta gratis (Google/GitHub/email)",
+        "3️⃣ Abre cualquier modelo (ej. Llama 3.3 70B) → botón 'Get API Key'",
+        "4️⃣ Clic en 'Generate Key' → ponle nombre → crear",
+        "5️⃣ Copia la key que empieza con 'nvapi-...'",
         "6️⃣ Regresa aquí, pégala en el campo y presiona 'Probar'",
-        "💡 Tip: Together AI no tiene límite diario. Ideal como respaldo",
+        "💡 Tip: NVIDIA tiene un catálogo amplio de modelos gratis. Ideal como respaldo",
       ],
     },
     openrouter: {
@@ -10925,8 +10925,8 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         msg.includes("API Key inválida")
       )
         hint =
-          providerKey === "together"
-            ? " → Key inválida. En api.together.ai copia SOLO la key del campo texto, NO el código Python."
+          providerKey === "nvidia"
+            ? " → Key inválida. En build.nvidia.com genera una key nueva (empieza con 'nvapi-')."
             : " → Key inválida: renuévala siguiendo los pasos.";
       else if (
         msg.includes("429") ||
@@ -18055,7 +18055,7 @@ function AppInner() {
   const [promptValue, setPromptValue] = useState("");
   const [aiConfig, setAiConfig] = useState({
     activeProvider: "gemini",
-    keys: { groq: "", gemini: "", openrouter: "", together: "" },
+    keys: { groq: "", gemini: "", openrouter: "", nvidia: "" },
   });
   const [showAIConfig, setShowAIConfig] = useState(false);
   const [aiStatus, setAiStatus] = useState(null); // null | 'ok' | 'error'
@@ -20562,7 +20562,7 @@ function AppInner() {
       sp(`siso_saved_bills_${_initSuf}`, null) ?? sp("siso_saved_bills", [])
     );
     setDoctorSignature(_ls.getItem("siso_doctor_signature") || null);
-    const emptyKeys = { groq: "", gemini: "", openrouter: "", together: "" };
+    const emptyKeys = { groq: "", gemini: "", openrouter: "", nvidia: "" };
     const savedProvider = sp("siso_ai_config_provider", {
       activeProvider: "gemini",
     });
@@ -21331,9 +21331,9 @@ function AppInner() {
       const systemPrompt = expectJson
         ? `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones de aptitud laboral, ingresos, egresos, seguimientos periódicos y post-incapacidad, manejo de enfermedades laborales, calificación de origen y PCL, y gestión de programas de vigilancia epidemiológica (PVE) conforme a la Res. 1843/2025 (deroga 2346/2007), Res. 2404/2019, Dec. 1072/2015 y Ley 1562/2012. Cuando la consulta sea de medicina general, actúas como médico general con especialización en medicina interna y más de 15 años de experiencia clínica. Redactas con lenguaje técnico-médico formal, directo y puntual. RESPONDE ÚNICAMENTE CON JSON VÁLIDO, sin texto previo, sin bloques markdown, sin explicaciones adicionales. El JSON debe comenzar con { y terminar con }.`
         : `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones ocupacionales (ingreso, egreso, periódico, reintegro, post-incapacidad), restricciones médico-laborales, enfermedades laborales, vigilancia epidemiológica, calificación de origen y pérdida de capacidad laboral (PCL). Conoces a fondo la normativa vigente: Res. 1843/2025 (norma vigente, deroga Res. 2346/2007), Res. 2404/2019, Dec. 1072/2015, GTC-45:2012, GATISO-DME, GATISO-TME, Ley 1562/2012 y Res. 0312/2019. Cuando la consulta corresponde a medicina general, actúas como médico general con especialización clínica y más de 15 años de experiencia, manejando patología ambulatoria, crónica y aguda con criterio clínico sólido. Tu lenguaje es técnico, formal, directo y puntual. Respondes en español.`;
-      // Orden de prioridad fijo: gemini → openrouter → groq → together
+      // Orden de prioridad fijo: gemini → openrouter → groq → nvidia
       // Groq puede fallar por CORS según el dominio; gemini y openrouter son más estables en browser
-      const PRIORITY_ORDER = ["gemini", "openrouter", "groq", "together"];
+      const PRIORITY_ORDER = ["gemini", "openrouter", "groq", "nvidia"];
       const activeKey = aiConfig.activeProvider || "gemini";
       // Poner el activo primero, luego el resto en orden de prioridad
       const fallbackOrder = [
@@ -21341,7 +21341,7 @@ function AppInner() {
         ...PRIORITY_ORDER.filter((k) => k !== activeKey),
       ].filter((v, i, a) => a.indexOf(v) === i); // deduplicar
       let lastError = null;
-      const _pLabels = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", together: "Together AI" };
+      const _pLabels = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
       const _validProviders = fallbackOrder.filter(k => {
         const key = aiConfig.keys?.[k];
         return AI_PROVIDERS[k] && key && key !== "auto";
@@ -22963,7 +22963,7 @@ const handleLogin = (u, p) => {
             // PERSISTIR en localStorage para futuras sesiones
             _ls.setItem("siso_ai_keys_" + found.user, aiKeysStr);
             _ls.setItem("siso_ai_keys", aiKeysStr);
-            setAiConfig((prev) => ({ ...prev, keys: { groq:"", gemini:"", openrouter:"", together:"", ...aiKeyCloud } }));
+            setAiConfig((prev) => ({ ...prev, keys: { groq:"", gemini:"", openrouter:"", nvidia:"", ...aiKeyCloud } }));
           }
           // 2. DoctorData desde clave DEDICADA (siempre la más actualizada)
           const doctorDataCloud = cloud?.[`siso_doctor_data_${found.user}`]?.value;
@@ -30150,8 +30150,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
             {/* ── Contador de llamadas IA ── */}
             {(() => {
               const _ap = aiConfig.activeProvider || "gemini";
-              const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", together: "Together" };
-              const _limits = { gemini: 1500, openrouter: 50, groq: 100, together: 50 };
+              const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
+              const _limits = { gemini: 1500, openrouter: 50, groq: 100, nvidia: 40 };
               const _chips = Object.entries(aiCallsCount).filter(([,v]) => v > 0);
               if (!_chips.length) return null;
               return (
@@ -31208,8 +31208,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
               {/* Contador IA */}
               {Object.values(aiCallsCount).some(v => v > 0) && (() => {
                 const _ap = aiConfig.activeProvider || "gemini";
-                const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", together: "Together" };
-                const _limits = { gemini: 1500, openrouter: 50, groq: 100, together: 50 };
+                const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
+                const _limits = { gemini: 1500, openrouter: 50, groq: 100, nvidia: 40 };
                 return (
                   <div className="flex gap-1 flex-wrap">
                     {Object.entries(aiCallsCount).filter(([,v]) => v > 0).map(([prov, n]) => {
