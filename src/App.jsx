@@ -6886,24 +6886,23 @@ const AI_PROVIDERS = {
         throw new Error(
           "OpenRouter: API Key no configurada - obtenla gratis en openrouter.ai/keys"
         );
-      // Modelos free VERIFICADOS activos en OpenRouter - marzo 2026
-      // (si alguno da 404, el código pasa automáticamente al siguiente)
-      // FIX 2026-07-13: el modelo Gemini de Google va PRIMERO — es el
-      // mismo modelo (mayor calidad) que usa el proveedor "gemini" directo,
-      // pero bajo la cuota separada de OpenRouter. Antes estaba al final
-      // de la lista, así que "openrouter/auto" u otro modelo de menor
-      // calidad respondía antes de siquiera intentar el Gemini real.
+      // FIX 2026-07-13: lista reemplazada por completo — el catálogo gratis
+      // de OpenRouter había cambiado y NINGUNO de los IDs anteriores (marzo
+      // 2026) seguía activo (todos daban 404 "No endpoints found"). Lista
+      // verificada por el usuario directamente en openrouter.ai/models el
+      // 2026-07-13. Ya no existe ningún modelo Gemini gratis en OpenRouter.
+      // Se excluyen los modelos especializados en código (poolside, cohere
+      // north-mini-code) y el de re-ranking (nemotron-rerank-vl, no es de
+      // generación de texto) — se priorizan los de mayor capacidad general.
       const tryModels = [
-        "google/gemini-2.5-pro-exp-03-25:free",
-        "openrouter/auto",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "deepseek/deepseek-r1-zero:free",
-        "deepseek/deepseek-chat-v3-0324:free",
-        "mistralai/mistral-small-3.1-24b-instruct:free",
-        "qwen/qwen3-235b-a22b:free",
-        "qwen/qwen3-30b-a3b:free",
-        "nvidia/llama-3.3-nemotron-super-49b-v1:free",
-        "arcee-ai/arcee-blitz:free",
+        "openai/gpt-oss-120b:free",
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free",
+        "openai/gpt-oss-20b:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "nvidia/nemotron-nano-9b-v2:free",
+        "tencent/hy3:free",
       ];
       let lastErr = null;
       for (const model of tryModels) {
