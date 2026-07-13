@@ -6653,10 +6653,16 @@ const AI_PROVIDERS = {
         .split(/[,\n]/)
         .map((k) => k.trim())
         .filter(Boolean);
-      // Modelos verificados activos marzo 2026 (Gemini 1.5 retirado → 404)
+      // FIX 2026-07-13: se agregan gemini-3.5-flash y gemini-3.1-flash-lite
+      // (familia nueva, lanzada después de marzo 2026, confirmada vigente en
+      // ai.google.dev/gemini-api/docs/models) — cada modelo tiene cuota
+      // INDEPENDIENTE, así que más modelos en la lista = más cupo real por
+      // key antes de considerarla agotada, no solo más intentos redundantes.
       const tryModels = [
         "gemini-2.5-flash",
+        "gemini-3.5-flash",
         "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
         "gemini-2.0-flash",
         "gemini-2.0-flash-lite",
       ];
