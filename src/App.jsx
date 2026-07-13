@@ -6700,7 +6700,10 @@ const AI_PROVIDERS = {
             }
             const data = await res.json();
             const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text?.trim().length > 5) return text.trim();
+            // FIX 2026-07-13: se reporta qué key (huella = últimos 6 chars)
+            // respondió, para poder contar el uso POR KEY, no solo por
+            // proveedor — necesario ahora que Gemini admite varias keys.
+            if (text?.trim().length > 5) return { text: text.trim(), keyFingerprint: key.slice(-6) };
             lastErr = new Error(`Gemini/${model}: respuesta vacía`);
           } catch (e) {
             if (e.name === "AbortError") {
@@ -6960,6 +6963,10 @@ const AI_PROVIDERS = {
     },
   },
 };
+// FIX 2026-07-13: aiCallsCount guarda un número plano por proveedor, EXCEPTO
+// "gemini" que guarda { total, byKey } (desglose por key individual). Este
+// helper normaliza la lectura para mostrar el total sin importar la forma.
+const _aiCountTotal = (v) => (v && typeof v === "object") ? (v.total || 0) : (v || 0);
 const parseAIJSON = (raw) => {
   if (!raw) throw new Error("Respuesta vacía");
   let clean = raw
@@ -10770,7 +10777,7 @@ const LicenciasTab = ({
 // ==========================================
 // MÓDULO 7: PANEL DE CONFIGURACIÓN DE IA
 // ==========================================
-const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
+const AIConfigPanel = ({ aiConfig, onSave, onClose, aiCallsCount }) => {
   const [cfg, setCfg] = useState(() => ({
     ...aiConfig,
     keys: { ...aiConfig.keys },
@@ -10898,11 +10905,14 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
     }));
     try {
       const provider = AI_PROVIDERS[providerKey];
-      const text = await provider.call(
+      const _raw = await provider.call(
         "Responde SOLO con la palabra: CONECTADO",
         "Eres un asistente. Responde únicamente con la palabra CONECTADO.",
         key.trim()
       );
+      // FIX 2026-07-13: gemini.call ahora puede devolver {text, keyFingerprint}
+      // en vez de un string plano (para poder contar uso por key individual).
+      const text = typeof _raw === "string" ? _raw : _raw?.text;
       const ok = !!text && text.length > 0;
       setTestStatus((p) => ({
         ...p,
@@ -11206,6 +11216,27 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
                         {st.msg}
                       </p>
                     )}
+                    {/* FIX 2026-07-13: conteo de uso por proveedor (y por key en Gemini) */}
+                    {(() => {
+                      const _v = aiCallsCount?.[k];
+                      const _n = _aiCountTotal(_v);
+                      if (!_n) return null;
+                      if (k === "gemini" && _v?.byKey && Object.keys(_v.byKey).length > 0) {
+                        return (
+                          <p className="text-[9px] mt-1.5 text-gray-500">
+                            🤖 <b>{_n}</b> llamadas en total · por key:{" "}
+                            {Object.entries(_v.byKey).map(([fp, c], i) => (
+                              <span key={fp}>{i > 0 ? " · " : ""}...{fp}: <b>{c}</b></span>
+                            ))}
+                          </p>
+                        );
+                      }
+                      return (
+                        <p className="text-[9px] mt-1.5 text-gray-500">
+                          🤖 <b>{_n}</b> llamadas usadas
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -18065,6 +18096,19 @@ function AppInner() {
   const [aiCallsCount, setAiCallsCount] = useState(() => {
     try { return JSON.parse(localStorage.getItem("siso_ai_calls_count") || "{}"); } catch { return {}; }
   });
+  // FIX 2026-07-13: restaurar el contador de llamadas IA desde D1 al iniciar
+  // sesión — antes solo vivía en localStorage y se "reiniciaba" al cambiar
+  // de dispositivo/navegador, dando una falsa sensación de cupo disponible.
+  useEffect(() => {
+    if (!currentUser?.user) return;
+    (async () => {
+      const fromD1 = await _workerGet("siso_ai_calls_count_" + currentUser.user);
+      if (fromD1 && typeof fromD1 === "object") {
+        setAiCallsCount(fromD1);
+        try { localStorage.setItem("siso_ai_calls_count", JSON.stringify(fromD1)); } catch {}
+      }
+    })();
+  }, [currentUser?.user]);
   const [companies, setCompanies] = useState([]);
   const [usersList, setUsersList] = useState(initialUsers);
   const [usersReady, setUsersReady] = useState(false); // FIX: esperar Supabase antes de login
@@ -21360,14 +21404,31 @@ function AppInner() {
         const _isLast = _pi === _validProviders.length - 1;
         setAiProviderStatus(`🔄 ${_label}${_validProviders.length > 1 ? ` (${_pi + 1}/${_validProviders.length})` : ""}...`);
         try {
-          const text = await provider.call(prompt, systemPrompt, key);
+          const _raw = await provider.call(prompt, systemPrompt, key);
+          // FIX 2026-07-13: gemini.call devuelve {text, keyFingerprint} para
+          // poder contar el uso POR KEY individual; los demás proveedores
+          // siguen devolviendo un string plano.
+          const text = typeof _raw === "string" ? _raw : _raw?.text;
+          const keyFingerprint = typeof _raw === "object" ? _raw?.keyFingerprint : null;
           if (text && text.trim().length > 10) {
             setAiStatus("ok");
             setAiProviderStatus(`✅ ${_label}`);
-            // ── Contador de llamadas por proveedor ──
+            // ── Contador de llamadas por proveedor (y por key individual en Gemini) ──
             setAiCallsCount(prev => {
-              const updated = { ...prev, [providerKey]: (prev[providerKey] || 0) + 1 };
+              const updated = { ...prev };
+              if (providerKey === "gemini" && keyFingerprint) {
+                const prevG = (prev.gemini && typeof prev.gemini === "object") ? prev.gemini : { total: 0, byKey: {} };
+                updated.gemini = {
+                  total: (prevG.total || 0) + 1,
+                  byKey: { ...prevG.byKey, [keyFingerprint]: (prevG.byKey?.[keyFingerprint] || 0) + 1 },
+                };
+              } else {
+                const prevN = typeof prev[providerKey] === "number" ? prev[providerKey] : 0;
+                updated[providerKey] = prevN + 1;
+              }
               try { localStorage.setItem("siso_ai_calls_count", JSON.stringify(updated)); } catch {}
+              // Persistir también en D1 para que no se pierda entre dispositivos/sesiones
+              if (_WORKER_TOKEN) { _workerSet("siso_ai_calls_count_" + (currentUser?.user || "default"), updated).catch(() => {}); }
               return updated;
             });
             return text;
@@ -30152,17 +30213,22 @@ Esta historia clínica debe conservarse mínimo 20 años.
             {(() => {
               const _ap = aiConfig.activeProvider || "gemini";
               const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", cerebras: "Cerebras" };
-              const _limits = { gemini: 1500, openrouter: 50, groq: 100, cerebras: 40 };
-              const _chips = Object.entries(aiCallsCount).filter(([,v]) => v > 0);
+              const _geminiKeyCount = (aiConfig.keys?.gemini || "").split(/[,\n]/).map(k => k.trim()).filter(Boolean).length || 1;
+              const _limits = { gemini: 1500 * _geminiKeyCount, openrouter: 50, groq: 100, cerebras: 40 };
+              const _chips = Object.entries(aiCallsCount).filter(([,v]) => _aiCountTotal(v) > 0);
               if (!_chips.length) return null;
               return (
                 <div className="flex flex-wrap gap-1 ml-auto">
-                  {_chips.map(([prov, n]) => {
+                  {_chips.map(([prov, v]) => {
+                    const n = _aiCountTotal(v);
                     const lim = _limits[prov] || 50;
                     const rem = Math.max(0, lim - n);
                     const remColor = rem < 10 ? "#dc2626" : rem < 30 ? "#d97706" : "#059669";
+                    const _byKeyTitle = (prov === "gemini" && v?.byKey)
+                      ? "Por key: " + Object.entries(v.byKey).map(([fp, c]) => `...${fp}=${c}`).join(" · ")
+                      : "";
                     return (
-                      <span key={prov} className={`text-[8px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-0.5 ${prov === _ap ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-gray-50 border-gray-200 text-gray-500"}`}>
+                      <span key={prov} title={_byKeyTitle} className={`text-[8px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-0.5 ${prov === _ap ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-gray-50 border-gray-200 text-gray-500"}`}>
                         🤖 {_pNames[prov] || prov}: <b>{n}</b> usadas · <b style={{color: remColor}}>{rem}</b> restantes
                       </span>
                     );
@@ -31207,18 +31273,23 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 </span>
               )}
               {/* Contador IA */}
-              {Object.values(aiCallsCount).some(v => v > 0) && (() => {
+              {Object.values(aiCallsCount).some(v => _aiCountTotal(v) > 0) && (() => {
                 const _ap = aiConfig.activeProvider || "gemini";
                 const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", cerebras: "Cerebras" };
-                const _limits = { gemini: 1500, openrouter: 50, groq: 100, cerebras: 40 };
+                const _geminiKeyCount = (aiConfig.keys?.gemini || "").split(/[,\n]/).map(k => k.trim()).filter(Boolean).length || 1;
+                const _limits = { gemini: 1500 * _geminiKeyCount, openrouter: 50, groq: 100, cerebras: 40 };
                 return (
                   <div className="flex gap-1 flex-wrap">
-                    {Object.entries(aiCallsCount).filter(([,v]) => v > 0).map(([prov, n]) => {
+                    {Object.entries(aiCallsCount).filter(([,v]) => _aiCountTotal(v) > 0).map(([prov, v]) => {
+                      const n = _aiCountTotal(v);
                       const lim = _limits[prov] || 50;
                       const rem = Math.max(0, lim - n);
                       const remColor = rem < 10 ? "#dc2626" : rem < 30 ? "#d97706" : "#059669";
+                      const _byKeyTitle = (prov === "gemini" && v?.byKey)
+                        ? "Por key: " + Object.entries(v.byKey).map(([fp, c]) => `...${fp}=${c}`).join(" · ")
+                        : "";
                       return (
-                        <span key={prov} className={`text-[8px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${prov === _ap ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-gray-50 border-gray-200 text-gray-500"}`}>
+                        <span key={prov} title={_byKeyTitle} className={`text-[8px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${prov === _ap ? "bg-indigo-50 border-indigo-200 text-indigo-700" : "bg-gray-50 border-gray-200 text-gray-500"}`}>
                           🤖 {_pNames[prov] || prov}: <b>{n}</b> usadas · <b style={{color: remColor}}>{rem}</b> restantes
                         </span>
                       );
@@ -60490,6 +60561,7 @@ body{padding-top:52px;}
           aiConfig={aiConfig}
           onSave={handleSaveAIConfig}
           onClose={() => setShowAIConfig(false)}
+          aiCallsCount={aiCallsCount}
         />
       )}
       {showCargaMasiva && (
