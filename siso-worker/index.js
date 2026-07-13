@@ -239,6 +239,39 @@ export default {
               }
             }
             if (Array.isArray(old) && old.length > 0) {
+              // ── CANDADO 2: CIERRES CONGELADOS (2026-07-12) ─────────────
+              // El candado anti-encogimiento impide BORRAR registros, pero
+              // no impedía RETROCEDERLOS: una sesión con estado viejo subía
+              // la versión "Abierta" (o sin concepto/código) de una HC ya
+              // cerrada, y ganaba por-id. Incidentes repetidos con Kely /
+              // Alveiro. Regla nueva: si la versión almacenada de un id está
+              // "Cerrada" y la entrante NO lo está, la entrante solo gana si
+              // trae MÁS entradas en `reaperturas` (la reapertura legítima
+              // de la app exige código de admin + motivo auditado y agrega
+              // una entrada a ese array). En cualquier otro caso se conserva
+              // la versión cerrada almacenada. Si ambas están cerradas pero
+              // la entrante perdió el código de verificación, se restaura.
+              const oldById = new Map(old.filter(x => x && x.id != null).map(x => [String(x.id), x]));
+              let congelados = 0;
+              toStore = toStore.map(item => {
+                if (!item || item.id == null) return item;
+                const prev = oldById.get(String(item.id));
+                if (!prev || prev.estadoHistoria !== "Cerrada") return item;
+                const reapNew = Array.isArray(item.reaperturas) ? item.reaperturas.length : 0;
+                const reapOld = Array.isArray(prev.reaperturas) ? prev.reaperturas.length : 0;
+                if (item.estadoHistoria !== "Cerrada") {
+                  if (reapNew > reapOld) return item; // reapertura auditada legítima
+                  congelados++;
+                  return prev; // sesión vieja intentó reabrir: se conserva el cierre
+                }
+                if (!item.codigoVerificacion && prev.codigoVerificacion) {
+                  return { ...item, codigoVerificacion: prev.codigoVerificacion, fechaCierre: item.fechaCierre || prev.fechaCierre };
+                }
+                return item;
+              });
+              if (congelados > 0) {
+                console.log(`[chunked] CANDADO-CIERRE ${key}: ${congelados} HC(s) cerrada(s) protegida(s) de reapertura no auditada`);
+              }
               const ids = new Set(toStore.filter(x => x && x.id != null).map(x => String(x.id)));
               const extras = old.filter(x => x && x.id != null && !ids.has(String(x.id)));
               if (extras.length > 0) {
