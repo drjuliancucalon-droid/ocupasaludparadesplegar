@@ -279,10 +279,15 @@ export const syncNow = async () => {
     _state.lastFullSyncAt = Date.now();
     let cloudData = await _d1GetAll().catch(() => null);
     let fuente = 'D1';
+    // FIX 2026-07-12 (V15): NUNCA hacer fallback a Supabase.
+    // Si D1 no responde, SALTAR este ciclo completamente.
+    // Supabase tiene datos viejos que sobreescribirían IndexedDB
+    // y causarían pérdida de datos recientes.
     if (!cloudData) {
-      // Fallback Supabase SOLO si D1 cae (continuidad)
-      cloudData = await _sbGetAll().catch(() => null);
-      fuente = 'Supabase (fallback)';
+      console.warn('[SISO SYNC] D1 no disponible — ciclo de descarga saltado. Datos locales preservados.');
+      _notify('d1-unavailable');
+      _state.isSyncing = false;
+      return;
     }
     if (cloudData) {
       const localData = await idbGetAll();
