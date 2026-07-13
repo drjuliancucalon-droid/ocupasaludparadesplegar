@@ -6631,6 +6631,15 @@ const AI_PROVIDERS = {
         throw new Error(
           "Gemini: API Key no configurada - obtenla gratis en aistudio.google.com/apikey"
         );
+      // FIX 2026-07-13: admite varias keys separadas por coma o salto de
+      // línea — rota a la siguiente cuando la actual agota su cuota (429)
+      // o resulta inválida. Cada key de Google AI Studio tiene cupo propio
+      // e independiente, así que N keys ≈ N× cupo del modelo Gemini real
+      // (a diferencia de caer a otro proveedor, que ya no es Gemini).
+      const apiKeys = apiKey
+        .split(/[,\n]/)
+        .map((k) => k.trim())
+        .filter(Boolean);
       // Modelos verificados activos marzo 2026 (Gemini 1.5 retirado → 404)
       const tryModels = [
         "gemini-2.5-flash",
@@ -6639,53 +6648,56 @@ const AI_PROVIDERS = {
         "gemini-2.0-flash-lite",
       ];
       let lastErr = null;
-      for (const model of tryModels) {
-        try {
-          const res = await fetchWithTimeout(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                systemInstruction: { parts: [{ text: systemPrompt }] },
-                contents: [{ role: "user", parts: [{ text: prompt }] }],
-                generationConfig: {
-                  maxOutputTokens: 8192,
-                  temperature: 0.25,
-                  ...(systemPrompt.includes("ÚNICAMENTE CON JSON") ||
-                  systemPrompt.includes("ÚNICAMENTE JSON")
-                    ? { responseMimeType: "application/json" }
-                    : {}),
-                },
-              }),
+      for (const key of apiKeys) {
+        for (const model of tryModels) {
+          try {
+            const res = await fetchWithTimeout(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: systemPrompt }] },
+                  contents: [{ role: "user", parts: [{ text: prompt }] }],
+                  generationConfig: {
+                    maxOutputTokens: 8192,
+                    temperature: 0.25,
+                    ...(systemPrompt.includes("ÚNICAMENTE CON JSON") ||
+                    systemPrompt.includes("ÚNICAMENTE JSON")
+                      ? { responseMimeType: "application/json" }
+                      : {}),
+                  },
+                }),
+              }
+            );
+            if (!res.ok) {
+              const errData = await res.json().catch(() => ({}));
+              const msg = errData?.error?.message || res.statusText;
+              lastErr = new Error(`Gemini/${model} [${res.status}]: ${msg}`);
+              // 401/403 = key inválida | 400 solo si mensaje indica key inválida
+              if (res.status === 401 || res.status === 403) break;
+              if (
+                res.status === 400 &&
+                (msg.includes("API_KEY_INVALID") ||
+                  msg.includes("not valid") ||
+                  msg.includes("API key"))
+              )
+                break;
+              continue; // 404/429 = modelo no disponible o cuota → probar siguiente modelo (misma key)
             }
-          );
-          if (!res.ok) {
-            const errData = await res.json().catch(() => ({}));
-            const msg = errData?.error?.message || res.statusText;
-            lastErr = new Error(`Gemini/${model} [${res.status}]: ${msg}`);
-            // 401/403 = key inválida | 400 solo si mensaje indica key inválida
-            if (res.status === 401 || res.status === 403) break;
-            if (
-              res.status === 400 &&
-              (msg.includes("API_KEY_INVALID") ||
-                msg.includes("not valid") ||
-                msg.includes("API key"))
-            )
-              break;
-            continue; // 404 = modelo no disponible → probar siguiente
+            const data = await res.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text?.trim().length > 5) return text.trim();
+            lastErr = new Error(`Gemini/${model}: respuesta vacía`);
+          } catch (e) {
+            if (e.name === "AbortError") {
+              lastErr = new Error(`Gemini/${model}: timeout (40s)`);
+              continue;
+            }
+            lastErr = e;
           }
-          const data = await res.json();
-          const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (text?.trim().length > 5) return text.trim();
-          lastErr = new Error(`Gemini/${model}: respuesta vacía`);
-        } catch (e) {
-          if (e.name === "AbortError") {
-            lastErr = new Error(`Gemini/${model}: timeout (40s)`);
-            continue;
-          }
-          lastErr = e;
         }
+        // se agotaron todos los modelos con esta key → probar la siguiente key
       }
       throw (
         lastErr ||
@@ -6863,7 +6875,13 @@ const AI_PROVIDERS = {
         );
       // Modelos free VERIFICADOS activos en OpenRouter - marzo 2026
       // (si alguno da 404, el código pasa automáticamente al siguiente)
+      // FIX 2026-07-13: el modelo Gemini de Google va PRIMERO — es el
+      // mismo modelo (mayor calidad) que usa el proveedor "gemini" directo,
+      // pero bajo la cuota separada de OpenRouter. Antes estaba al final
+      // de la lista, así que "openrouter/auto" u otro modelo de menor
+      // calidad respondía antes de siquiera intentar el Gemini real.
       const tryModels = [
+        "google/gemini-2.5-pro-exp-03-25:free",
         "openrouter/auto",
         "meta-llama/llama-3.3-70b-instruct:free",
         "deepseek/deepseek-r1-zero:free",
@@ -6873,7 +6891,6 @@ const AI_PROVIDERS = {
         "qwen/qwen3-30b-a3b:free",
         "nvidia/llama-3.3-nemotron-super-49b-v1:free",
         "arcee-ai/arcee-blitz:free",
-        "google/gemini-2.5-pro-exp-03-25:free",
       ];
       let lastErr = null;
       for (const model of tryModels) {
@@ -10764,6 +10781,7 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         "5️⃣ Se genera una key que empieza con 'AIza...' → cópiala",
         "6️⃣ Regresa aquí, pégala en el campo y presiona 'Probar'",
         "💡 Tip: Gemini es el más recomendado por calidad y velocidad",
+        "🔁 ¿Se agota rápido? Repite estos pasos con otra cuenta de Google y pega ambas keys separadas por coma en el mismo campo — cada key tiene cupo propio",
       ],
     },
     groq: {
@@ -11126,7 +11144,11 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
                     <div className="relative flex gap-1.5">
                       <input
                         type={showKey[k] ? "text" : "password"}
-                        placeholder={`Pega aquí tu API Key de ${info.label}...`}
+                        placeholder={
+                          k === "gemini"
+                            ? "Pega aquí tu API Key de Google Gemini... (puedes pegar varias separadas por coma)"
+                            : `Pega aquí tu API Key de ${info.label}...`
+                        }
                         value={cfg.keys?.[k] || ""}
                         onChange={(e) =>
                           setCfg((p) => ({
@@ -14158,9 +14180,13 @@ const _tryFitCanvasOnePage = (pdf, canvas, mg, cW, pcHpx, pxPerMm) => {
   // volverse ilegible al encogerlo; preferimos texto completo y algo más
   // pequeño que texto cortado. Piso de seguridad muy bajo (0.45) solo por
   // si un contenido anómalo llegara a ser gigante.
+  // FIX 2026-07-13b: escala NO uniforme — el ancho siempre usa la hoja
+  // completa (destW = cW, sin franjas laterales en blanco); solo la altura
+  // se comprime por "s". Antes se escalaba ancho y alto por igual (mismo
+  // factor "s"), lo que dejaba bordes anchos cuando el achique era fuerte.
   const s = Math.max(0.45, pcHpx / canvas.height);
-  const destW = cW * s, destH = (canvas.height * s) / pxPerMm;
-  const xOff = mg + (cW - destW) / 2;
+  const destW = cW, destH = (canvas.height * s) / pxPerMm;
+  const xOff = mg;
   pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", xOff, mg, destW, destH);
   return true;
 };

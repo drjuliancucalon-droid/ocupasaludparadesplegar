@@ -102,14 +102,18 @@ async function cacheFirstStrategy(req) {
 // ── ESTRATEGIA 2: Network First (para HTML / navegación) ─────────
 // Intenta la red primero. Si falla, sirve desde caché.
 async function networkFirstStrategy(req) {
+  // FIX 2026-07-13: AbortController en vez de solo Promise.race — si gana
+  // el timeout, se cancela el fetch en curso en lugar de dejarlo huérfano
+  // corriendo en segundo plano (evita "unhandled rejection" y peticiones
+  // de red desperdiciadas cuando la red solo iba lenta, no caída).
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await Promise.race([
-      fetch(req),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
-    ]);
+    const response = await fetch(req, { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (response.ok) {
       const cache = await caches.open(CACHE_PAGES);
-      cache.put(req, response.clone());
+      cache.put(req, response.clone()).catch(() => {});
     }
     return response;
   } catch {
