@@ -21382,6 +21382,10 @@ function AppInner() {
       osteo.columna && osteo.columna !== "Normal" ? `Columna: ${osteo.columna}` : "",
       osteo.miembrosSup && osteo.miembrosSup !== "Normal" ? `Miembros sup: ${osteo.miembrosSup}` : "",
       osteo.miembrosInf && osteo.miembrosInf !== "Normal" ? `Miembros inf: ${osteo.miembrosInf}` : "",
+      // FIX 2026-07-13: muscular y articular (los diligencia la sección del
+      // énfasis OSTEOMUSCULAR) se perdían — la IA nunca los veía.
+      osteo.muscular && osteo.muscular !== "Normal" ? `Muscular: ${osteo.muscular}` : "",
+      osteo.articular && osteo.articular !== "Normal" ? `Articular: ${osteo.articular}` : "",
       osteo.postural && osteo.postural !== "Normal" ? `Postural: ${osteo.postural}` : "",
       osteo.hallazgos ? `Hallazgos: ${osteo.hallazgos}` : "",
       osteo.diagnosticoFuncional ? `Dx funcional: ${osteo.diagnosticoFuncional}` : "",
@@ -21417,8 +21421,30 @@ function AppInner() {
       examenEspecial = `MANIPULACIÓN ALIMENTOS — Piel/faneras: ${e.pielFaneras || "N/R"} | ORL: ${e.orl || "N/R"} | GI: ${e.gastrointestinal || "N/R"} | Obs: ${e.observaciones || ""}`;
     } else if (enf.includes("CONFIN")) {
       const e = d.examenConfinados || {};
-      examenEspecial = `ESPACIOS CONFINADOS — CV: ${e.cardiovascular || "N/R"} | Resp: ${e.respiratorio || "N/R"} | Neuro: ${e.neurologico || "N/R"} | Psico: ${e.psicologico || "N/R"} | ORL: ${e.otorrino || "N/R"} | EPP: ${e.usoEpp || "N/R"}`;
+      examenEspecial = `ESPACIOS CONFINADOS — CV: ${e.cardiovascular || "N/R"} | Resp: ${e.respiratorio || "N/R"} | Neuro: ${e.neurologico || "N/R"} | Psico: ${e.psicologico || "N/R"} | ORL: ${e.otorrino || "N/R"} | EPP: ${e.usoEpp || "N/R"}${e.hallazgosCardio ? ` | Hallazgos cardio: ${e.hallazgosCardio}` : ""}${e.observaciones ? ` | Obs: ${e.observaciones}` : ""}`;
+    } else if (enf.includes("CORAZON") || enf.includes("CARDIO")) {
+      // FIX 2026-07-13: la batería del énfasis CORAZÓN nunca llegaba a la IA
+      // (ni riesgo CV, ni hallazgos, ni las restricciones sugeridas por el
+      // médico) aunque sí sale en la HC impresa.
+      const e = d.examenCorazon || {};
+      examenEspecial = `ÉNFASIS CARDIOVASCULAR — FC: ${e.frecuenciaCardiaca || "N/R"} | TA: ${e.presionArterial || "N/R"} | Ritmo/tonos: ${e.ritmoyTonos || "N/R"} | Pulsos: ${e.pulsos || "N/R"} | Edemas: ${e.edemas || "N/R"} | Perfusión periférica: ${e.perfusionPeriferica || "N/R"}${e.signosVitales ? ` | Signos vitales: ${e.signosVitales}` : ""}${e.riesgoCV ? ` | RIESGO CARDIOVASCULAR: ${e.riesgoCV}` : ""}${e.hallazgos ? ` | Hallazgos: ${e.hallazgos}` : ""}${e.restricciones ? ` | Restricciones sugeridas por el médico: ${e.restricciones}` : ""}`;
+    } else if (enf.includes("OSTEO")) {
+      // El detalle osteomuscular ya viaja en osteoRes/maniobras; aquí solo se
+      // marca el énfasis para que la IA lo trate como el foco del examen.
+      examenEspecial = `ÉNFASIS OSTEOMUSCULAR — ver secciones "Examen osteomuscular" y "Maniobras" de esta HC: son el foco del examen (evaluación de DME / riesgo biomecánico).`;
     }
+    // FIX 2026-07-13: datos clínicos que existían en la HC pero ningún prompt
+    // enviaba: detalle libre de hábitos, lateralidad (dominancia — clave para
+    // restricciones por segmento), incapacidades/ausentismo (Res. 1843 Art.
+    // 9/13), pausas activas (Art. 26) y vacunación.
+    const extras = [
+      d.habitos?.detalle ? `Detalle de hábitos: ${d.habitos.detalle}` : "",
+      d.lateralidad ? `Lateralidad (dominancia): ${d.lateralidad}` : "",
+      d.diasIncapacidad ? `Días de incapacidad (último período): ${d.diasIncapacidad}` : "",
+      d.diasAusenciaNoMedica ? `Días de ausencia no médica: ${d.diasAusenciaNoMedica}` : "",
+      (d.pausasActivasPrograma || d.pausasActivasParticipa) ? `Pausas activas: programa en la empresa=${d.pausasActivasPrograma ? "Sí" : "No"}, trabajador participa=${d.pausasActivasParticipa ? "Sí" : "No"}` : "",
+      d.vacunacionCompleta ? "Esquema de vacunación: completo" : "",
+    ].filter(Boolean).join(" | ") || "Sin datos adicionales";
     const perfilCargo = [
       d.perfilCargo_funciones ? `Funciones: ${d.perfilCargo_funciones}` : "",
       d.perfilCargo_demandasFisicas ? `Demandas físicas: ${d.perfilCargo_demandasFisicas}` : "",
@@ -21432,7 +21458,7 @@ function AppInner() {
     // visión (ver _analizarExamenIA y la pestaña Adjuntos) — campo editable
     // por el médico que ahora alimenta los 3 prompts.
     const resultadosParacl = (d.resultadosParaclinicos || "").trim() || "Sin resultados de exámenes registrados/analizados";
-    return { hallazgos, antecedentes, riesgos, maniobras, osteoRes, paraclinicosFull, agudeza, examenEspecial, perfilCargo, resultadosParacl };
+    return { hallazgos, antecedentes, riesgos, maniobras, osteoRes, paraclinicosFull, agudeza, examenEspecial, perfilCargo, resultadosParacl, extras };
   };
 
   // FIX 2026-07-11: contexto normativo por ÉNFASIS del examen — análogo al
@@ -21449,6 +21475,10 @@ function AppInner() {
       return "ÉNFASIS ESPACIOS CONFINADOS (Res. 0491/2020): DEBES pronunciarte sobre la aptitud para ingreso a espacios confinados. Evalúa: capacidad cardiorrespiratoria (espirometría, tolerancia al esfuerzo), claustrofobia y condiciones psicológicas/psiquiátricas, integridad neurológica, condiciones que impidan el uso de equipos de protección respiratoria (SCBA) o el autorrescate, obesidad que limite el paso por accesos estrechos, y patología osteomuscular que impida evacuación de emergencia. Las restricciones deben considerar el trabajo con permisos de ingreso, vigía y plan de rescate.";
     if (enf.includes("CONDUC"))
       return "ÉNFASIS CONDUCCIÓN (Res. 217/2014 y exámenes psicosensométricos): DEBES pronunciarte sobre la aptitud para conducir vehículos en misión laboral. Evalúa: agudeza visual y campimetría, visión cromática y estereopsis, audiometría, coordinación motriz y tiempos de reacción, epilepsia/convulsiones, síncope, apnea del sueño y somnolencia diurna, consumo de alcohol/psicoactivos y medicamentos sedantes.";
+    if (enf.includes("CORAZON") || enf.includes("CARDIO"))
+      return "ÉNFASIS CARDIOVASCULAR: DEBES pronunciarte explícitamente sobre la aptitud cardiovascular para las demandas físicas del cargo. Usa la sección 'EXAMEN ESPECIAL' de esta HC (batería cardiovascular: FC, TA, ritmo/tonos, pulsos, edemas, perfusión, clasificación de RIESGO CARDIOVASCULAR y restricciones sugeridas por el médico examinador). Correlaciona con: cifras tensionales y clasificación (normal/pre-HTA/HTA según guías), IMC y perímetro si consta, hábitos (tabaquismo, sedentarismo), antecedentes (dislipidemia, diabetes, cardiopatía, historia familiar) y edad/género para estimar riesgo. Si el cargo implica esfuerzo físico moderado-alto, trabajo en alturas, calor, turnos nocturnos o conducción, las restricciones deben ser específicas para esas exposiciones. Recomienda perfil lipídico, glicemia, EKG o valoración cardiológica según el riesgo, y seguimiento con periodicidad definida.";
+    if (enf.includes("OSTEO"))
+      return "ÉNFASIS OSTEOMUSCULAR (GATISO-DME, GATISO-TME, Res. 2844/2007, evaluación de riesgo biomecánico GTC-45): DEBES pronunciarte sobre la aptitud osteomuscular para las demandas biomecánicas del cargo. Usa las secciones 'Examen osteomuscular' (columna, miembros superiores/inferiores, muscular, articular, postural, hallazgos, diagnóstico funcional) y 'Maniobras osteomusculares' de esta HC — son el foco del examen. Correlaciona cada hallazgo con las demandas físicas del perfil del cargo (manipulación de cargas, posturas forzadas o mantenidas, movimientos repetitivos, vibración). Las restricciones deben ser cuantificadas (kg máximos, frecuencia, duración de exposición, segmento anatómico específico considerando la lateralidad dominante) y las recomendaciones deben incluir inclusión en SVE osteomuscular (PVE-DME), pausas activas con contenido específico, y reevaluación con plazo definido.";
     return "";
   };
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
@@ -21522,6 +21552,8 @@ TA ${data.ta || "N/R"} | FC ${data.fc || "N/R"} | FR ${data.fr || "N/R"} | Temp 
 ${ctx.antecedentes}
 ═══ HÁBITOS Y ESTILO DE VIDA ═══
 Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Psicoactivas ${data.habitos?.psicoactivas || "No"} | Actividad física ${data.habitos?.deporte || "No"}
+═══ OTROS DATOS CLÍNICOS RELEVANTES ═══
+${ctx.extras}
 ═══ RIESGOS OCUPACIONALES IDENTIFICADOS ═══
 ${ctx.riesgos}
 ═══ HALLAZGOS EXAMEN FÍSICO (solo anormales) ═══
@@ -21749,10 +21781,12 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
 Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen || "GENERAL"}
 Edad: ${data.edad} años | Género: ${data.genero} | ARL: ${data.arl || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
 Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Tipo contrato: ${data.tipoContrato || "N/R"}
+Motivo de consulta: ${data.motivoConsulta || "N/E"}
 Perfil del cargo (Res. 1843/2025 Art. 29):
   ${ctx.perfilCargo}
-Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
-Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
+Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | FR ${data.fr || "N/R"} | Temp ${data.temp || "N/R"} °C | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
+Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Psicoactivas ${data.habitos?.psicoactivas || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
+Otros datos clínicos: ${ctx.extras}
 Antecedentes relevantes: ${antec}
 Riesgos ocupacionales identificados: ${riesgos}
 Hallazgos PATOLÓGICOS al examen físico: ${hallazgosAnorm}
@@ -21828,10 +21862,12 @@ Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Actividad económica: ${
 Tipo examen: ${data.tipoExamen} | Énfasis: ${data.enfasisExamen || "N/E"}
 Edad: ${data.edad} años | Género: ${data.genero} | Escolaridad: ${data.escolaridad || "N/R"}
 Turno: ${data.turnoTrabajo || "N/R"} | Antigüedad empresa: ${data.antiguedadEmpresa || "N/R"} | Nivel riesgo ARL: ${data.nivelRiesgoARL || "N/R"}
+Motivo de consulta: ${data.motivoConsulta || "N/E"}
 Perfil del cargo (Res. 1843/2025 Art. 29):
   ${ctx.perfilCargo}
-Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
+Signos vitales: TA ${data.ta || "N/R"} mmHg | FC ${data.fc || "N/R"} lpm | FR ${data.fr || "N/R"} | Temp ${data.temp || "N/R"} °C | IMC ${data.imc || "N/R"} kg/m² | Peso ${data.peso || "N/R"} kg | Talla ${data.talla || "N/R"} cm
 Hábitos: Tabaquismo ${data.habitos?.fuma || "No"} | Alcohol ${data.habitos?.alcohol || "No"} | Psicoactivas ${data.habitos?.psicoactivas || "No"} | Actividad física ${data.habitos?.deporte || "No refiere"}
+Otros datos clínicos: ${ctx.extras}
 Antecedentes relevantes: ${antecReco}
 Riesgos ocupacionales identificados: ${riesgosReco}
 Hallazgos patológicos al examen físico: ${hallazgosReco}
