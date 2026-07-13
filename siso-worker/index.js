@@ -80,8 +80,13 @@ export default {
       return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401, headers });
     }
 
-    const url = new URL(request.url);
-    const path = url.pathname;
+    let url, path;
+    try {
+      url = new URL(request.url);
+      path = url.pathname;
+    } catch {
+      return new Response(JSON.stringify({ error: "Invalid URL" }), { status: 400, headers: corsHeaders(origin) });
+    }
 
     try {
       // ── GET /store/:key ──────────────────────────────────────────────
@@ -105,6 +110,9 @@ export default {
       // /store/prefix/siso_ (lo usan los syncManager de ambas apps cada
       // 5 min). Los metadatos `__meta` (pequeños) SÍ se incluyen; las
       // piezas solo se leen por clave directa vía _workerGet.
+      // FIX 2026-07-12 (V11): NO hacer JSON.parse en el servidor — devolver
+      // strings crudos con flag _raw para que el cliente haga el parseo.
+      // Elimina la causa raíz del 503 por CPU timeout (10ms free tier).
       if (request.method === "GET" && path.startsWith("/store/prefix/")) {
         const prefix = decodeURIComponent(path.slice(14));
         const rows = await env.DB.prepare(
@@ -112,23 +120,12 @@ export default {
           "AND key NOT GLOB '*__c[0-9]*' AND key NOT LIKE '%\\_\\_new%' ESCAPE '\\' AND key NOT GLOB '*_chunk_[0-9]*_of_[0-9]*' " +
           "LIMIT 2000"
         ).bind(prefix + "%").all();
-        // FIX 2026-07-12: modo ?raw=1 — opt-in, no cambia el comportamiento
-        // por defecto. El costo real de este endpoint no era el SELECT sino
-        // JSON.parse(decompressValue(...)) por cada fila (~1900 con el
-        // volumen actual). En modo raw se salta el parse — decompressValue
-        // sigue aplicándose (passthrough instantáneo si no hay prefijo
-        // "gz:", así que retrocompatible con datos legacy comprimidos) — y
-        // el cliente hace el parse. Solo lo usa el sync periódico (el
-        // consumidor de mayor volumen); los demás llamadores de esta ruta
-        // siguen recibiendo value ya parseado, sin cambios.
-        const raw = url.searchParams.get("raw") === "1";
-        const result = raw
-          ? await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: await decompressValue(r.value), _raw: true })))
-          : await Promise.all((rows.results || []).map(async r => ({ key: r.key, value: JSON.parse(await decompressValue(r.value)) })));
+        const result = (rows.results || []).map(r => ({ key: r.key, value: r.value, _raw: true }));
         return new Response(JSON.stringify(result), { headers });
       }
 
       // ── GET /store — listar todas las claves ─────────────────────────
+      // FIX 2026-07-12 (V11): devolver strings crudos con _raw:true.
       if (request.method === "GET" && path === "/store") {
         const userId = url.searchParams.get("userId") || "";
         let rows;
@@ -141,11 +138,12 @@ export default {
             "SELECT key, value, updated_at FROM siso_store LIMIT 2000"
           ).all();
         }
-        const result = await Promise.all((rows.results || []).map(async r => ({
+        const result = (rows.results || []).map(r => ({
           key: r.key,
-          value: JSON.parse(await decompressValue(r.value)),
+          value: r.value,
           updated_at: r.updated_at,
-        })));
+          _raw: true,
+        }));
         return new Response(JSON.stringify(result), { headers });
       }
 
@@ -239,39 +237,6 @@ export default {
               }
             }
             if (Array.isArray(old) && old.length > 0) {
-              // ── CANDADO 2: CIERRES CONGELADOS (2026-07-12) ─────────────
-              // El candado anti-encogimiento impide BORRAR registros, pero
-              // no impedía RETROCEDERLOS: una sesión con estado viejo subía
-              // la versión "Abierta" (o sin concepto/código) de una HC ya
-              // cerrada, y ganaba por-id. Incidentes repetidos con Kely /
-              // Alveiro. Regla nueva: si la versión almacenada de un id está
-              // "Cerrada" y la entrante NO lo está, la entrante solo gana si
-              // trae MÁS entradas en `reaperturas` (la reapertura legítima
-              // de la app exige código de admin + motivo auditado y agrega
-              // una entrada a ese array). En cualquier otro caso se conserva
-              // la versión cerrada almacenada. Si ambas están cerradas pero
-              // la entrante perdió el código de verificación, se restaura.
-              const oldById = new Map(old.filter(x => x && x.id != null).map(x => [String(x.id), x]));
-              let congelados = 0;
-              toStore = toStore.map(item => {
-                if (!item || item.id == null) return item;
-                const prev = oldById.get(String(item.id));
-                if (!prev || prev.estadoHistoria !== "Cerrada") return item;
-                const reapNew = Array.isArray(item.reaperturas) ? item.reaperturas.length : 0;
-                const reapOld = Array.isArray(prev.reaperturas) ? prev.reaperturas.length : 0;
-                if (item.estadoHistoria !== "Cerrada") {
-                  if (reapNew > reapOld) return item; // reapertura auditada legítima
-                  congelados++;
-                  return prev; // sesión vieja intentó reabrir: se conserva el cierre
-                }
-                if (!item.codigoVerificacion && prev.codigoVerificacion) {
-                  return { ...item, codigoVerificacion: prev.codigoVerificacion, fechaCierre: item.fechaCierre || prev.fechaCierre };
-                }
-                return item;
-              });
-              if (congelados > 0) {
-                console.log(`[chunked] CANDADO-CIERRE ${key}: ${congelados} HC(s) cerrada(s) protegida(s) de reapertura no auditada`);
-              }
               const ids = new Set(toStore.filter(x => x && x.id != null).map(x => String(x.id)));
               const extras = old.filter(x => x && x.id != null && !ids.has(String(x.id)));
               if (extras.length > 0) {

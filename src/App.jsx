@@ -619,15 +619,28 @@ const _PENDING_D1_MAX_RETRIES = 20;
 // ya viven en localStorage bajo su propia clave y se re-sincronizan en cada
 // guardado + en el AUDIT de arranque. Encolar copias completas reventaba la cuota
 // de localStorage (QuotaExceededError → "[pending] enqueue falló").
-const _PENDING_D1_MAX_VALUE = 60 * 1024; // 60KB serializado por entrada
-const _pendingSize = (v) => { try { return JSON.stringify(v).length; } catch { return Infinity; } };
+// FIX 2026-07-13: tope aumentado de 60KB a 5MB. Arrays grandes (pacientes ~4MB)
+// AHORA SÍ entran en la cola y se reintentan automáticamente cada 30s.
+// Para valores que aún excedan 5MB se guarda una REFERENCIA LIGERA (solo key+flag)
+// que processQueue resuelve leyendo desde localStorage al reintentar.
+const _PENDING_D1_MAX_VALUE = 5 * 1024 * 1024; // 5MB (era 60KB — insuficiente)
+const _PENDING_D1_OVERSIZE_FLAG = "__oversize_ref__";
+const _pendingSize = (v) => {
+  if (v === _PENDING_D1_OVERSIZE_FLAG) return 1; // referencia ligera, siempre cabe
+  try { return JSON.stringify(v).length; } catch { return Infinity; }
+};
 const _enqueuePendingD1 = (key, value) => {
   let serializedLen;
   try { serializedLen = JSON.stringify(value).length; } catch { return false; }
-  // No encolar valores gigantes: se re-sincronizan por la vía normal (auto-sync/AUDIT).
+  // Si el valor excede 5MB, guardar SOLO una referencia ligera.
+  // processQueue leerá el valor real desde localStorage al reintentar.
   if (serializedLen > _PENDING_D1_MAX_VALUE) {
-    console.warn(`[pending] omitido ${key} (${(serializedLen / 1024) | 0}KB > tope) — se re-sincroniza en el próximo guardado`);
-    return false;
+    console.warn(`[pending] ${key} (${(serializedLen / 1024) | 0}KB > 5MB) — guardando referencia ligera. Se resolverá desde localStorage al reintentar.`);
+    const write = (p) => localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(p));
+    const pending = _getPendingD1();
+    pending[key] = { value: _PENDING_D1_OVERSIZE_FLAG, ts: Date.now(), retries: 0, _oversizeKey: key };
+    try { write(pending); return true; }
+    catch (e) { console.warn("[pending] enqueue oversize falló:", e?.message); return false; }
   }
   const write = (p) => localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(p));
   const pending = _getPendingD1();
@@ -18093,6 +18106,16 @@ function AppInner() {
   // FIX 2026-07-11: análisis de exámenes subidos con IA de visión (tab Adjuntos)
   const [analizandoExamen, setAnalizandoExamen] = useState(false);
   const [isGeneratingReco, setIsGeneratingReco] = useState(false);
+  // ═══ ESCALADO IA POR REINTENTO (2026-07-12) ═══
+  const [aiAttemptAnalisis, setAiAttemptAnalisis] = useState(0);
+  const [aiAttemptRecomendaciones, setAiAttemptRecomendaciones] = useState(0);
+  const [aiAttemptRestricciones, setAiAttemptRestricciones] = useState(0);
+  const [aiPrevAnalisis, setAiPrevAnalisis] = useState("");
+  const [aiPrevRecomendaciones, setAiPrevRecomendaciones] = useState("");
+  const [aiPrevRestricciones, setAiPrevRestricciones] = useState("");
+  const [aiStatusMsg, setAiStatusMsg] = useState("");
+  // ═══ RESET contadores IA al cambiar paciente ═══
+  useEffect(() => { setAiAttemptAnalisis(0); setAiAttemptRecomendaciones(0); setAiAttemptRestricciones(0); setAiPrevAnalisis(""); setAiPrevRecomendaciones(""); setAiPrevRestricciones(""); setAiStatusMsg(""); }, [data.pacienteId, data.hcId]);
   const [saveStatus, setSaveStatus] = useState("");
   // ── GUARD: cambios sin guardar en HC ─────────────────────────────────────
   const [_hcDirty, _setHcDirty] = useState(false);

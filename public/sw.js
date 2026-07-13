@@ -84,6 +84,10 @@ self.addEventListener('fetch', (event) => {
 // ── ESTRATEGIA 1: Cache First (para assets estáticos) ────────────
 // Busca en caché primero. Si no está, va a la red y guarda copia.
 async function cacheFirstStrategy(req) {
+  // FIX 2026-07-12 (V17): no cachear peticiones de extensiones del navegador
+  if (req.url.startsWith('chrome-extension://') || req.url.startsWith('moz-extension://') || req.url.startsWith('chrome://')) {
+    return fetch(req);
+  }
   const cached = await caches.match(req);
   if (cached) return cached;
 
@@ -102,6 +106,10 @@ async function cacheFirstStrategy(req) {
 // ── ESTRATEGIA 2: Network First (para HTML / navegación) ─────────
 // Intenta la red primero. Si falla, sirve desde caché.
 async function networkFirstStrategy(req) {
+  // FIX 2026-07-12 (V17): no cachear peticiones de extensiones del navegador
+  if (req.url.startsWith('chrome-extension://') || req.url.startsWith('moz-extension://') || req.url.startsWith('chrome://')) {
+    return fetch(req);
+  }
   try {
     const response = await Promise.race([
       fetch(req),
