@@ -11156,6 +11156,11 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
                     <div className="relative flex gap-1.5">
                       <input
                         type={showKey[k] ? "text" : "password"}
+                        // FIX 2026-07-13: sin esto, el navegador confundía este campo
+                        // con el de login y autocompletaba la contraseña guardada del
+                        // sitio (mismo dominio) en vez de dejar la API key pegada.
+                        autoComplete="new-password"
+                        name={`siso-api-key-${k}`}
                         placeholder={
                           k === "gemini"
                             ? "Pega aquí tu API Key de Google Gemini... (puedes pegar varias separadas por coma)"
