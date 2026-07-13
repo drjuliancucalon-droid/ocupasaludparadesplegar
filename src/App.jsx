@@ -14151,8 +14151,14 @@ const _abrirVentanaPDF = (html, titulo) => {
 // se recorta ni se distorsiona contenido).
 const _tryFitCanvasOnePage = (pdf, canvas, mg, cW, pcHpx, pxPerMm) => {
   if (canvas.height <= pcHpx) return false;
-  const s = Math.max(0.70, pcHpx / canvas.height);
-  if (canvas.height * s > pcHpx + 2) return false;
+  // FIX 2026-07-13: escalar SIEMPRE lo necesario para que el certificado
+  // quepa COMPLETO en una hoja — sin piso rígido del 70% que antes se
+  // rendía y dejaba que el slicing cortara la última línea a la mitad
+  // ("se come las letras"). Un certificado nunca es tan largo como para
+  // volverse ilegible al encogerlo; preferimos texto completo y algo más
+  // pequeño que texto cortado. Piso de seguridad muy bajo (0.45) solo por
+  // si un contenido anómalo llegara a ser gigante.
+  const s = Math.max(0.45, pcHpx / canvas.height);
   const destW = cW * s, destH = (canvas.height * s) / pxPerMm;
   const xOff = mg + (cW - destW) / 2;
   pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", xOff, mg, destW, destH);
@@ -16392,7 +16398,12 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                           const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                           const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
                           const styles = styleMatch ? styleMatch[1] : "";
-                          w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados — ${portalDocs.nombre}</title><style>@page{size:letter portrait;margin:12mm 14mm 14mm 14mm;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles}.np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
+                          // FIX 2026-07-13: @page margin:0 — el borde lo define
+                          // SOLO el padding interno del certificado (12mm 8mm).
+                          // Antes el @page (14mm) se sumaba a ese padding =
+                          // ~26mm de borde, desperdiciando la hoja. Ahora igual
+                          // al ZIP: bordes moderados, aprovecha el ancho.
+                          w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Certificados — ${portalDocs.nombre}</title><style>@page{size:letter portrait;margin:0;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}table{border-collapse:collapse;page-break-inside:auto;}tr{page-break-inside:avoid;page-break-after:auto;}td,th{page-break-inside:avoid;}${styles}.np-dl{position:fixed;top:10px;right:10px;z-index:9999;}@media print{.np-dl{display:none!important;}body{padding:0!important;}}</style></head><body><div class="np-dl"><button onclick="window.print()" style="background:#065f46;color:#fff;border:none;padding:10px 24px;border-radius:10px;font-weight:900;cursor:pointer;font-size:12px;box-shadow:0 4px 12px rgba(0,0,0,.2);">📥 Guardar PDF / Imprimir (${pacs.length} certificados)</button></div>${certs}</body></html>`);
                           w.document.close();
                         }}
                         className="w-full py-2 bg-emerald-700 text-white text-xs font-black rounded-xl hover:bg-emerald-800 flex items-center justify-center gap-2"
@@ -34104,7 +34115,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                   });
                                   const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
                                   const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
-                                  const mg = 15, cW = pW - mg*2, pcH = pH - mg*2;
+                                  const mg = 12, cW = pW - mg*2, pcH = pH - mg*2; // FIX 2026-07-13: unificado a 12mm (era 15) con el resto de conversores de certificado
                                   const pxPerMm = canvas.width / cW;
                                   const pcHpx = Math.round(pcH * pxPerMm);
                                   let totalPages = Math.ceil(canvas.height / pcHpx);
@@ -54943,7 +54954,7 @@ ${
           const canvas = await html2canvas(iDoc.body,{ scale:2, useCORS:true, allowTaint:true, backgroundColor:'#ffffff', width:816, windowWidth:816, scrollX:0, scrollY:0, height:sh, windowHeight:sh });
           const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:'letter' });
           const pW=pdf.internal.pageSize.getWidth(), pH=pdf.internal.pageSize.getHeight();
-          const mg=15, cW=pW-mg*2, pcH=pH-mg*2;
+          const mg=12, cW=pW-mg*2, pcH=pH-mg*2; // FIX 2026-07-13: unificado a 12mm (era 15)
           const pxPerMm=canvas.width/cW, pcHpx=Math.round(pcH*pxPerMm);
           let totalPages=Math.ceil(canvas.height/pcHpx);
           if (singlePage && totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
