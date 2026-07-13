@@ -22566,6 +22566,9 @@ JSON REQUERIDO (estructura exacta):
     // Guardar en Supabase (persistencia en la nube — cualquier dispositivo)
     const userKey = "siso_ai_keys_" + uid;
     _sbSet(userKey, cfg.keys || {}).then(() => {});
+    // FIX 2026-07-13: guardar TAMBIÉN en D1 (worker) — es la fuente robusta
+    // que ya tiene verify-after-write; Supabase queda como respaldo secundario.
+    _workerSet(userKey, cfg.keys || {}).then(() => {});
     _ls.setItem("siso_ai_config_version", "v3");
     showAlert("✅ API Keys guardadas. Estarán disponibles en cualquier dispositivo y sesión.");
   };
@@ -22641,9 +22644,12 @@ const handleLogin = (u, p) => {
                 }
               }
             }
-            // Restaurar AI keys si existen
+            // Restaurar AI keys si existen (D1 tiene prioridad sobre Supabase)
             if (found) {
-              const aiKeysCloud = cloudData[`siso_ai_keys_${found.user}`]?.value;
+              const aiKeysD1 = await _workerGet(`siso_ai_keys_${found.user}`);
+              const aiKeysCloud = (aiKeysD1 && typeof aiKeysD1 === "object" && Object.values(aiKeysD1).some(v => v))
+                ? aiKeysD1
+                : cloudData[`siso_ai_keys_${found.user}`]?.value;
               if (aiKeysCloud && typeof aiKeysCloud === "object") {
                 _ss.setItem("siso_ai_keys", JSON.stringify(aiKeysCloud));
                 setAiConfig(prev => ({ ...prev, keys: aiKeysCloud }));
@@ -22863,7 +22869,7 @@ const handleLogin = (u, p) => {
         setSavedBillsList(
           _loadScoped(`siso_saved_bills_${_storageUserId}`, "siso_saved_bills")
         );
-        _sbGetAll([_storageUserId, found.user]).then((cloud) => {
+        _sbGetAll([_storageUserId, found.user]).then(async (cloud) => {
           if (!cloud) return;
           // Pacientes del usuario específico (o empresa compartida)
           // Buscar en ambas claves posibles: cloud key y db key (compatibilidad)
@@ -22940,7 +22946,12 @@ const handleLogin = (u, p) => {
           }
           // ══ FIX DEFINITIVO: Restaurar TODOS los datos del usuario desde Supabase ══
           // 1. API keys del usuario
-          const aiKeyCloud = cloud?.[`siso_ai_keys_${found.user}`]?.value;
+          // FIX 2026-07-13: D1 (worker) tiene prioridad sobre Supabase — es la
+          // fuente más robusta (verify-after-write); Supabase queda de respaldo.
+          const aiKeyD1 = await _workerGet(`siso_ai_keys_${found.user}`);
+          const aiKeyCloud = (aiKeyD1 && typeof aiKeyD1 === "object" && Object.values(aiKeyD1).some(v => v))
+            ? aiKeyD1
+            : cloud?.[`siso_ai_keys_${found.user}`]?.value;
           if (aiKeyCloud && typeof aiKeyCloud === "object" && Object.values(aiKeyCloud).some(v => v)) {
             const aiKeysStr = JSON.stringify(aiKeyCloud);
             _ss.setItem("siso_ai_keys", aiKeysStr);
