@@ -6619,7 +6619,7 @@ const DEFAULT_RECOMENDACIONES_SELECTED = {
 // ==========================================
 // MÓDULO 3: MOTOR DE IA MULTI-PROVEEDOR
 // Modelos verificados activos - Julio 2026
-// Gemini · Groq · NVIDIA · OpenRouter
+// Gemini · Groq · Cerebras · OpenRouter
 // CORS habilitado en todos - funcionan desde cualquier servidor externo
 // ==========================================
 const AI_CONFIG_VERSION = "2026-03-v2";
@@ -6795,34 +6795,35 @@ const AI_PROVIDERS = {
       );
     },
   },
-  // ── 3. NVIDIA (NIM / build.nvidia.com) - Catálogo gratis, API compatible OpenAI ──
-  // FIX 2026-07-13: reemplaza a Together AI. Modelos verificados en vivo contra
-  // integrate.api.nvidia.com/v1/models el 2026-07-13.
-  nvidia: {
-    name: "NVIDIA",
+  // ── 3. CEREBRAS - Catálogo gratis, API compatible OpenAI, CORS confirmado ──
+  // FIX 2026-07-13: reemplaza a NVIDIA (integrate.api.nvidia.com NO responde
+  // Access-Control-Allow-Origin en el preflight — CORS bloqueado de raíz,
+  // nunca habría funcionado desde el navegador, sin importar el dominio).
+  // Cerebras SÍ confirma "access-control-allow-origin: *" en su preflight.
+  cerebras: {
+    name: "Cerebras",
     free: true,
-    badge: "🟢 Gratis · Muy estable",
-    docs: "build.nvidia.com",
-    hint: "Key gratuita: build.nvidia.com → inicia sesión → cualquier modelo → 'Get API Key'",
-    link: "https://build.nvidia.com",
+    badge: "🟢 Gratis · Muy rápido",
+    docs: "cloud.cerebras.ai",
+    hint: "Key gratuita: cloud.cerebras.ai → inicia sesión → API Keys → Create API Key",
+    link: "https://cloud.cerebras.ai",
     call: async (prompt, systemPrompt, apiKey) => {
       if (!apiKey)
         throw new Error(
-          "NVIDIA: API Key no configurada - obtenla gratis en build.nvidia.com"
+          "Cerebras: API Key no configurada - obtenla gratis en cloud.cerebras.ai"
         );
-      // Modelos gratuitos verificados en build.nvidia.com - julio 2026
+      // Modelos gratuitos verificados en vivo contra
+      // inference-docs.cerebras.ai/models/overview el 2026-07-13
       const tryModels = [
-        "meta/llama-3.3-70b-instruct",
-        "nvidia/llama-3.1-nemotron-70b-instruct",
-        "nvidia/llama-3.3-nemotron-super-49b-v1",
-        "meta/llama-3.1-8b-instruct",
-        "mistralai/mistral-7b-instruct-v0.3",
+        "gpt-oss-120b",
+        "gemma-4-31b",
+        "zai-glm-4.7",
       ];
       let lastErr = null;
       for (const model of tryModels) {
         try {
           const res = await fetchWithTimeout(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
+            "https://api.cerebras.ai/v1/chat/completions",
             {
               method: "POST",
               headers: {
@@ -6843,11 +6844,11 @@ const AI_PROVIDERS = {
           if (!res.ok) {
             const errData = await res.json().catch(() => ({}));
             const msg = errData?.error?.message || res.statusText;
-            lastErr = new Error(`NVIDIA/${model} [${res.status}]: ${msg}`);
+            lastErr = new Error(`Cerebras/${model} [${res.status}]: ${msg}`);
             if (res.status === 401 || res.status === 403) {
               // Key inválida - no tiene sentido seguir probando modelos
               throw new Error(
-                `NVIDIA [401]: API Key inválida. Ve a build.nvidia.com y genera una nueva key.`
+                `Cerebras [401]: API Key inválida. Ve a cloud.cerebras.ai y genera una nueva key.`
               );
             }
             continue;
@@ -6855,11 +6856,11 @@ const AI_PROVIDERS = {
           const data = await res.json();
           const text = data.choices?.[0]?.message?.content;
           if (text?.trim().length > 5) return text.trim();
-          lastErr = new Error(`NVIDIA/${model}: respuesta vacía`);
+          lastErr = new Error(`Cerebras/${model}: respuesta vacía`);
         } catch (e) {
           if (e.message?.includes("API Key inválida")) throw e; // re-throw 401 immediately
           if (e.name === "AbortError") {
-            lastErr = new Error(`NVIDIA/${model}: timeout`);
+            lastErr = new Error(`Cerebras/${model}: timeout`);
             continue;
           }
           lastErr = e;
@@ -6868,7 +6869,7 @@ const AI_PROVIDERS = {
       throw (
         lastErr ||
         new Error(
-          "NVIDIA: todos los modelos fallaron - renueva tu key en build.nvidia.com"
+          "Cerebras: todos los modelos fallaron - renueva tu key en cloud.cerebras.ai"
         )
       );
     },
@@ -9529,7 +9530,7 @@ const _FortalezaPass = ({ pw }) => {
 // SEC-F1-06: Content Security Policy via meta tag
 const SecurityHeaders = () => (
   <>
-    <meta httpEquiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.groq.com https://integrate.api.nvidia.com https://openrouter.ai https://api.anthropic.com; font-src 'self' https:; frame-ancestors 'none';" />
+    <meta httpEquiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.anthropic.com; font-src 'self' https:; frame-ancestors 'none';" />
     <meta httpEquiv="X-Content-Type-Options" content="nosniff" />
     <meta httpEquiv="X-Frame-Options" content="DENY" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
@@ -10813,21 +10814,21 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         "💡 Tip: Groq es el más rápido pero tiene límite de 30 peticiones/minuto",
       ],
     },
-    nvidia: {
-      label: "NVIDIA",
-      sub: "Llama 3.3 70B · Nemotron · Muy estable",
-      badge: "🟢 Gratis · Catálogo NIM",
+    cerebras: {
+      label: "Cerebras",
+      sub: "GPT-OSS 120B · Gemma 4 · Muy rápido",
+      badge: "🟢 Gratis · Ultrarrápido",
       badgeClass: "bg-teal-100 text-teal-800",
-      link: "https://build.nvidia.com",
+      link: "https://cloud.cerebras.ai",
       color: "teal",
       steps: [
         "1️⃣ Haz clic en el botón 'Obtener key →' de abajo",
         "2️⃣ Inicia sesión con cuenta gratis (Google/GitHub/email)",
-        "3️⃣ Abre cualquier modelo (ej. Llama 3.3 70B) → botón 'Get API Key'",
-        "4️⃣ Clic en 'Generate Key' → ponle nombre → crear",
-        "5️⃣ Copia la key que empieza con 'nvapi-...'",
+        "3️⃣ Ve a 'API Keys' en el menú → 'Create API Key'",
+        "4️⃣ Ponle nombre → crear",
+        "5️⃣ Copia la key generada",
         "6️⃣ Regresa aquí, pégala en el campo y presiona 'Probar'",
-        "💡 Tip: NVIDIA tiene un catálogo amplio de modelos gratis. Ideal como respaldo",
+        "💡 Tip: Cerebras es de los más rápidos que existen. Ideal como respaldo",
       ],
     },
     openrouter: {
@@ -10925,8 +10926,8 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         msg.includes("API Key inválida")
       )
         hint =
-          providerKey === "nvidia"
-            ? " → Key inválida. En build.nvidia.com genera una key nueva (empieza con 'nvapi-')."
+          providerKey === "cerebras"
+            ? " → Key inválida. En cloud.cerebras.ai genera una key nueva."
             : " → Key inválida: renuévala siguiendo los pasos.";
       else if (
         msg.includes("429") ||
@@ -10941,7 +10942,7 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose }) => {
         msg.includes("CORS bloqueado")
       )
         hint =
-          " → CORS bloqueado: Groq no funciona desde este dominio. Usa Gemini u OpenRouter como proveedor principal.";
+          ` → CORS/red bloqueados: ${AI_PROVIDERS[providerKey]?.name || providerKey} no responde desde este dominio. Usa Gemini u OpenRouter como proveedor principal.`;
       else if (msg.includes("404"))
         hint = " → Modelo no disponible, prueba otro proveedor.";
       setTestStatus((p) => ({
@@ -18055,7 +18056,7 @@ function AppInner() {
   const [promptValue, setPromptValue] = useState("");
   const [aiConfig, setAiConfig] = useState({
     activeProvider: "gemini",
-    keys: { groq: "", gemini: "", openrouter: "", nvidia: "" },
+    keys: { groq: "", gemini: "", openrouter: "", cerebras: "" },
   });
   const [showAIConfig, setShowAIConfig] = useState(false);
   const [aiStatus, setAiStatus] = useState(null); // null | 'ok' | 'error'
@@ -20562,7 +20563,7 @@ function AppInner() {
       sp(`siso_saved_bills_${_initSuf}`, null) ?? sp("siso_saved_bills", [])
     );
     setDoctorSignature(_ls.getItem("siso_doctor_signature") || null);
-    const emptyKeys = { groq: "", gemini: "", openrouter: "", nvidia: "" };
+    const emptyKeys = { groq: "", gemini: "", openrouter: "", cerebras: "" };
     const savedProvider = sp("siso_ai_config_provider", {
       activeProvider: "gemini",
     });
@@ -21331,9 +21332,9 @@ function AppInner() {
       const systemPrompt = expectJson
         ? `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones de aptitud laboral, ingresos, egresos, seguimientos periódicos y post-incapacidad, manejo de enfermedades laborales, calificación de origen y PCL, y gestión de programas de vigilancia epidemiológica (PVE) conforme a la Res. 1843/2025 (deroga 2346/2007), Res. 2404/2019, Dec. 1072/2015 y Ley 1562/2012. Cuando la consulta sea de medicina general, actúas como médico general con especialización en medicina interna y más de 15 años de experiencia clínica. Redactas con lenguaje técnico-médico formal, directo y puntual. RESPONDE ÚNICAMENTE CON JSON VÁLIDO, sin texto previo, sin bloques markdown, sin explicaciones adicionales. El JSON debe comenzar con { y terminar con }.`
         : `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones ocupacionales (ingreso, egreso, periódico, reintegro, post-incapacidad), restricciones médico-laborales, enfermedades laborales, vigilancia epidemiológica, calificación de origen y pérdida de capacidad laboral (PCL). Conoces a fondo la normativa vigente: Res. 1843/2025 (norma vigente, deroga Res. 2346/2007), Res. 2404/2019, Dec. 1072/2015, GTC-45:2012, GATISO-DME, GATISO-TME, Ley 1562/2012 y Res. 0312/2019. Cuando la consulta corresponde a medicina general, actúas como médico general con especialización clínica y más de 15 años de experiencia, manejando patología ambulatoria, crónica y aguda con criterio clínico sólido. Tu lenguaje es técnico, formal, directo y puntual. Respondes en español.`;
-      // Orden de prioridad fijo: gemini → openrouter → groq → nvidia
+      // Orden de prioridad fijo: gemini → openrouter → groq → cerebras
       // Groq puede fallar por CORS según el dominio; gemini y openrouter son más estables en browser
-      const PRIORITY_ORDER = ["gemini", "openrouter", "groq", "nvidia"];
+      const PRIORITY_ORDER = ["gemini", "openrouter", "groq", "cerebras"];
       const activeKey = aiConfig.activeProvider || "gemini";
       // Poner el activo primero, luego el resto en orden de prioridad
       const fallbackOrder = [
@@ -21341,7 +21342,7 @@ function AppInner() {
         ...PRIORITY_ORDER.filter((k) => k !== activeKey),
       ].filter((v, i, a) => a.indexOf(v) === i); // deduplicar
       let lastError = null;
-      const _pLabels = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
+      const _pLabels = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", cerebras: "Cerebras" };
       const _validProviders = fallbackOrder.filter(k => {
         const key = aiConfig.keys?.[k];
         return AI_PROVIDERS[k] && key && key !== "auto";
@@ -22963,7 +22964,7 @@ const handleLogin = (u, p) => {
             // PERSISTIR en localStorage para futuras sesiones
             _ls.setItem("siso_ai_keys_" + found.user, aiKeysStr);
             _ls.setItem("siso_ai_keys", aiKeysStr);
-            setAiConfig((prev) => ({ ...prev, keys: { groq:"", gemini:"", openrouter:"", nvidia:"", ...aiKeyCloud } }));
+            setAiConfig((prev) => ({ ...prev, keys: { groq:"", gemini:"", openrouter:"", cerebras:"", ...aiKeyCloud } }));
           }
           // 2. DoctorData desde clave DEDICADA (siempre la más actualizada)
           const doctorDataCloud = cloud?.[`siso_doctor_data_${found.user}`]?.value;
@@ -30150,8 +30151,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
             {/* ── Contador de llamadas IA ── */}
             {(() => {
               const _ap = aiConfig.activeProvider || "gemini";
-              const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
-              const _limits = { gemini: 1500, openrouter: 50, groq: 100, nvidia: 40 };
+              const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", cerebras: "Cerebras" };
+              const _limits = { gemini: 1500, openrouter: 50, groq: 100, cerebras: 40 };
               const _chips = Object.entries(aiCallsCount).filter(([,v]) => v > 0);
               if (!_chips.length) return null;
               return (
@@ -31208,8 +31209,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
               {/* Contador IA */}
               {Object.values(aiCallsCount).some(v => v > 0) && (() => {
                 const _ap = aiConfig.activeProvider || "gemini";
-                const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA" };
-                const _limits = { gemini: 1500, openrouter: 50, groq: 100, nvidia: 40 };
+                const _pNames = { gemini: "Gemini", openrouter: "OpenRouter", groq: "Groq", cerebras: "Cerebras" };
+                const _limits = { gemini: 1500, openrouter: 50, groq: 100, cerebras: 40 };
                 return (
                   <div className="flex gap-1 flex-wrap">
                     {Object.entries(aiCallsCount).filter(([,v]) => v > 0).map(([prov, n]) => {
