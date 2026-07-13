@@ -21481,6 +21481,36 @@ function AppInner() {
       return "ÉNFASIS OSTEOMUSCULAR (GATISO-DME, GATISO-TME, Res. 2844/2007, evaluación de riesgo biomecánico GTC-45): DEBES pronunciarte sobre la aptitud osteomuscular para las demandas biomecánicas del cargo. Usa las secciones 'Examen osteomuscular' (columna, miembros superiores/inferiores, muscular, articular, postural, hallazgos, diagnóstico funcional) y 'Maniobras osteomusculares' de esta HC — son el foco del examen. Correlaciona cada hallazgo con las demandas físicas del perfil del cargo (manipulación de cargas, posturas forzadas o mantenidas, movimientos repetitivos, vibración). Las restricciones deben ser cuantificadas (kg máximos, frecuencia, duración de exposición, segmento anatómico específico considerando la lateralidad dominante) y las recomendaciones deben incluir inclusión en SVE osteomuscular (PVE-DME), pausas activas con contenido específico, y reevaluación con plazo definido.";
     return "";
   };
+
+  // ── ESCALADO DE PROFUNDIDAD POR RE-INTENTO (2026-07-13) ─────────────────
+  // Cada vez que el médico vuelve a presionar el mismo botón de IA para la
+  // MISMA historia, está pidiendo un resultado mejor: el caso lo amerita.
+  // El contador vive por paciente+botón en un ref (se reinicia al cambiar de
+  // paciente). A partir del 2º intento el prompt recibe un bloque que exige
+  // mayor profundidad y, si existe, el resultado anterior con la orden de
+  // SUPERARLO (no repetirlo). Tope en nivel 3.
+  const _aiRetryRef = React.useRef({}); // { [patientId__tipo]: nivel }
+  const _bumpAiRetry = (tipo) => {
+    const pid = data?.id || "sin_id";
+    const k = `${pid}__${tipo}`;
+    const n = (_aiRetryRef.current[k] || 0) + 1;
+    _aiRetryRef.current[k] = n;
+    return n; // 1 = primer intento, 2 = segundo, ...
+  };
+  // Devuelve el bloque de instrucciones de profundidad a inyectar en el prompt.
+  // nivel 1 → "" (comportamiento original). previo = texto del resultado
+  // anterior (o vacío) para exigir superación explícita.
+  const _bloqueProfundidad = (nivel, previo) => {
+    if (nivel <= 1) return "";
+    const prevBlock = previo && String(previo).trim()
+      ? `\n\n═══ VERSIÓN ANTERIOR (debes SUPERARLA, no repetirla) ═══\n${String(previo).slice(0, 2500)}\n═══ FIN VERSIÓN ANTERIOR ═══`
+      : "";
+    if (nivel === 2) {
+      return `\n\n⚠️ SEGUNDA ITERACIÓN — EL MÉDICO EXIGE MAYOR PROFUNDIDAD. El resultado previo se quedó corto para este caso. Ahora DEBES: (1) ampliar la correlación fisiopatológica de CADA hallazgo con las demandas específicas del cargo; (2) citar la norma EXACTA que sustenta cada ítem (artículo específico, no referencia genérica); (3) cuantificar todo lo cuantificable (kg, minutos, grados de flexión, frecuencias, metros, decibeles); (4) agregar plazo de implementación e indicador de seguimiento verificable por ítem; (5) no omitir ningún hallazgo, antecedente ni resultado de examen relevante presente en la HC. Sé más extenso, técnico y específico que la versión anterior.${prevBlock}`;
+    }
+    return `\n\n⚠️⚠️ MÁXIMA PROFUNDIDAD — NIVEL JUNTA MÉDICA / PERITAJE OCUPACIONAL. Este caso ha requerido varias iteraciones: entrega el análisis más riguroso posible. Cada recomendación/restricción DEBE seguir la estructura: [hallazgo objetivo] → [mecanismo fisiopatológico] → [correlación con la demanda específica del cargo y el riesgo ocupacional GTC-45] → [norma exacta con artículo] → [medida cuantificada] → [plazo] → [responsable de ejecución] → [indicador de verificación]. Incluye diagnóstico diferencial ocupacional cuando aplique, pronóstico funcional-laboral y criterios objetivos de reevaluación. Máximo rigor técnico-legal, sin relleno genérico. Supera de forma inequívoca todas las versiones anteriores.${prevBlock}`;
+  };
+
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
   const generateAIAnalysis = async () => {
     if (_aiRunningRef.current) return; // guard síncrono contra doble-click
@@ -21496,7 +21526,9 @@ function AppInner() {
     }
     _aiRunningRef.current = true;
     setIsGenerating(true);
-    setAiProviderStatus("⏳ Iniciando análisis...");
+    const _nivelIA = _bumpAiRetry("analisis");
+    setAiProviderStatus(_nivelIA > 1 ? `⏳ Generando versión más profunda (intento ${_nivelIA})...` : "⏳ Iniciando análisis...");
+    const _profBlock = _bloqueProfundidad(_nivelIA, data.analisisIA);
     const hallazgos =
       Object.entries(data.examenFisicoSistemas || {})
         .filter(([, v]) => v.estado === "Anormal")
@@ -21572,7 +21604,7 @@ CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}` : ""}
 CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba.
 JSON REQUERIDO (sin markdown, sin texto adicional):
-{"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}`;    try {
+{"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}${_profBlock}`;    try {
       let text;
       try {
         text = await callAI(prompt, true);
@@ -21752,6 +21784,8 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
   // ── GENERACIÓN IA SOLO RESTRICCIONES ─────────────────────────────────────
   const generateAIRestricciones = async () => {
     setIsGeneratingRestr(true);
+    const _nivelRestr = _bumpAiRetry("restricciones");
+    const _profBlockRestr = _bloqueProfundidad(_nivelRestr, data.analisisRestricciones);
     const ctx = buildFullContextHC(data);
     const hallazgosAnorm =
       Object.entries(data.examenFisicoSistemas || {})
@@ -21813,7 +21847,7 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 9. ⚠️ PROHIBICIÓN LEGAL EXPRESA (Res. 1843/2025 Art. 21 — confidencialidad del diagnóstico): En el campo "texto" y "hallazgoQueJustifica" NO incluyas nombres de diagnósticos clínicos (enfermedades, síndromes, patologías), NO menciones medicamentos, NO describas tratamientos. Solo describe la LIMITACIÓN FUNCIONAL LABORAL en términos operativos: qué actividad está limitada, en qué medida y por cuánto tiempo. Ejemplo correcto: "Evitar levantamiento de cargas superiores a 10 kg" — NO: "Por lumbalgia crónica L4-L5 no levantar pesos".
 
 JSON REQUERIDO (sin markdown):
-{"sinRestricciones":false,"justificacionSinRestricciones":"","restricciones":[{"numero":1,"segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción","texto":"Restricción operativa y cuantificable: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO. Sin diagnósticos, sin medicamentos, sin tratamientos.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}`;
+{"sinRestricciones":false,"justificacionSinRestricciones":"","restricciones":[{"numero":1,"segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción","texto":"Restricción operativa y cuantificable: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO. Sin diagnósticos, sin medicamentos, sin tratamientos.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}${_profBlockRestr}`;
     try {
       const text = await callAI(prompt, true);
       const parsed = parseAIJSON(text);
@@ -21830,7 +21864,7 @@ JSON REQUERIDO (sin markdown):
       }
       setData((prev) => ({ ...prev, analisisRestricciones: lista }));
       showAlert(
-        `✅ ${parsed.sinRestricciones ? "Sin restricciones activas." : (parsed.restricciones?.length || 0) + " restricción(es) generada(s) con justificación clínica específica."}`
+        `✅ ${parsed.sinRestricciones ? "Sin restricciones activas." : (parsed.restricciones?.length || 0) + " restricción(es) generada(s)"}${_nivelRestr > 1 ? ` (versión más profunda, intento ${_nivelRestr})` : " con justificación clínica específica."}`
       );
     } catch (e) {
       showAlert(`Error IA Restricciones: ${e.message}`);
@@ -21841,6 +21875,8 @@ JSON REQUERIDO (sin markdown):
   // ── GENERACIÓN IA SOLO RECOMENDACIONES ───────────────────────────────────
   const generateAIRecomendaciones = async () => {
     setIsGeneratingReco(true);
+    const _nivelReco = _bumpAiRetry("recomendaciones");
+    const _profBlockReco = _bloqueProfundidad(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales);
     const ctx = buildFullContextHC(data);
     const hallazgosReco =
       Object.entries(data.examenFisicoSistemas || {})
@@ -21892,11 +21928,11 @@ INSTRUCCIÓN: Genera MÍNIMO 14 recomendaciones numeradas. Organiza en las sigui
 (E) VIGILANCIA EPIDEMIOLÓGICA Y SEGUIMIENTO — SVE que corresponden según hallazgos y riesgos (GATISO-DME, SVE Osteomuscular, Psicosocial, Visual, Auditivo, Respiratorio, Cardiovascular, etc.).
 (F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
 
-Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.`;
+Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.${_profBlockReco}`;
     try {
       const text = await callAI(prompt, false);
       setData((prev) => ({ ...prev, recomendaciones: text.trim() }));
-      showAlert("✅ Recomendaciones generadas por IA.");
+      showAlert(_nivelReco > 1 ? `✅ Recomendaciones generadas (versión más profunda, intento ${_nivelReco}).` : "✅ Recomendaciones generadas por IA.");
     } catch (e) {
       showAlert(`Error IA Recomendaciones: ${e.message}`);
     } finally {
