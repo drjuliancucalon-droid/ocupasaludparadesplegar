@@ -13890,6 +13890,92 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
       }
       return '';
     })() +
+    /* ── ÉNFASIS OSTEOMUSCULAR (examen + maniobras) ──────────── */
+    // FIX 2026-07-14: reflejar en el certificado lo mismo que ya muestra la
+    // Historia Clínica para este énfasis — antes solo ALTURAS tenía sección
+    // propia aquí; OSTEOMUSCULAR (incluidas las maniobras ortopédicas
+    // nombradas) no aparecía, aunque en la HC completa sí.
+    (() => {
+      const _enfasis = (data.enfasisExamen || "").toUpperCase();
+      if (_enfasis !== "OSTEOMUSCULAR") return "";
+      const osteo = data.examenOsteomuscular || {};
+      let html = "";
+      if (osteo.columna || osteo.miembrosSup || osteo.miembrosInf || osteo.muscular || osteo.articular || osteo.postural || osteo.hallazgos || osteo.diagnosticoFuncional) {
+        html += '<div class="sec"><div class="sec-title">💪 Énfasis: Osteomuscular</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
+          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Columna</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.columna || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Miembros Superiores</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.miembrosSup || "--") + '</td></tr>' +
+          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Miembros Inferiores</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.miembrosInf || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Muscular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.muscular || "--") + '</td></tr>' +
+          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Articular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.articular || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Postural</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.postural || "--") + '</td></tr>' +
+          (osteo.hallazgos ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + osteo.hallazgos + '</td></tr>' : "") +
+          (osteo.diagnosticoFuncional ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Diagnóstico Funcional</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + osteo.diagnosticoFuncional + '</td></tr>' : "") +
+          '</table></div>';
+      }
+      const manio = data.maniobrasOsteomusculares || {};
+      const allManiobras = ["phalen","tinel","finkelstein","jobe","lasegue","adams","wells","schober"];
+      const manioLabels = {phalen:"Phalen",tinel:"Tinel",finkelstein:"Finkelstein",jobe:"Jobe",lasegue:"Lasègue",adams:"Adams",wells:"Wells",schober:"Schober"};
+      const manioKeysConDato = Object.keys(manio).filter((k) => {
+        const v = manio[k];
+        const estado = (v && typeof v === "object") ? v.estado : v;
+        return estado;
+      });
+      if (manioKeysConDato.length > 0) {
+        let manioRows = allManiobras.map((k) => {
+          const v = manio[k];
+          if (!v) return "";
+          const estado = (typeof v === "object" ? v.estado : v) || "No evaluado";
+          const hallazgo = (typeof v === "object" ? v.hallazgo : "") || "";
+          const isPositive = estado === "Positivo" || estado === "Anormal" || estado === "Positiva";
+          const color = isPositive ? "#dc2626" : "#065f46";
+          const bg = isPositive ? "#fef2f2" : "#f0fdf4";
+          return '<tr style="background:' + bg + '"><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;width:25%;">' + (manioLabels[k] || k) + '</td><td style="border:1px solid #e5e7eb;padding:5px;color:' + color + ';font-weight:700;width:20%;">' + estado + '</td><td style="border:1px solid #e5e7eb;padding:5px;">' + hallazgo + '</td></tr>';
+        }).join("");
+        html += '<div class="sec"><div class="sec-title">🦴 Maniobras Ortopédicas</div>' +
+          '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
+          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Maniobra</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Resultado</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Hallazgo</td></tr>' +
+          manioRows + '</table></div>';
+      }
+      return html;
+    })() +
+    /* ── ÉNFASIS ALIMENTOS ────────────────────────────────────── */
+    (() => {
+      const _enfasis = (data.enfasisExamen || "").toUpperCase();
+      const alim = data.examenAlimentos || {};
+      if (_enfasis !== "ALIMENTOS" || !(alim.pielFaneras || alim.orl || alim.gastrointestinal || alim.observaciones)) return "";
+      return '<div class="sec"><div class="sec-title">🍽️ Énfasis: Manipulación de Alimentos</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Piel y Faneras</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alim.pielFaneras || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">ORL</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alim.orl || "--") + '</td></tr>' +
+        (alim.gastrointestinal ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Gastrointestinal</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + alim.gastrointestinal + '</td></tr>' : "") +
+        (alim.observaciones ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + alim.observaciones + '</td></tr>' : "") +
+        '</table></div>';
+    })() +
+    /* ── ÉNFASIS CONFINADOS ───────────────────────────────────── */
+    (() => {
+      const _enfasis = (data.enfasisExamen || "").toUpperCase();
+      const conf = data.examenConfinados || {};
+      if (_enfasis !== "CONFINADOS" || !(conf.cardiovascular || conf.respiratorio || conf.neurologico || conf.psicologico || conf.otorrino || conf.usoEpp || conf.observaciones)) return "";
+      return '<div class="sec"><div class="sec-title">🔒 Énfasis: Espacios Confinados</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Cardiovascular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.cardiovascular || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Respiratorio</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.respiratorio || "--") + '</td></tr>' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Neurológico</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.neurologico || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Psicológico</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.psicologico || "--") + '</td></tr>' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Otorrino</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.otorrino || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Uso EPP</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.usoEpp || "--") + '</td></tr>' +
+        (conf.hallazgosCardio ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos Cardio</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + conf.hallazgosCardio + '</td></tr>' : "") +
+        (conf.observaciones ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + conf.observaciones + '</td></tr>' : "") +
+        '</table></div>';
+    })() +
+    /* ── ÉNFASIS CARDIOVASCULAR (CORAZON) ─────────────────────── */
+    (() => {
+      const _enfasis = (data.enfasisExamen || "").toUpperCase();
+      const cora = data.examenCorazon || {};
+      if (_enfasis !== "CORAZON" || !(cora.frecuenciaCardiaca || cora.presionArterial || cora.ritmoyTonos || cora.pulsos || cora.edemas || cora.perfusionPeriferica || cora.riesgoCV || cora.hallazgos || cora.restricciones)) return "";
+      return '<div class="sec"><div class="sec-title">❤️ Énfasis: Cardiovascular</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">F. Cardíaca</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.frecuenciaCardiaca || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Presión Arterial</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.presionArterial || "--") + '</td></tr>' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Ritmo y Tonos</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.ritmoyTonos || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Pulsos</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.pulsos || "--") + '</td></tr>' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Edemas</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.edemas || "No") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Perfusión Periférica</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.perfusionPeriferica || "--") + '</td></tr>' +
+        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">IMC</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.imc || data.imc || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Riesgo CV</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.riesgoCV || "--") + '</td></tr>' +
+        (cora.hallazgos ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + cora.hallazgos + '</td></tr>' : "") +
+        '</table></div>';
+    })() +
     /* ── RESTRICCIONES ──────────────────────────────────────── */
     (restriccionesText || restCheck.length > 0
       ? '<div class="sec"><div class="sec-title">Restricciones Laborales</div>' +
