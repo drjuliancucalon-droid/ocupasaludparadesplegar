@@ -13863,6 +13863,7 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
         CONFINADOS:   { bg: "#ffedd5", fg: "#9a3412", titulo: "Espacios Confinados (Res. 0491/2020)" },
         OSTEOMUSCULAR:{ bg: "#ede9fe", fg: "#5b21b6", titulo: "Osteomuscular (Res. 2404/2019)" },
         CORAZON:      { bg: "#ffe4e6", fg: "#9f1239", titulo: "Cardiovascular (Res. 1843/2025)" },
+        CONDUCCION:   { bg: "#dbeafe", fg: "#1e40af", titulo: "Conducción de Vehículos (Res. 217/2014)" },
       };
       if (!_enfMeta[_enf]) return "";
 
@@ -13913,6 +13914,21 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
         if (cora.signosVitales) rows += '<div style="grid-column:span 2;margin-top:4px;color:#374151;font-size:9.5pt;"><strong>Signos vitales: </strong>' + cora.signosVitales + '</div>';
         if (cora.imc) rows += '<div style="grid-column:span 2;color:#374151;font-size:9.5pt;"><strong>Antropometría: </strong>' + cora.imc + '</div>';
         if (cora.riesgoCV) rows += '<div style="grid-column:span 2;color:#374151;font-size:9.5pt;"><strong>Riesgo cardiovascular: </strong>' + cora.riesgoCV + '</div>';
+      } else if (_enf === "CONDUCCION") {
+        const conduc = data.examenConduccion || {};
+        rows = _row("Agudeza Visual Lejana", conduc.agudezaVisualLejana) + _row("Agudeza Visual Cercana", conduc.agudezaVisualCercana) +
+          _row("Campimetría (V/H)", conduc.campimetria) + _row("Discriminación de Colores", conduc.discriminacionColores) +
+          _row("Visión de Profundidad", conduc.visionProfundidad) + _row("Audiometría", conduc.audiometriaResultado) +
+          _row("Epilepsia / Síncope / Apnea", conduc.antecedentesNeurologicos, "Niega") + _row("Consumo Alcohol / Psicoactivos", conduc.consumoSustancias, "Niega");
+        // Maniobras psicomotrices: Bajo = desempeño deficiente (rojo), Alto = alto rendimiento (verde), Medio = aceptable
+        const manioC = data.maniobrasConduccion || {};
+        const labelsC = { resistenciaMonotonia: "Resistencia a la Monotonía", reaccionMultiple: "Reacción Múltiple", anticipacionVelocidad: "Anticipación de la Velocidad", coordinacionBimanual: "Coordinación Bimanual", reaccionFrenado: "Reacción al Frenado" };
+        const bajos = Object.entries(manioC).filter(([, v]) => v?.estado === "Bajo").map(([k]) => labelsC[k] || k);
+        rows += bajos.length > 0
+          ? '<div style="grid-column:span 2;margin-top:4px;font-size:9.5pt;"><span style="color:#b91c1c;font-weight:700;">Evaluación psicomotriz con desempeño bajo: </span><span style="color:#b91c1c;">' + bajos.join(", ") + '</span></div>'
+          : '<div style="grid-column:span 2;margin-top:4px;color:#6b7280;font-size:9.5pt;">Evaluación psicomotriz: todas en rango medio/alto (aceptable)</div>';
+        rows += _obs(conduc.valoracionPsicologica);
+        if (conduc.observaciones) rows += '<div style="grid-column:span 2;font-weight:700;color:#374151;font-size:9.5pt;">' + conduc.observaciones + '</div>';
       }
       if (!rows) return "";
       const meta = _enfMeta[_enf];
@@ -21585,6 +21601,15 @@ function AppInner() {
       // El detalle osteomuscular ya viaja en osteoRes/maniobras; aquí solo se
       // marca el énfasis para que la IA lo trate como el foco del examen.
       examenEspecial = `ÉNFASIS OSTEOMUSCULAR — ver secciones "Examen osteomuscular" y "Maniobras" de esta HC: son el foco del examen (evaluación de DME / riesgo biomecánico).`;
+    } else if (enf.includes("CONDUC")) {
+      const e = d.examenConduccion || {};
+      const mC = d.maniobrasConduccion || {};
+      const labelsC = { resistenciaMonotonia: "Resistencia a la Monotonía", reaccionMultiple: "Reacción Múltiple", anticipacionVelocidad: "Anticipación de la Velocidad", coordinacionBimanual: "Coordinación Bimanual", reaccionFrenado: "Reacción al Frenado" };
+      const psicomotriz = Object.entries(mC)
+        .filter(([, v]) => v?.estado)
+        .map(([k, v]) => `${labelsC[k] || k}: ${v.estado}${v.hallazgo ? ` (${v.hallazgo})` : ""}`)
+        .join(" | ") || "Sin evaluación psicomotriz registrada";
+      examenEspecial = `ÉNFASIS CONDUCCIÓN — Agudeza visual: lejana ${e.agudezaVisualLejana || "N/R"} / cercana ${e.agudezaVisualCercana || "N/R"} | Campimetría: ${e.campimetria || "N/R"} | Colores: ${e.discriminacionColores || "N/R"} | Profundidad: ${e.visionProfundidad || "N/R"} | Audiometría: ${e.audiometriaResultado || "N/R"} | Epilepsia/Síncope/Apnea: ${e.antecedentesNeurologicos || "N/R"} | Consumo alcohol/psicoactivos: ${e.consumoSustancias || "N/R"}${e.valoracionPsicologica ? ` | Valoración psicológica: ${e.valoracionPsicologica}` : ""}${e.observaciones ? ` | Obs: ${e.observaciones}` : ""}\nEVALUACIÓN PSICOMOTRIZ (Bajo=deficiente, Medio=aceptable, Alto=alto rendimiento): ${psicomotriz}`;
     }
     // FIX 2026-07-13: datos clínicos que existían en la HC pero ningún prompt
     // enviaba: detalle libre de hábitos, lateralidad (dominancia — clave para
@@ -21627,7 +21652,7 @@ function AppInner() {
     if (enf.includes("CONFIN"))
       return "ÉNFASIS ESPACIOS CONFINADOS (Res. 0491/2020): DEBES pronunciarte sobre la aptitud para ingreso a espacios confinados. Evalúa: capacidad cardiorrespiratoria (espirometría, tolerancia al esfuerzo), claustrofobia y condiciones psicológicas/psiquiátricas, integridad neurológica, condiciones que impidan el uso de equipos de protección respiratoria (SCBA) o el autorrescate, obesidad que limite el paso por accesos estrechos, y patología osteomuscular que impida evacuación de emergencia. Las restricciones deben considerar el trabajo con permisos de ingreso, vigía y plan de rescate.";
     if (enf.includes("CONDUC"))
-      return "ÉNFASIS CONDUCCIÓN (Res. 217/2014 y exámenes psicosensométricos): DEBES pronunciarte sobre la aptitud para conducir vehículos en misión laboral. Evalúa: agudeza visual y campimetría, visión cromática y estereopsis, audiometría, coordinación motriz y tiempos de reacción, epilepsia/convulsiones, síncope, apnea del sueño y somnolencia diurna, consumo de alcohol/psicoactivos y medicamentos sedantes.";
+      return "ÉNFASIS CONDUCCIÓN (Res. 217/2014 y exámenes psicosensométricos): DEBES pronunciarte sobre la aptitud para conducir vehículos en misión laboral. Usa las secciones 'Examen de conducción' (agudeza visual lejana/cercana, campimetría, discriminación de colores, visión de profundidad, audiometría, antecedente de epilepsia/síncope/apnea del sueño, consumo de alcohol/psicoactivos/sedantes, valoración psicológica general) y 'Evaluación psicomotriz' (Resistencia a la Monotonía, Reacción Múltiple, Anticipación de la Velocidad, Coordinación Bimanual, Reacción al Frenado — clasificadas Bajo/Medio/Alto, donde Bajo = desempeño deficiente y Alto = alto rendimiento) de esta HC — son el foco del examen. Cualquier prueba psicomotriz en 'Bajo' debe traducirse en una restricción concreta (ej. no conducción nocturna, no rutas de alta exigencia, reentrenamiento) y en recomendación de reevaluación con plazo definido.";
     if (enf.includes("CORAZON") || enf.includes("CARDIO"))
       return "ÉNFASIS CARDIOVASCULAR: DEBES pronunciarte explícitamente sobre la aptitud cardiovascular para las demandas físicas del cargo. Usa la sección 'EXAMEN ESPECIAL' de esta HC (batería cardiovascular: FC, TA, ritmo/tonos, pulsos, edemas, perfusión, clasificación de RIESGO CARDIOVASCULAR y restricciones sugeridas por el médico examinador). Correlaciona con: cifras tensionales y clasificación (normal/pre-HTA/HTA según guías), IMC y perímetro si consta, hábitos (tabaquismo, sedentarismo), antecedentes (dislipidemia, diabetes, cardiopatía, historia familiar) y edad/género para estimar riesgo. Si el cargo implica esfuerzo físico moderado-alto, trabajo en alturas, calor, turnos nocturnos o conducción, las restricciones deben ser específicas para esas exposiciones. Recomienda perfil lipídico, glicemia, EKG o valoración cardiológica según el riesgo, y seguimiento con periodicidad definida.";
     if (enf.includes("OSTEO"))
@@ -25623,6 +25648,35 @@ Esta historia clínica debe conservarse mínimo 20 años.
       ));
     }
 
+    // CONDUCCIÓN — solo si el énfasis es CONDUCCION
+    var conduc = data.examenConduccion || {};
+    if (_enfasisHC === "CONDUCCION" && (conduc.agudezaVisualLejana || conduc.agudezaVisualCercana || conduc.campimetria || conduc.discriminacionColores || conduc.visionProfundidad || conduc.audiometriaResultado || conduc.antecedentesNeurologicos || conduc.consumoSustancias || conduc.valoracionPsicologica)) {
+      sections.push(sec("🚗", "Énfasis: Conducción de Vehículos") + tb(
+        r2("Agudeza Visual Lejana", conduc.agudezaVisualLejana||"--", "Agudeza Visual Cercana", conduc.agudezaVisualCercana||"--") +
+        r2("Campimetría (V/H)", conduc.campimetria||"--", "Discriminación de Colores", conduc.discriminacionColores||"--") +
+        r2("Visión de Profundidad", conduc.visionProfundidad||"--", "Audiometría", conduc.audiometriaResultado||"--") +
+        r2("Epilepsia / Síncope / Apnea", conduc.antecedentesNeurologicos||"Niega", "Consumo Alcohol/Psicoactivos", conduc.consumoSustancias||"Niega") +
+        (conduc.valoracionPsicologica ? r1("Valoración Psicológica General", conduc.valoracionPsicologica) : "") +
+        (conduc.observaciones ? r1("Observaciones", conduc.observaciones) : "")
+      ));
+      // Maniobras psicomotrices (Bajo/Medio/Alto — Bajo = desempeño deficiente)
+      var manioConduc = data.maniobrasConduccion || {};
+      var allManiobrasConduc = ["resistenciaMonotonia","reaccionMultiple","anticipacionVelocidad","coordinacionBimanual","reaccionFrenado"];
+      var manioConducLabels = {resistenciaMonotonia:"Resistencia a la Monotonía",reaccionMultiple:"Reacción Múltiple",anticipacionVelocidad:"Anticipación de la Velocidad",coordinacionBimanual:"Coordinación Bimanual",reaccionFrenado:"Reacción al Frenado"};
+      var hayManioConduc = allManiobrasConduc.some(function(k) { return manioConduc[k]?.estado; });
+      if (hayManioConduc) {
+        var manioConducRows = allManiobrasConduc.map(function(k) {
+          var v = manioConduc[k] || {};
+          var estado = v.estado || "Medio";
+          var hallazgo = v.hallazgo || "";
+          var color = estado === "Bajo" ? "#dc2626" : estado === "Alto" ? "#065f46" : "#374151";
+          var bg = estado === "Bajo" ? "#fef2f2" : estado === "Alto" ? "#f0fdf4" : "white";
+          return '<tr style="background:' + bg + '"><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:30%;font-weight:700;">' + _e(manioConducLabels[k]) + '</td><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:15%;color:' + color + ';font-weight:700;">' + _e(estado) + '</td><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(hallazgo) + '</td></tr>';
+        }).join("");
+        sections.push(sec("🧠", "Evaluación Psicomotriz — Conducción") + '<table style="width:100%;border-collapse:collapse;margin-top:4px;"><thead><tr><th style="background:#1d4ed8;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Prueba</th><th style="background:#1d4ed8;color:white;padding:4px 8px;font-size:8pt;">Resultado</th><th style="background:#1d4ed8;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Detalle</th></tr></thead><tbody>' + manioConducRows + '</tbody></table>');
+      }
+    }
+
     // ═══ 13. PARACLÍNICOS ═══
     var paraCheck = data.paraclinicosCheck || {};
     var paraKeys = Object.keys(paraCheck).filter(function(k) { return k !== "_aiSugeridos" && paraCheck[k]; });
@@ -28427,6 +28481,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
               <option value="ALTURAS">Trabajo en Alturas</option>
               <option value="ALIMENTOS">Manipulación de Alimentos</option>
               <option value="CONFINADOS">Espacios Confinados</option>
+              <option value="CONDUCCION">Conducción de Vehículos</option>
             </select>
           </div>
         </div>
@@ -29977,6 +30032,171 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   }
                   className="w-full text-xs p-1 border border-violet-200 rounded outline-none resize-none"
                   placeholder="Ej: Síndrome del túnel carpiano bilateral. Restricción para vibración..."
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Énfasis Conducción de Vehículos */}
+        {data.enfasisExamen === "CONDUCCION" && (
+          <div className="mt-2 border-2 border-blue-400 p-2 rounded-xl animate-fade-in mb-2">
+            <h3 className="font-black text-blue-800 text-xs mb-1 uppercase text-center">
+              Énfasis: Conducción de Vehículos (Res. 217/2014)
+            </h3>
+            <p className="text-[9px] text-blue-600 text-center mb-2">
+              Aptitud visual, auditiva, psicomotriz y psicológica para conducción de
+              vehículos en misión laboral
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs mb-2">
+              {[
+                { k: "agudezaVisualLejana", l: "Agudeza Visual Lejana", tipo: "texto", placeholder: "Ej: 20/20 AO" },
+                { k: "agudezaVisualCercana", l: "Agudeza Visual Cercana", tipo: "texto", placeholder: "Ej: 20/20 AO" },
+                { k: "campimetria", l: "Campimetría (V/H)", tipo: "texto", placeholder: "Ej: >70° / >120°" },
+                { k: "discriminacionColores", l: "Discriminación de Colores", tipo: "radio", opts: ["Normal", "Alterada"] },
+                { k: "visionProfundidad", l: "Visión de Profundidad", tipo: "radio", opts: ["Normal", "Alterada"] },
+                { k: "audiometriaResultado", l: "Audiometría", tipo: "radio", opts: ["Normal", "Hipoacusia Leve", "Hipoacusia Moderada", "Hipoacusia Severa"] },
+                { k: "antecedentesNeurologicos", l: "Epilepsia / Síncope / Apnea del Sueño", tipo: "radio", opts: ["Niega", "Refiere"] },
+                { k: "consumoSustancias", l: "Consumo Alcohol / Psicoactivos / Sedantes", tipo: "radio", opts: ["Niega", "Refiere"] },
+              ].map((f) => (
+                <div key={f.k} className="bg-white p-2 rounded border border-blue-100">
+                  <p className="font-bold text-[10px] mb-1">{f.l}</p>
+                  {f.tipo === "texto" ? (
+                    <input
+                      className="w-full text-xs p-1 border border-blue-200 rounded outline-none"
+                      placeholder={f.placeholder}
+                      value={data.examenConduccion?.[f.k] || ""}
+                      onChange={(e) =>
+                        setData((p) => ({
+                          ...p,
+                          examenConduccion: { ...p.examenConduccion, [f.k]: e.target.value },
+                        }))
+                      }
+                    />
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {f.opts.map((o) => (
+                        <label
+                          key={o}
+                          className={
+                            "cursor-pointer text-[10px] " +
+                            (o === "Alterada" || o === "Refiere" || o.startsWith("Hipoacusia")
+                              ? "text-red-600"
+                              : "text-gray-700")
+                          }
+                        >
+                          <input
+                            type="radio"
+                            checked={(data.examenConduccion?.[f.k] || f.opts[0]) === o}
+                            onChange={() =>
+                              setData((p) => ({
+                                ...p,
+                                examenConduccion: { ...p.examenConduccion, [f.k]: o },
+                              }))
+                            }
+                            className="mr-1"
+                          />{" "}
+                          {o}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <p className="text-[9px] font-black text-blue-700 mb-1">
+              EVALUACIÓN PSICOMOTRIZ (pruebas de tiempos de reacción y coordinación)
+            </p>
+            <p className="text-[8px] text-gray-400 mb-1">
+              Bajo = desempeño deficiente · Medio = aceptable/normal · Alto = alto rendimiento
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs mb-2">
+              {[
+                { k: "resistenciaMonotonia", l: "Resistencia a la Monotonía", desc: "Tiempo reacción + errores" },
+                { k: "reaccionMultiple", l: "Reacción Múltiple", desc: "Tiempo reacción + errores" },
+                { k: "anticipacionVelocidad", l: "Anticipación de la Velocidad", desc: "% de desviación" },
+                { k: "coordinacionBimanual", l: "Coordinación Bimanual", desc: "Tiempo total error + errores" },
+                { k: "reaccionFrenado", l: "Reacción al Frenado", desc: "Tiempo medio reacción" },
+              ].map((f) => (
+                <div key={f.k} className="bg-white p-1.5 rounded border border-blue-100">
+                  <p className="font-bold text-[10px]">{f.l}</p>
+                  <p className="text-[9px] text-gray-400 mb-1">{f.desc}</p>
+                  <div className="flex gap-2 mb-1">
+                    {["Bajo", "Medio", "Alto"].map((o) => (
+                      <label
+                        key={o}
+                        className={
+                          "cursor-pointer text-[9px] " +
+                          (o === "Bajo" ? "text-red-600" : o === "Alto" ? "text-emerald-700" : "text-gray-600")
+                        }
+                      >
+                        <input
+                          type="radio"
+                          checked={(data.maniobrasConduccion?.[f.k]?.estado || "Medio") === o}
+                          onChange={() =>
+                            setData((p) => ({
+                              ...p,
+                              maniobrasConduccion: {
+                                ...p.maniobrasConduccion,
+                                [f.k]: { ...p.maniobrasConduccion?.[f.k], estado: o },
+                              },
+                            }))
+                          }
+                          className="mr-0.5"
+                        />{" "}
+                        {o}
+                      </label>
+                    ))}
+                  </div>
+                  <input
+                    className="w-full text-[9px] p-1 border border-blue-100 rounded outline-none"
+                    placeholder="Detalle (ej: 33 ms, 0 errores)"
+                    value={data.maniobrasConduccion?.[f.k]?.hallazgo || ""}
+                    onChange={(e) =>
+                      setData((p) => ({
+                        ...p,
+                        maniobrasConduccion: {
+                          ...p.maniobrasConduccion,
+                          [f.k]: { ...p.maniobrasConduccion?.[f.k], hallazgo: e.target.value },
+                        },
+                      }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-[9px] font-black text-blue-700 mb-1">
+                  VALORACIÓN PSICOLÓGICA GENERAL
+                </p>
+                <textarea
+                  rows={2}
+                  value={data.examenConduccion?.valoracionPsicologica || ""}
+                  onChange={(e) =>
+                    setData((p) => ({
+                      ...p,
+                      examenConduccion: { ...p.examenConduccion, valoracionPsicologica: e.target.value },
+                    }))
+                  }
+                  className="w-full text-xs p-1 border border-blue-200 rounded outline-none resize-none"
+                  placeholder="Orientación, fluidez verbal, comprensión de instrucciones, antecedentes psicológicos/psiquiátricos..."
+                />
+              </div>
+              <div>
+                <p className="text-[9px] font-black text-blue-700 mb-1">
+                  OBSERVACIONES / RESTRICCIONES
+                </p>
+                <textarea
+                  rows={2}
+                  value={data.examenConduccion?.observaciones || ""}
+                  onChange={(e) =>
+                    setData((p) => ({
+                      ...p,
+                      examenConduccion: { ...p.examenConduccion, observaciones: e.target.value },
+                    }))
+                  }
+                  className="w-full text-xs p-1 border border-blue-200 rounded outline-none resize-none"
+                  placeholder="Ej: Control auditivo anual. Restricción para conducción nocturna..."
                 />
               </div>
             </div>
@@ -31654,6 +31874,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     ? "bg-orange-100 text-orange-800"
                     : enf === "OSTEOMUSCULAR"
                     ? "bg-violet-100 text-violet-800"
+                    : enf === "CONDUCCION"
+                    ? "bg-blue-100 text-blue-800"
                     : "bg-rose-100 text-rose-800")
                 }
               >
@@ -31666,6 +31888,8 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   ? "Espacios Confinados (Res. 0491/2020)"
                   : enf === "OSTEOMUSCULAR"
                   ? "Osteomuscular (Res. 2404/2019)"
+                  : enf === "CONDUCCION"
+                  ? "Conducción de Vehículos (Res. 217/2014)"
                   : "Cardiovascular (Res. 1843/2025)"}
               </div>
               <div className="p-3 grid grid-cols-2 gap-x-4 gap-y-0 text-[10px]">
@@ -32035,6 +32259,93 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     {data.examenCorazon?.restricciones && (
                       <div className="col-span-2 font-bold text-gray-700">
                         {data.examenCorazon.restricciones}
+                      </div>
+                    )}
+                  </>
+                )}
+                {enf === "CONDUCCION" && (
+                  <>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Agudeza Visual Lejana</span>
+                      <span className="text-gray-700">
+                        {data.examenConduccion?.agudezaVisualLejana || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Agudeza Visual Cercana</span>
+                      <span className="text-gray-700">
+                        {data.examenConduccion?.agudezaVisualCercana || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Campimetría (V/H)</span>
+                      <span className="text-gray-700">
+                        {data.examenConduccion?.campimetria || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Discriminación de Colores</span>
+                      <span className={badNorm(data.examenConduccion?.discriminacionColores)}>
+                        {data.examenConduccion?.discriminacionColores || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Visión de Profundidad</span>
+                      <span className={badNorm(data.examenConduccion?.visionProfundidad)}>
+                        {data.examenConduccion?.visionProfundidad || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Audiometría</span>
+                      <span className={badNorm(data.examenConduccion?.audiometriaResultado)}>
+                        {data.examenConduccion?.audiometriaResultado || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Epilepsia / Síncope / Apnea</span>
+                      <span className={badNorm(data.examenConduccion?.antecedentesNeurologicos, "Niega")}>
+                        {data.examenConduccion?.antecedentesNeurologicos || "--"}
+                      </span>
+                    </div>
+                    <div className={rowCls}>
+                      <span className="text-gray-500">Consumo Alcohol / Psicoactivos</span>
+                      <span className={badNorm(data.examenConduccion?.consumoSustancias, "Niega")}>
+                        {data.examenConduccion?.consumoSustancias || "--"}
+                      </span>
+                    </div>
+                    {(() => {
+                      const manio = data.maniobrasConduccion || {};
+                      const labels = {
+                        resistenciaMonotonia: "Resistencia a la Monotonía",
+                        reaccionMultiple: "Reacción Múltiple",
+                        anticipacionVelocidad: "Anticipación de la Velocidad",
+                        coordinacionBimanual: "Coordinación Bimanual",
+                        reaccionFrenado: "Reacción al Frenado",
+                      };
+                      const bajos = Object.entries(manio)
+                        .filter(([, v]) => v?.estado === "Bajo")
+                        .map(([k]) => labels[k] || k);
+                      return bajos.length > 0 ? (
+                        <div className="col-span-2 mt-1">
+                          <span className="font-bold text-red-700">
+                            Evaluación psicomotriz con desempeño bajo:{" "}
+                          </span>
+                          <span className="text-red-700">{bajos.join(", ")}</span>
+                        </div>
+                      ) : (
+                        <div className="col-span-2 mt-1 text-gray-500">
+                          Evaluación psicomotriz: todas en rango medio/alto (aceptable)
+                        </div>
+                      );
+                    })()}
+                    {data.examenConduccion?.valoracionPsicologica && (
+                      <div className="col-span-2 mt-1 text-gray-600 italic">
+                        {data.examenConduccion.valoracionPsicologica}
+                      </div>
+                    )}
+                    {data.examenConduccion?.observaciones && (
+                      <div className="col-span-2 font-bold text-gray-700">
+                        {data.examenConduccion.observaciones}
                       </div>
                     )}
                   </>
