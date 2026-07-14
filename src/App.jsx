@@ -365,6 +365,25 @@ const _workerGetRaw = async (key) => {
   if (!r || !r.ok) return null;
   try { const data = await r.json(); return data[0]?.value ?? null; } catch { return null; }
 };
+// FIX 2026-07-14: lectura de PIEZAS de chunk (__cN) con ?raw=1 — el servidor
+// se salta el JSON.parse (mismo criterio ya aplicado a /store/prefix y
+// /store), evitando el 503 por CPU timeout del plan gratuito de Workers
+// cuando la pieza pesa ~500KB. El parse se hace aquí en el cliente. Función
+// dedicada (no se toca _workerGetRaw, usado en 15+ sitios) para acotar el
+// riesgo solo a la lectura de piezas.
+const _workerGetChunkPiece = async (key) => {
+  if (!_WORKER_TOKEN) return null;
+  const r = await _workerFetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}?raw=1`, {
+    headers: { "X-Siso-Token": _WORKER_TOKEN },
+  });
+  if (!r || !r.ok) return null;
+  try {
+    const data = await r.json();
+    const raw = data[0]?.value;
+    if (raw === undefined || raw === null) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+};
 const _workerDeleteRaw = async (key) => {
   if (!_WORKER_TOKEN) return false;
   const r = await _workerFetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
@@ -585,10 +604,10 @@ const _workerGet = async (key) => {
     while (!_huboError) {
       const i = _nextIdx++;
       if (i >= meta.count) return;
-      let p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+      let p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
       if (p === null) {
         await new Promise((res) => setTimeout(res, 300));
-        p = await _workerGetRaw(key + _CHUNK_SUF_PIECE + i);
+        p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
       }
       if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key} (tras reintento)`); return; }
       parts[i] = p;

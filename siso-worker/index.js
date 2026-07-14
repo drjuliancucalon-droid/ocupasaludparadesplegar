@@ -95,10 +95,20 @@ export default {
         const key = decodeURIComponent(path.slice(7));
         const row = await env.DB.prepare("SELECT value, updated_at FROM siso_store WHERE key = ?").bind(key).first();
         if (!row) return new Response(JSON.stringify([]), { headers });
-        const value = JSON.parse(await decompressValue(row.value));
         const ts = row.updated_at;
         // Exponer también el etag en header para uso fácil del cliente
         const respHeaders = { ...headers, "ETag": ts ? `"${ts}"` : '""', "X-Siso-Ts": ts || "" };
+        // FIX 2026-07-14: modo ?raw=1 — mismo criterio que ya se aplicó a
+        // /store/prefix y /store (V11): saltar el JSON.parse del lado del
+        // servidor evita el 503 por CPU timeout (10ms free tier) cuando el
+        // valor es grande (ej. piezas de ~500KB de un valor troceado). El
+        // cliente hace el parse. Sin este flag, comportamiento sin cambios.
+        const raw = url.searchParams.get("raw") === "1";
+        if (raw) {
+          const decompressed = await decompressValue(row.value);
+          return new Response(JSON.stringify([{ key, value: decompressed, ts, _raw: true }]), { headers: respHeaders });
+        }
+        const value = JSON.parse(await decompressValue(row.value));
         return new Response(JSON.stringify([{ key, value, ts }]), { headers: respHeaders });
       }
 
