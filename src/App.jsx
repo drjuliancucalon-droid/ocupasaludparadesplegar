@@ -13843,138 +13843,83 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
         fmtBlocks(recomendacionesText) +
         "</div>"
       : "") +
-    /* ── ÉNFASIS EN ALTURAS ────────────────────────────────────── */
+    /* ── HALLAZGOS EXAMEN ÉNFASIS ──────────────────────────────── */
+    // FIX 2026-07-14: reescrito para calcar exactamente el estilo del panel
+    // "Hallazgos Examen Énfasis" que ya se ve en la Historia Clínica (filas
+    // etiqueta/valor, valor en rojo negrita solo si difiere de lo normal,
+    // maniobras como línea compacta "todas negativas" / "positivas: X, Y")
+    // en vez de tablas con bordes — y cubre los 5 énfasis, no solo ALTURAS.
     (() => {
-      const _enfasis = (data.enfasisExamen || "").toUpperCase();
-      const alt = data.examenAlturas || {};
-      if (_enfasis === "ALTURAS" && (alt.romberg || alt.marcha || alt.vertigo || alt.coordinacion || alt.nistagmus || alt.testMiedo || alt.observaciones || alt.audiometriaOido || alt.paracliLab || alt.paracliEkg || alt.paracliEspiro || alt.paracliOptometria || alt.paracliRayosX || alt.paracliPsico || alt.paracliOtros)) {
-        let alturaHtml = '<div class="sec"><div class="sec-title">🧗 &Eacute;nfasis: Trabajo en Alturas (Res. 4272/2021)</div>';
-        alturaHtml += '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">';
-        // Pruebas neurológicas
-        alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Romberg</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.romberg || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Marcha Tandem</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.marcha || "--") + '</td></tr>';
-        alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">V&eacute;rtigo</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.vertigo || "No") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Coordinaci&oacute;n</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.coordinacion || "--") + '</td></tr>';
-        alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Nistagmus</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.nistagmus || "No") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Test Miedo Alturas</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.testMiedo || "--") + '</td></tr>';
-        if (alt.observaciones) {
-          alturaHtml += '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones Neurol&oacute;gicas</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + alt.observaciones + '</td></tr>';
+      const _enf = (data.enfasisExamen || "").toUpperCase();
+      const _badNorm = (v, normal) => (v && v !== (normal || "Normal")) ? "color:#b91c1c;font-weight:700;" : "color:#374151;";
+      const _row = (label, value, normal) => {
+        if (!value) return "";
+        return '<div style="display:flex;justify-content:space-between;font-size:9.5pt;padding:3px 0;border-bottom:1px solid #f3f4f6;"><span style="color:#6b7280;">' + label + '</span><span style="' + _badNorm(value, normal) + '">' + value + '</span></div>';
+      };
+      const _obs = (txt) => txt ? '<div style="grid-column:span 2;margin-top:4px;color:#6b7280;font-style:italic;font-size:9pt;">' + txt + '</div>' : "";
+      const _enfMeta = {
+        ALTURAS:      { bg: "#e0f2fe", fg: "#075985", titulo: "Trabajo en Alturas (Res. 4272/2021)" },
+        ALIMENTOS:    { bg: "#fef9c3", fg: "#854d0e", titulo: "Manipulación de Alimentos (Res. 2674/2013)" },
+        CONFINADOS:   { bg: "#ffedd5", fg: "#9a3412", titulo: "Espacios Confinados (Res. 0491/2020)" },
+        OSTEOMUSCULAR:{ bg: "#ede9fe", fg: "#5b21b6", titulo: "Osteomuscular (Res. 2404/2019)" },
+        CORAZON:      { bg: "#ffe4e6", fg: "#9f1239", titulo: "Cardiovascular (Res. 1843/2025)" },
+      };
+      if (!_enfMeta[_enf]) return "";
+
+      let rows = "";
+      if (_enf === "ALTURAS") {
+        const alt = data.examenAlturas || {};
+        rows = _row("Romberg", alt.romberg) + _row("Vértigo", alt.vertigo, "Negativo") +
+          _row("Coordinación", alt.coordinacion) + _row("Marcha Tandem", alt.marcha) +
+          _row("Nistagmus", alt.nistagmus, "Ausente") + _row("Test Miedo Alturas", alt.testMiedo, "Negativo") +
+          _obs(alt.observaciones);
+        if (alt.audiometriaOido || alt.audiometriaTipo || alt.audiometriaStatus) {
+          rows += '<div style="grid-column:span 2;margin-top:6px;padding-top:4px;border-top:1px solid #e0f2fe;"><p style="font-size:8.5pt;font-weight:900;color:' + _enfMeta.ALTURAS.fg + ';text-transform:uppercase;margin:0 0 3px;">👂 Audiometría</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;">' +
+            _row("Resultado", alt.audiometriaOido) + _row("Tipo", alt.audiometriaTipo) + _row("Estado", alt.audiometriaStatus, "Apto") + _obs(alt.audiometriaObs) +
+            '</div></div>';
         }
-        // Audiometría
-        if (alt.audiometriaOido || alt.audiometriaTipo || alt.audiometriaStatus || alt.audiometriaObs) {
-          alturaHtml += '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:900;background:#e0f2fe;text-transform:uppercase;font-size:8.5pt;letter-spacing:.5px;">👂 Audiometr&iacute;a</td></tr>';
-          alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Resultado</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.audiometriaOido || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Tipo</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.audiometriaTipo || "--") + '</td></tr>';
-          if (alt.audiometriaStatus) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Estado</td><td colspan="3" style="border:1px solid #e5e7eb;padding:5px;">' + alt.audiometriaStatus + '</td></tr>';
-          }
-          if (alt.audiometriaObs) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones</td><td colspan="3" style="border:1px solid #e5e7eb;padding:5px;">' + alt.audiometriaObs + '</td></tr>';
-          }
+        if (alt.paracliLab || alt.paracliEkg || alt.paracliEspiro || alt.paracliOptometria || alt.paracliRayosX || alt.paracliPsico || alt.paracliOtros) {
+          rows += '<div style="grid-column:span 2;margin-top:6px;padding-top:4px;border-top:1px solid #e0f2fe;"><p style="font-size:8.5pt;font-weight:900;color:' + _enfMeta.ALTURAS.fg + ';text-transform:uppercase;margin:0 0 3px;">🔬 Paraclínicos</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;">' +
+            _row("Laboratorios", alt.paracliLab) + _row("EKG / Holter", alt.paracliEkg) + _row("Espirometría", alt.paracliEspiro) + _row("Optometría", alt.paracliOptometria) + _row("Rx / Imagen", alt.paracliRayosX) + _row("Psicosensométrico", alt.paracliPsico, "Apto") + _obs(alt.paracliOtros) +
+            '</div></div>';
         }
-        // Paraclínicos
-        const hasParacli = alt.paracliLab || alt.paracliEkg || alt.paracliEspiro || alt.paracliOptometria || alt.paracliRayosX || alt.paracliPsico || alt.paracliOtros;
-        if (hasParacli) {
-          alturaHtml += '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:900;background:#e0f2fe;text-transform:uppercase;font-size:8.5pt;letter-spacing:.5px;">🔬 Paracl&iacute;nicos</td></tr>';
-          if (alt.paracliLab) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Laboratorios</td><td style="border:1px solid #e5e7eb;padding:5px;">' + alt.paracliLab + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">EKG / Holter</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.paracliEkg || "--") + '</td></tr>';
-          }
-          if (alt.paracliEspiro) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Espirometr&iacute;a</td><td style="border:1px solid #e5e7eb;padding:5px;">' + alt.paracliEspiro + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Optometr&iacute;a</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.paracliOptometria || "--") + '</td></tr>';
-          }
-          if (alt.paracliRayosX) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Rx / Imagen Dx</td><td style="border:1px solid #e5e7eb;padding:5px;">' + alt.paracliRayosX + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Psicosensom&eacute;trico</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alt.paracliPsico || "--") + '</td></tr>';
-          }
-          if (alt.paracliOtros) {
-            alturaHtml += '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Otros</td><td colspan="3" style="border:1px solid #e5e7eb;padding:5px;">' + alt.paracliOtros + '</td></tr>';
-          }
-        }
-        alturaHtml += '</table></div>';
-        return alturaHtml;
+      } else if (_enf === "ALIMENTOS") {
+        const alim = data.examenAlimentos || {};
+        rows = _row("Piel / Faneras", alim.pielFaneras) + _row("ORL (boca/faringe)", alim.orl) +
+          _row("Sistema Gastrointestinal", alim.gastrointestinal) + _obs(alim.observaciones);
+      } else if (_enf === "CONFINADOS") {
+        const conf = data.examenConfinados || {};
+        rows = _row("Cardiovascular", conf.cardiovascular) + _row("Respiratorio", conf.respiratorio) +
+          _row("Neurológico", conf.neurologico) + _row("Psicológico", conf.psicologico, "Apto") +
+          _row("ORL / Oído", conf.otorrino) + _row("Uso EPP Respiratorio", conf.usoEpp, "Apto") +
+          (conf.hallazgosCardio ? _obs("Signos vitales: " + conf.hallazgosCardio) : "") + _obs(conf.observaciones);
+      } else if (_enf === "OSTEOMUSCULAR") {
+        const osteo = data.examenOsteomuscular || {};
+        rows = _row("Columna Vertebral", osteo.columna) + _row("Miembros Superiores", osteo.miembrosSup) +
+          _row("Miembros Inferiores", osteo.miembrosInf) + _row("Sistema Muscular", osteo.muscular) +
+          _row("Sistema Articular", osteo.articular) + _row("Evaluación Postural", osteo.postural);
+        const manio = data.maniobrasOsteomusculares || {};
+        const positivas = Object.entries(manio).filter(([, v]) => v?.estado === "Positivo").map(([k]) => k);
+        rows += positivas.length > 0
+          ? '<div style="grid-column:span 2;margin-top:4px;font-size:9.5pt;"><span style="color:#b91c1c;font-weight:700;">Maniobras positivas: </span><span style="color:#b91c1c;">' + positivas.join(", ") + '</span></div>'
+          : '<div style="grid-column:span 2;margin-top:4px;color:#6b7280;font-size:9.5pt;">Maniobras especiales: todas negativas</div>';
+        rows += _obs(osteo.hallazgos);
+        if (osteo.diagnosticoFuncional) rows += '<div style="grid-column:span 2;font-weight:700;color:#374151;font-size:9.5pt;">' + osteo.diagnosticoFuncional + '</div>';
+      } else if (_enf === "CORAZON") {
+        const cora = data.examenCorazon || {};
+        rows = _row("Frecuencia Cardiaca", cora.frecuenciaCardiaca) + _row("Presión Arterial", cora.presionArterial) +
+          _row("Ritmo y Tonos", cora.ritmoyTonos) + _row("Pulsos Periféricos", cora.pulsos) +
+          _row("Edemas", cora.edemas, "Ausente") + _row("Perfusión Periférica", cora.perfusionPeriferica);
+        if (cora.signosVitales) rows += '<div style="grid-column:span 2;margin-top:4px;color:#374151;font-size:9.5pt;"><strong>Signos vitales: </strong>' + cora.signosVitales + '</div>';
+        if (cora.imc) rows += '<div style="grid-column:span 2;color:#374151;font-size:9.5pt;"><strong>Antropometría: </strong>' + cora.imc + '</div>';
+        if (cora.riesgoCV) rows += '<div style="grid-column:span 2;color:#374151;font-size:9.5pt;"><strong>Riesgo cardiovascular: </strong>' + cora.riesgoCV + '</div>';
       }
-      return '';
-    })() +
-    /* ── ÉNFASIS OSTEOMUSCULAR (examen + maniobras) ──────────── */
-    // FIX 2026-07-14: reflejar en el certificado lo mismo que ya muestra la
-    // Historia Clínica para este énfasis — antes solo ALTURAS tenía sección
-    // propia aquí; OSTEOMUSCULAR (incluidas las maniobras ortopédicas
-    // nombradas) no aparecía, aunque en la HC completa sí.
-    (() => {
-      const _enfasis = (data.enfasisExamen || "").toUpperCase();
-      if (_enfasis !== "OSTEOMUSCULAR") return "";
-      const osteo = data.examenOsteomuscular || {};
-      let html = "";
-      if (osteo.columna || osteo.miembrosSup || osteo.miembrosInf || osteo.muscular || osteo.articular || osteo.postural || osteo.hallazgos || osteo.diagnosticoFuncional) {
-        html += '<div class="sec"><div class="sec-title">💪 Énfasis: Osteomuscular</div>' +
-          '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
-          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Columna</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.columna || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Miembros Superiores</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.miembrosSup || "--") + '</td></tr>' +
-          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Miembros Inferiores</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.miembrosInf || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Muscular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.muscular || "--") + '</td></tr>' +
-          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Articular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.articular || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Postural</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (osteo.postural || "--") + '</td></tr>' +
-          (osteo.hallazgos ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + osteo.hallazgos + '</td></tr>' : "") +
-          (osteo.diagnosticoFuncional ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Diagnóstico Funcional</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + osteo.diagnosticoFuncional + '</td></tr>' : "") +
-          '</table></div>';
-      }
-      const manio = data.maniobrasOsteomusculares || {};
-      const allManiobras = ["phalen","tinel","finkelstein","jobe","lasegue","adams","wells","schober"];
-      const manioLabels = {phalen:"Phalen",tinel:"Tinel",finkelstein:"Finkelstein",jobe:"Jobe",lasegue:"Lasègue",adams:"Adams",wells:"Wells",schober:"Schober"};
-      const manioKeysConDato = Object.keys(manio).filter((k) => {
-        const v = manio[k];
-        const estado = (v && typeof v === "object") ? v.estado : v;
-        return estado;
-      });
-      if (manioKeysConDato.length > 0) {
-        let manioRows = allManiobras.map((k) => {
-          const v = manio[k];
-          if (!v) return "";
-          const estado = (typeof v === "object" ? v.estado : v) || "No evaluado";
-          const hallazgo = (typeof v === "object" ? v.hallazgo : "") || "";
-          const isPositive = estado === "Positivo" || estado === "Anormal" || estado === "Positiva";
-          const color = isPositive ? "#dc2626" : "#065f46";
-          const bg = isPositive ? "#fef2f2" : "#f0fdf4";
-          return '<tr style="background:' + bg + '"><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;width:25%;">' + (manioLabels[k] || k) + '</td><td style="border:1px solid #e5e7eb;padding:5px;color:' + color + ';font-weight:700;width:20%;">' + estado + '</td><td style="border:1px solid #e5e7eb;padding:5px;">' + hallazgo + '</td></tr>';
-        }).join("");
-        html += '<div class="sec"><div class="sec-title">🦴 Maniobras Ortopédicas</div>' +
-          '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
-          '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Maniobra</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Resultado</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#065f46;color:white;">Hallazgo</td></tr>' +
-          manioRows + '</table></div>';
-      }
-      return html;
-    })() +
-    /* ── ÉNFASIS ALIMENTOS ────────────────────────────────────── */
-    (() => {
-      const _enfasis = (data.enfasisExamen || "").toUpperCase();
-      const alim = data.examenAlimentos || {};
-      if (_enfasis !== "ALIMENTOS" || !(alim.pielFaneras || alim.orl || alim.gastrointestinal || alim.observaciones)) return "";
-      return '<div class="sec"><div class="sec-title">🍽️ Énfasis: Manipulación de Alimentos</div>' +
-        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Piel y Faneras</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alim.pielFaneras || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">ORL</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (alim.orl || "--") + '</td></tr>' +
-        (alim.gastrointestinal ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Gastrointestinal</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + alim.gastrointestinal + '</td></tr>' : "") +
-        (alim.observaciones ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + alim.observaciones + '</td></tr>' : "") +
-        '</table></div>';
-    })() +
-    /* ── ÉNFASIS CONFINADOS ───────────────────────────────────── */
-    (() => {
-      const _enfasis = (data.enfasisExamen || "").toUpperCase();
-      const conf = data.examenConfinados || {};
-      if (_enfasis !== "CONFINADOS" || !(conf.cardiovascular || conf.respiratorio || conf.neurologico || conf.psicologico || conf.otorrino || conf.usoEpp || conf.observaciones)) return "";
-      return '<div class="sec"><div class="sec-title">🔒 Énfasis: Espacios Confinados</div>' +
-        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Cardiovascular</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.cardiovascular || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Respiratorio</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.respiratorio || "--") + '</td></tr>' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Neurológico</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.neurologico || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Psicológico</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.psicologico || "--") + '</td></tr>' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Otorrino</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.otorrino || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Uso EPP</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (conf.usoEpp || "--") + '</td></tr>' +
-        (conf.hallazgosCardio ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos Cardio</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + conf.hallazgosCardio + '</td></tr>' : "") +
-        (conf.observaciones ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Observaciones</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + conf.observaciones + '</td></tr>' : "") +
-        '</table></div>';
-    })() +
-    /* ── ÉNFASIS CARDIOVASCULAR (CORAZON) ─────────────────────── */
-    (() => {
-      const _enfasis = (data.enfasisExamen || "").toUpperCase();
-      const cora = data.examenCorazon || {};
-      if (_enfasis !== "CORAZON" || !(cora.frecuenciaCardiaca || cora.presionArterial || cora.ritmoyTonos || cora.pulsos || cora.edemas || cora.perfusionPeriferica || cora.riesgoCV || cora.hallazgos || cora.restricciones)) return "";
-      return '<div class="sec"><div class="sec-title">❤️ Énfasis: Cardiovascular</div>' +
-        '<table style="width:100%;border-collapse:collapse;font-size:9.5pt;table-layout:fixed;">' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">F. Cardíaca</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.frecuenciaCardiaca || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;width:25%;">Presión Arterial</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.presionArterial || "--") + '</td></tr>' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Ritmo y Tonos</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.ritmoyTonos || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Pulsos</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.pulsos || "--") + '</td></tr>' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Edemas</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.edemas || "No") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Perfusión Periférica</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.perfusionPeriferica || "--") + '</td></tr>' +
-        '<tr><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">IMC</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.imc || data.imc || "--") + '</td><td style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Riesgo CV</td><td style="border:1px solid #e5e7eb;padding:5px;">' + (cora.riesgoCV || "--") + '</td></tr>' +
-        (cora.hallazgos ? '<tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;font-weight:700;background:#f9fafb;">Hallazgos</td></tr><tr><td colspan="4" style="border:1px solid #e5e7eb;padding:5px;">' + cora.hallazgos + '</td></tr>' : "") +
-        '</table></div>';
+      if (!rows) return "";
+      const meta = _enfMeta[_enf];
+      return '<div style="border:1px solid #d1d5db;border-radius:10px;overflow:hidden;margin:8px 0;">' +
+        '<div style="padding:6px 10px;font-weight:900;font-size:9pt;text-transform:uppercase;background:' + meta.bg + ';color:' + meta.fg + ';">Hallazgos Examen Énfasis: ' + meta.titulo + '</div>' +
+        '<div style="padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:0 16px;">' + rows + '</div>' +
+        '</div>';
     })() +
     /* ── RESTRICCIONES ──────────────────────────────────────── */
     (restriccionesText || restCheck.length > 0
