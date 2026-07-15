@@ -20000,7 +20000,18 @@ function AppInner() {
           );
           if (r.ok) {
             const rows = await r.json();
-            rows.forEach(row => addAll(Array.isArray(row.value) ? row.value : []));
+            // FIX 2026-07-15: /store/prefix devuelve valores como string sin
+            // parsear (_raw:true, optimización para evitar CPU timeout en el
+            // servidor). Esta función nunca se actualizó para eso — comparaba
+            // Array.isArray(row.value) contra un string, que SIEMPRE es
+            // falso, así que creía que D1 no tenía datos y caía al respaldo
+            // de Supabase (una copia vieja), descartando encuestas reales
+            // que sí estaban en D1 (ej. NEOTECH).
+            rows.forEach(row => {
+              let v = row.value;
+              if (typeof v === "string") { try { v = JSON.parse(v); } catch { v = []; } }
+              addAll(Array.isArray(v) ? v : []);
+            });
             if (merged.length > 0) {
               addLocal(); // preservar encuestas locales que la nube no conoce
               setEncuestas(merged);
