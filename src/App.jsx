@@ -25161,12 +25161,21 @@ Esta historia clínica debe conservarse mínimo 20 años.
     }));
     setPatientSuggestions([]);
   };
+  // FIX 2026-07-15: el botón "Ver historial" mostraba el modal vacío
+  // aunque el aviso ("N atenciones previas") sí hubiera detectado
+  // registros. Dos causas: (1) comparación exacta de docNumero sin
+  // normalizar espacios/puntos (otro punto del código, línea ~39389, ya
+  // normaliza para este mismo campo — señal de que el formato no siempre
+  // es consistente); (2) solo buscaba en patientsList en memoria, sin
+  // respaldo a D1 si esa lista ya no tenía el registro cargado.
+  const _normDocHist = (s) => (s || "").toString().replace(/[^0-9a-zA-Z]/g, "");
   const handleOpenHistoryModal = async (
     docNumber,
     searchAllDoctors = false
   ) => {
+    const docNorm = _normDocHist(docNumber);
     let records = patientsList.filter(
-      (p) => p.docNumero === docNumber && p.fechaExamen
+      (p) => _normDocHist(p.docNumero) === docNorm && p.fechaExamen
     );
     // Para consultar certificados de TODOS los médicos (solo certificados)
     if (searchAllDoctors) {
@@ -25180,7 +25189,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
             ) {
               const otherRecs = entry.value.filter(
                 (p) =>
-                  p.docNumero === docNumber &&
+                  _normDocHist(p.docNumero) === docNorm &&
                   p.fechaExamen &&
                   p.conceptoAptitud
               );
@@ -25190,6 +25199,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
         }
       } catch (e) {
         /* sin internet: solo los locales */
+      }
+    }
+    // Respaldo: si no se encontró nada localmente, consultar D1 directo
+    // (patientsList en memoria puede estar acotada/desactualizada aunque
+    // el registro exista realmente en la nube).
+    if (records.length === 0 && _WORKER_TOKEN) {
+      try {
+        const uid = currentUser?.user || "shared";
+        const cloudPats =
+          (await _workerGet(`siso_db_patients_${uid}`)) ||
+          (await _workerGet(`siso_patients_${uid}`));
+        if (Array.isArray(cloudPats)) {
+          records = cloudPats.filter(
+            (p) => _normDocHist(p.docNumero) === docNorm && p.fechaExamen
+          );
+        }
+      } catch (e) {
+        /* sin conexión: se muestra el mensaje de "sin resultados" */
       }
     }
     const unique = records.filter(
@@ -35243,6 +35270,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   </p>
                 </div>
               )}
+              {historyRecords.length === 0 && (
+                <div className="p-6 text-center text-gray-400 text-sm">
+                  No se encontraron atenciones previas para este número de
+                  documento.
+                </div>
+              )}
+              {historyRecords.length > 0 && (
               <div className="overflow-x-auto border rounded-xl">
                 <table className="w-full text-xs">
                   <thead className="bg-gray-100 font-bold text-gray-600">
@@ -35314,6 +35348,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   </tbody>
                 </table>
               </div>
+              )}
               <div className="mt-4 flex justify-end">
                 <button
                   onClick={() => setShowHistoryModal(false)}
