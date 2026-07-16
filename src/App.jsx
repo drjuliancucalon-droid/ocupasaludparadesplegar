@@ -23036,13 +23036,25 @@ const handleLogin = (u, p) => {
             || cloud?.["siso_db_patients_" + _storageUserId]?.value
             || cloud?.["siso_patients_" + _storageUserId]?.value;
           const currentLocalPats = sp(userPatKey, []);
-          if (
-            Array.isArray(cloudPats) &&
-            cloudPats.length > 0 &&  // nunca sobreescribir con lista vacía
-            cloudPats.length >= currentLocalPats.length
-          ) {
-            setPatientsList(cloudPats);
-            _ls.setItem(userPatKey, JSON.stringify(cloudPats));
+          if (Array.isArray(cloudPats) && cloudPats.length > 0) {
+            // FIX 2026-07-16: antes esto REEMPLAZABA toda la lista local por la
+            // de la nube cuando cloudPats.length >= currentLocalPats.length.
+            // Si el respaldo a Supabase quedó rezagado (best-effort, no bloquea
+            // el guardado), un login volvía a traer la versión vieja de un
+            // paciente recién editado y borraba la edición sin ningún aviso.
+            // Ahora se fusiona por id: la nube SOLO puede agregar pacientes que
+            // falten localmente, nunca sobrescribir uno que ya existe en el
+            // dispositivo.
+            const localIds = new Set(currentLocalPats.filter(p => p?.id).map(p => p.id));
+            const faltantes = cloudPats.filter(p => p?.id && !localIds.has(p.id));
+            if (faltantes.length > 0) {
+              const merged = [...currentLocalPats, ...faltantes];
+              setPatientsList(merged);
+              _ls.setItem(userPatKey, JSON.stringify(merged));
+            } else if (currentLocalPats.length === 0) {
+              setPatientsList(cloudPats);
+              _ls.setItem(userPatKey, JSON.stringify(cloudPats));
+            }
             // Sincronizar también a la clave cloud para unificar en próximas cargas
             if (!cloud?.[userPatKeyCloud]?.value || cloud[userPatKeyCloud].value.length === 0) {
               _sbSet(userPatKeyCloud, cloudPats);
