@@ -32695,6 +32695,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
           (p) =>
             p.empresaId === _reportEmpId &&
             p.fechaExamen &&
+            !p._archivado &&
             (reportStartDate ? p.fechaExamen >= reportStartDate : true) &&
             (reportEndDate ? p.fechaExamen <= reportEndDate : true) &&
             (selectedMedicoReport ? p._medicoId === selectedMedicoReport : true) &&
