@@ -35249,118 +35249,6 @@ Esta historia clínica debe conservarse mínimo 20 años.
             </table>
           </div>
         </div>
-        {showHistoryModal && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-3xl max-h-[80vh] overflow-y-auto animate-fade-in">
-              <div className="flex justify-between items-center mb-4 border-b pb-2">
-                <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">
-                  <History className="w-5 h-5 text-blue-600" /> Historial
-                  Clínico
-                </h3>
-                <button onClick={() => setShowHistoryModal(false)}>
-                  <X className="w-5 h-5 text-gray-400 hover:text-red-500" />
-                </button>
-              </div>
-              {historyRecords.length > 0 && (
-                <div className="mb-4 p-3 bg-blue-50 rounded-lg">
-                  <p className="font-bold text-blue-900">
-                    {historyRecords[0].nombres}
-                  </p>
-                  <p className="text-xs text-blue-600">
-                    CC: {historyRecords[0].docNumero}
-                  </p>
-                </div>
-              )}
-              {historyRecords.length === 0 && (
-                <div className="p-6 text-center text-gray-400 text-sm">
-                  No se encontraron atenciones previas para este número de
-                  documento.
-                </div>
-              )}
-              {historyRecords.length > 0 && (
-              <div className="overflow-x-auto border rounded-xl">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-100 font-bold text-gray-600">
-                    <tr>
-                      <th className="p-3">Fecha</th>
-                      <th className="p-3">Tipo</th>
-                      <th className="p-3">Empresa</th>
-                      <th className="p-3">Concepto</th>
-                      <th className="p-3 text-center">Estado</th>
-                      <th className="p-3 text-center">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {historyRecords.map((rec, i) => (
-                      <tr key={i} className="border-b hover:bg-gray-50">
-                        <td className="p-2">{rec.fechaExamen}</td>
-                        <td className="p-2">{rec.tipoExamen || rec.type}</td>
-                        <td className="p-2 max-w-[120px] truncate">
-                          {rec.empresaNombre}
-                        </td>
-                        <td className="p-2 max-w-[150px] truncate text-[10px]">
-                          {rec.conceptoAptitud || "--"}
-                        </td>
-                        <td className="p-2 text-center">
-                          <span
-                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                              rec.estadoHistoria === "Cerrada"
-                                ? "bg-red-100 text-red-700"
-                                : "bg-green-100 text-green-700"
-                            }`}
-                          >
-                            {rec.estadoHistoria || "Abierta"}
-                          </span>
-                        </td>
-                        <td className="p-2 flex justify-center gap-1">
-                          <button
-                            onClick={() => {
-                              setData(rec);
-                              setDataType(rec.type || "ocupacional");
-                              setActiveTab(
-                                rec.type === "general" ? "formGeneral" : "form"
-                              );
-                              goTo("historia");
-                              setShowHistoryModal(false);
-                            }}
-                            className="p-1 bg-blue-50 text-blue-600 rounded border border-blue-200 hover:bg-blue-100"
-                          >
-                            <Eye className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={() => {
-                              setData(rec);
-                              setDataType(rec.type || "ocupacional");
-                              setActiveTab(
-                                rec.type === "general"
-                                  ? "formGeneral"
-                                  : "certificado"
-                              );
-                              goTo("historia");
-                              setShowHistoryModal(false);
-                            }}
-                            className="p-1 bg-emerald-50 text-emerald-600 rounded border border-emerald-200 hover:bg-emerald-100"
-                          >
-                            <FileCheck className="w-3 h-3" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              )}
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={() => setShowHistoryModal(false)}
-                  className="bg-gray-200 text-gray-700 px-4 py-2 rounded-xl font-bold text-xs hover:bg-gray-300"
-                >
-                  Cerrar
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   };
@@ -60984,6 +60872,123 @@ body{padding-top:52px;}
           currentUser={currentUser}
           onClose={() => setShowCargaMasiva(false)}
         />
+      )}
+      {/* FIX 2026-07-16: modal "Historial Clínico" — antes vivía dentro de
+          renderPatients() (solo se montaba con view === "patients"), así que
+          el botón "Ver historial" dentro de una HC nueva no mostraba nada
+          aunque cambiara el estado correctamente. Movido aquí (zona de
+          modales globales) para que funcione sin importar la pantalla activa. */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-3xl max-h-[80vh] overflow-y-auto animate-fade-in">
+            <div className="flex justify-between items-center mb-4 border-b pb-2">
+              <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">
+                <History className="w-5 h-5 text-blue-600" /> Historial
+                Clínico
+              </h3>
+              <button onClick={() => setShowHistoryModal(false)}>
+                <X className="w-5 h-5 text-gray-400 hover:text-red-500" />
+              </button>
+            </div>
+            {historyRecords.length > 0 && (
+              <div className="mb-4 p-3 bg-blue-50 rounded-lg">
+                <p className="font-bold text-blue-900">
+                  {historyRecords[0].nombres}
+                </p>
+                <p className="text-xs text-blue-600">
+                  CC: {historyRecords[0].docNumero}
+                </p>
+              </div>
+            )}
+            {historyRecords.length === 0 && (
+              <div className="p-6 text-center text-gray-400 text-sm">
+                No se encontraron atenciones previas para este número de
+                documento.
+              </div>
+            )}
+            {historyRecords.length > 0 && (
+            <div className="overflow-x-auto border rounded-xl">
+              <table className="w-full text-xs">
+                <thead className="bg-gray-100 font-bold text-gray-600">
+                  <tr>
+                    <th className="p-3">Fecha</th>
+                    <th className="p-3">Tipo</th>
+                    <th className="p-3">Empresa</th>
+                    <th className="p-3">Concepto</th>
+                    <th className="p-3 text-center">Estado</th>
+                    <th className="p-3 text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRecords.map((rec, i) => (
+                    <tr key={i} className="border-b hover:bg-gray-50">
+                      <td className="p-2">{rec.fechaExamen}</td>
+                      <td className="p-2">{rec.tipoExamen || rec.type}</td>
+                      <td className="p-2 max-w-[120px] truncate">
+                        {rec.empresaNombre}
+                      </td>
+                      <td className="p-2 max-w-[150px] truncate text-[10px]">
+                        {rec.conceptoAptitud || "--"}
+                      </td>
+                      <td className="p-2 text-center">
+                        <span
+                          className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                            rec.estadoHistoria === "Cerrada"
+                              ? "bg-red-100 text-red-700"
+                              : "bg-green-100 text-green-700"
+                          }`}
+                        >
+                          {rec.estadoHistoria || "Abierta"}
+                        </span>
+                      </td>
+                      <td className="p-2 flex justify-center gap-1">
+                        <button
+                          onClick={() => {
+                            setData(rec);
+                            setDataType(rec.type || "ocupacional");
+                            setActiveTab(
+                              rec.type === "general" ? "formGeneral" : "form"
+                            );
+                            goTo("historia");
+                            setShowHistoryModal(false);
+                          }}
+                          className="p-1 bg-blue-50 text-blue-600 rounded border border-blue-200 hover:bg-blue-100"
+                        >
+                          <Eye className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setData(rec);
+                            setDataType(rec.type || "ocupacional");
+                            setActiveTab(
+                              rec.type === "general"
+                                ? "formGeneral"
+                                : "certificado"
+                            );
+                            goTo("historia");
+                            setShowHistoryModal(false);
+                          }}
+                          className="p-1 bg-emerald-50 text-emerald-600 rounded border border-emerald-200 hover:bg-emerald-100"
+                        >
+                          <FileCheck className="w-3 h-3" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            )}
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setShowHistoryModal(false)}
+                className="bg-gray-200 text-gray-700 px-4 py-2 rounded-xl font-bold text-xs hover:bg-gray-300"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       {/* ── MODAL REPORTE DE GUARDADO EN NUBE ── */}
       {/* ── MODAL DIAGNÓSTICO Y RECUPERACIÓN DE DATOS NUBE ── */}
