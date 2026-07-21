@@ -18769,7 +18769,7 @@ function AppInner() {
       const periodMap = new Map();
       for (const nv of variants) {
         let docs = null;
-        try { docs = await _workerGet(`siso_portal_empresa_docs_${nv}`); } catch {}
+        try { docs = await _readSmart(`siso_portal_empresa_docs_${nv}`); } catch {}
         if (!docs || !Array.isArray(docs.periodos)) continue;
         for (const per of docs.periodos) {
           const k = per.periodo || "";
@@ -18821,7 +18821,7 @@ function AppInner() {
       const variants = [nitClean]; for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv); if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
       const pMap = new Map();
       for (const nv of variants) {
-        let docs = null; try { docs = await _workerGet(`siso_portal_empresa_docs_${nv}`); } catch {}
+        let docs = null; try { docs = await _readSmart(`siso_portal_empresa_docs_${nv}`); } catch {}
         if (!docs || !Array.isArray(docs.periodos)) continue;
         for (const pp of docs.periodos) { const k = pp.periodo || ""; const prev = pMap.get(k) || { periodo: k }; pMap.set(k, { ...prev, ...pp, informe: pp.informe || prev.informe || null, cuenta: pp.cuenta || prev.cuenta || null, custodia: pp.custodia || prev.custodia || null, certificados: (pp.certificados && pp.certificados.count) ? pp.certificados : (prev.certificados || pp.certificados || null) }); }
       }
@@ -33042,10 +33042,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     btn.textContent = "⏳ Publicando...";
                     try {
                       if (!_nit) { showAlert("⚠️ La empresa no tiene NIT registrado."); btn.disabled=false; btn.textContent="📤 Publicar en portal"; return; }
-                      // D1 primero, Supabase fallback
+                      // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha —
+                      // antes se leía D1 primero (que nunca tenía informe/cuenta/custodia,
+                      // solo certificados) y esa base incompleta podía borrar flags que
+                      // solo existían en Supabase al volver a guardar.
                       let _docsExist = null;
-                      if (_WORKER_TOKEN) { try { _docsExist = await _workerGet(`siso_portal_empresa_docs_${_nit}`); } catch {} }
-                      if (!_docsExist) { try { const r = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nit}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const d = await r.json(); _docsExist = d[0]?.value || null; } catch {} }
+                      try { _docsExist = await _readSmart(`siso_portal_empresa_docs_${_nit}`); } catch {}
                       const informePayload = { totalPacientes: _inf.totalPacientes, resumen: _inf.resumen || "", fecha: _inf.fecha, statsKey: _inf.statsKey || null };
                       if (_docsExist) {
                         const docs = _docsExist;
@@ -33058,6 +33060,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         if (!found) docs.periodos.unshift({ periodo: _periodoKey, fecha: _inf.fecha, informe: informePayload, certificados: null, cuenta: null, custodia: null });
                         docs.updatedAt = new Date().toISOString();
                         await _sbSet(`siso_portal_empresa_docs_${_nit}`, docs);
+                        if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_docs_${_nit}`, docs); } catch {} }
                       } else {
                         // FIX 2026-06-16: ANTI-SOBREESCRITURA. _docsExist null puede ser
                         // (a) no existe → OK crear; o (b) la lectura falló (D1/SB
@@ -33083,6 +33086,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         const _codigoNuevo = _compRec?.portalCode || ("EMP-" + _nit.slice(-4) + "-" + _randP(4));
                         const newDoc = { nit: _nit, nombre: compName, codigoAcceso: _codigoNuevo, updatedAt: new Date().toISOString(), periodos: [{ periodo: _periodoKey, fecha: _inf.fecha, informe: informePayload, certificados: null, cuenta: null, custodia: null }] };
                         await _sbSet(`siso_portal_empresa_docs_${_nit}`, newDoc);
+                        if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_docs_${_nit}`, newDoc); } catch {} }
                         // Sincronizar código al registro local si no lo tenía
                         if (!_compRec?.portalCode) {
                           const _updC = companies.map(cx => (cx.nit || "").replace(/[^0-9]/g, "") === _nit ? { ...cx, portalCode: _codigoNuevo } : cx);
@@ -35524,10 +35528,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     const codigosFinales = { ...nuevosCodigos };
                     await Promise.all(Object.entries(nuevosCodigos).map(async ([nit, code]) => {
                       try {
-                        // D1 primero, Supabase fallback — preservar codigoAcceso existente
+                        // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha
+                        // antes de reescribir — preservar codigoAcceso existente.
                         let existing = null;
-                        if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_docs_${nit}`); } catch {} }
-                        if (!existing) { try { const r = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nit + "&select=value", { headers: _getSbHeaders() }); const d = await r.json(); existing = d[0]?.value || null; } catch {} }
+                        try { existing = await _readSmart(`siso_portal_empresa_docs_${nit}`); } catch {}
                         // Prioridad: 1) código ya en nube, 2) código nuevo generado
                         const codigoFinal = existing?.codigoAcceso || code;
                         codigosFinales[nit] = codigoFinal;
@@ -35540,6 +35544,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           periodos: existing?.periodos || [],
                         };
                         await _sbSet("siso_portal_empresa_docs_" + nit, docsData);
+                        if (_WORKER_TOKEN) { try { await _workerSet("siso_portal_empresa_docs_" + nit, docsData); } catch {} }
                       } catch {}
                     }));
                     // Sincronizar portalCode local con el código real de Supabase
@@ -37540,13 +37545,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       try {
                         const nitEd = (saved.nit || "").replace(/[^0-9]/g, "");
                         if (nitEd) {
-                          // D1 primero, Supabase fallback
+                          // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha.
                           let existing = null;
-                          if (_WORKER_TOKEN) { try { existing = await _workerGet(`siso_portal_empresa_docs_${nitEd}`); } catch {} }
-                          if (!existing) { try { const rEx = await fetch(_SB_URL + "/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_" + nitEd + "&select=value", { headers: _getSbHeaders() }); const dEx = await rEx.json(); existing = dEx[0]?.value || null; } catch {} }
+                          try { existing = await _readSmart(`siso_portal_empresa_docs_${nitEd}`); } catch {}
                           // Preservar periodos y solo actualizar nombre/código
                           const docsData = { nit: nitEd, nombre: saved.nombre || "", codigoAcceso: existing?.codigoAcceso || saved.portalCode, updatedAt: new Date().toISOString(), periodos: existing?.periodos || [] };
                           await _sbSet("siso_portal_empresa_docs_" + nitEd, docsData);
+                          if (_WORKER_TOKEN) { try { await _workerSet("siso_portal_empresa_docs_" + nitEd, docsData); } catch {} }
                           setEmpresaPortalCodes(prev => ({ ...prev, [nitEd]: docsData.codigoAcceso }));
                         }
                       } catch {}
@@ -38710,16 +38715,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                                   if (_compEmp) {
                                     const _nitP = (_compEmp.nit || "").replace(/[^0-9]/g, "");
                                     if (_nitP) {
-                                      // D1 primero, Supabase fallback
+                                      // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha.
                                       let _docsVal = null;
-                                      if (_WORKER_TOKEN) { try { _docsVal = await _workerGet(`siso_portal_empresa_docs_${_nitP}`); } catch {} }
-                                      if (!_docsVal) { try { const _pr = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${_nitP}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const _pd = await _pr.json(); _docsVal = _pd[0]?.value || null; } catch {} }
+                                      try { _docsVal = await _readSmart(`siso_portal_empresa_docs_${_nitP}`); } catch {}
                                       if (_docsVal) {
                                         _docsVal.periodos = (_docsVal.periodos || []).map(p => p.cuenta
                                           ? { ...p, cuenta: { ...p.cuenta, pagado: true, fechaPago } }
                                           : p
                                         );
                                         await _sbSet(`siso_portal_empresa_docs_${_nitP}`, _docsVal);
+                                        if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_docs_${_nitP}`, _docsVal); } catch {} }
                                       }
                                     }
                                   }
@@ -60014,11 +60019,13 @@ body{padding-top:52px;}
                     }],
                   };
                   // Merge with existing data — NUNCA sobreescribir el codigoAcceso si ya existe
-                  // D1 primero, Supabase fallback
+                  // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha — antes se
+                  // leía D1 primero (que nunca tenía informe/cuenta/custodia, solo
+                  // certificados) y esa base incompleta podía borrar flags que solo
+                  // existían en Supabase al volver a guardar.
                   try {
                     let _existVal = null;
-                    if (_WORKER_TOKEN) { try { _existVal = await _workerGet(`siso_portal_empresa_docs_${nitClean}`); } catch {} }
-                    if (!_existVal) { try { const existR = await fetch(`${_SB_URL}/rest/v1/siso_store?key=eq.siso_portal_empresa_docs_${nitClean}&select=value`, { headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_KEY}` } }); const existD = await existR.json(); _existVal = existD[0]?.value || null; } catch {} }
+                    try { _existVal = await _readSmart(`siso_portal_empresa_docs_${nitClean}`); } catch {}
                     if (_existVal) {
                       // Prioridad: 1) código en D1/Supabase, 2) código en registro local empresa, 3) código nuevo
                       portalDocsData.codigoAcceso = _existVal.codigoAcceso || comp?.portalCode || codigoAcceso;
@@ -60043,6 +60050,7 @@ body{padding-top:52px;}
                     }
                   } catch {}
                   await _sbSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData);
+                  if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData); } catch {} }
                   // Guardar código en el registro local de la empresa para que aparezca en la lista
                   const codAccFinal = portalDocsData.codigoAcceso;
                   try {

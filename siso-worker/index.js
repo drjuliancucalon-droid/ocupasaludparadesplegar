@@ -72,12 +72,48 @@ async function decompressValue(stored) {
 // sesión (con su copia local desactualizada) guardaba esta clave, porque el
 // POST /store normal siempre reemplazaba el arreglo completo. Ahora
 // siso_encuestas también se fusiona por id en ambas rutas de escritura.
-const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas|^siso_companies|^siso_cartas_custodia|^siso_saved_reports|^siso_informes|^siso_users/;
+const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas|^siso_companies|^siso_cartas_custodia|^siso_saved_reports|^siso_informes|^siso_users|^siso_portal_empresa_docs|^siso_portal_empresa_atenciones/;
+
+// siso_portal_empresa_docs_<nit> no es un arreglo: es un objeto
+// {nit, nombre, codigoAcceso, periodos:[{periodo, informe, cuenta, custodia, certificados}]}.
+// Fusiona por periodo, y dentro de cada periodo preserva informe/cuenta/custodia/
+// certificados que el entrante traiga en null pero el viejo sí tenía — mismo
+// criterio que ya usa el cliente en varios puntos (_readSmart + merge manual),
+// ahora también aplicado server-side como respaldo si el cliente fusiona mal.
+async function _mergePeriodosObjeto(env, key, incoming) {
+  try {
+    const oldRow = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key).first();
+    if (!oldRow?.value) return incoming;
+    let old = null;
+    try { old = JSON.parse(await decompressValue(oldRow.value)); } catch { return incoming; }
+    if (!old || typeof old !== "object" || !Array.isArray(old.periodos)) return incoming;
+    const byPeriodo = new Map(old.periodos.map(p => [p?.periodo, p]));
+    const merged = incoming.periodos.map(p => {
+      const op = byPeriodo.get(p?.periodo);
+      if (!op) return p;
+      byPeriodo.delete(p?.periodo);
+      return {
+        ...op, ...p,
+        informe: p.informe || op.informe || null,
+        cuenta: p.cuenta || op.cuenta || null,
+        custodia: p.custodia || op.custodia || null,
+        certificados: (p.certificados && p.certificados.count) ? p.certificados : (op.certificados || p.certificados || null),
+      };
+    });
+    const extras = [...byPeriodo.values()];
+    if (extras.length > 0) console.log(`[merge] CANDADO ${key}: +${extras.length} periodos preservados`);
+    return { ...incoming, periodos: [...merged, ...extras] };
+  } catch (e) { console.warn(`[merge] candado-objeto ${key} error:`, e.message); return incoming; }
+}
 
 // Fusiona por id: lo entrante gana por-id, lo existente que el entrante no
 // conoce se preserva. Usado por POST /store y POST /store/chunked.
 async function _mergeProtegido(env, key, incoming) {
-  if (!Array.isArray(incoming) || !_PROTECTED.test(key)) return incoming;
+  if (!_PROTECTED.test(key)) return incoming;
+  if (incoming && typeof incoming === "object" && !Array.isArray(incoming) && Array.isArray(incoming.periodos)) {
+    return _mergePeriodosObjeto(env, key, incoming);
+  }
+  if (!Array.isArray(incoming)) return incoming;
   try {
     let old = null;
     const oldRow = await env.DB.prepare("SELECT value FROM siso_store WHERE key = ?").bind(key).first();
