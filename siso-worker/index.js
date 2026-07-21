@@ -72,7 +72,7 @@ async function decompressValue(stored) {
 // sesión (con su copia local desactualizada) guardaba esta clave, porque el
 // POST /store normal siempre reemplazaba el arreglo completo. Ahora
 // siso_encuestas también se fusiona por id en ambas rutas de escritura.
-const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas/;
+const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas|^siso_companies/;
 
 // Fusiona por id: lo entrante gana por-id, lo existente que el entrante no
 // conoce se preserva. Usado por POST /store y POST /store/chunked.
