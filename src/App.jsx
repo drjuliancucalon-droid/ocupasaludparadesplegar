@@ -14317,7 +14317,13 @@ const _tryFitCanvasOnePage = (pdf, canvas, mg, cW, pcHpx, pxPerMm) => {
 // singlePage=true intenta ajustar a una sola hoja (solo para certificados).
 const _htmlToPdfBlobMod = (htmlContent, singlePage) => new Promise((resolve, reject) => {
   const ifr = document.createElement("iframe");
-  ifr.style.cssText = "position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;";
+  // FIX 2026-07-22: visibility:hidden causaba que html2canvas renderizara el
+  // TEXTO casi invisible (barras/cajas con color sí se veían bien) — bug
+  // conocido de html2canvas con ancestros visibility:hidden. El iframe ya
+  // está fuera de pantalla por "left:-9999px", así que visibility:hidden era
+  // redundante para ocultarlo al usuario; se quita sin tocar el resto del
+  // mecanismo de captura (tamaño, scale, paginación).
+  ifr.style.cssText = "position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;";
   document.body.appendChild(ifr);
   const cleanup = () => { setTimeout(() => { if (document.body.contains(ifr)) document.body.removeChild(ifr); }, 300); };
   const _to = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 25000);
@@ -14509,24 +14515,41 @@ const _INF_COLORS = {
   teal:{bg:"#f0fdfa",bd:"#99f6e4",bar:"#14b8a6",tx:"#0f766e",txd:"#115e59"},
   slate:{bg:"#f8fafc",bd:"#cbd5e1",bar:"#64748b",tx:"#334155",txd:"#1e293b"},
 };
+// FIX 2026-07-22: las 3 columnas usaban display:grid (grid-template-columns:
+// 1fr 1fr 1fr), que html2canvas soporta de forma incompleta — las columnas no
+// se ajustaban al ancho real y el contenido se salía del margen derecho de la
+// página (816px fijos). Reemplazado por flex con ancho en PX explícito por
+// tarjeta, que html2canvas renderiza de forma confiable (igual que el flex
+// del kpi() de arriba, que nunca mostró este problema).
+const _INF_COL_W = Math.floor((728 - 24) / 3); // 728px área útil (816 - padding), 2 gaps de 12px, 3 columnas
+// FIX 2026-07-22: la etiqueta usaba flex:1 (flex-basis:0%) dentro de la fila
+// flex — html2canvas calcula mal ese ancho "flexible" y lo colapsa a ~0px;
+// con overflow:hidden el texto queda casi invisible (visto como una mancha
+// tenue en el ZIP real, mientras la barra y el % —ambos con ancho fijo—
+// sí se veían bien). Fix: ancho fijo en px para la etiqueta también, nada
+// de flex-grow. _INF_LABEL_W = ancho de tarjeta menos padding, barra, gaps y %.
+const _INF_LABEL_W = _INF_COL_W - 24 /*padding*/ - 56 /*barra*/ - 12 /*gaps*/ - 28 /*%*/;
 const _infStatBar = (dat, color, total) => {
   const C = _INF_COLORS[color] || _INF_COLORS.blue;
   return Object.entries(dat || {}).sort(([, a], [, b]) => b - a).slice(0, 6).map(([k, v]) => {
     const pct = Math.round((v / Math.max(1, total)) * 100);
-    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-      <span style="font-size:8pt;color:#4b5563;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_sanitize(k || "N/R")}</span>
+    return `<div style="display:flex;align-items:center;gap:6px;height:16px;line-height:16px;margin-bottom:4px;overflow:hidden;">
+      <span style="font-size:11px;line-height:16px;color:#4b5563;width:${_INF_LABEL_W}px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_sanitize(k || "N/R")}</span>
       <div style="width:56px;background:#f3f4f6;border-radius:9999px;height:6px;overflow:hidden;flex-shrink:0;"><div style="background:${C.bar};height:100%;border-radius:9999px;width:${pct}%;"></div></div>
-      <span style="font-size:8pt;font-weight:700;color:${C.tx};min-width:24px;text-align:right;">${pct}%</span>
+      <span style="font-size:11px;line-height:16px;font-weight:700;color:${C.tx};width:28px;text-align:right;flex-shrink:0;">${pct}%</span>
     </div>`;
   }).join("");
 };
-const _infBlocks = (arr, total) => arr.filter(t => t.data && Object.keys(t.data).length > 0).map(t => {
-  const C = _INF_COLORS[t.color] || _INF_COLORS.blue;
-  return `<div style="background:${C.bg};border-radius:12px;padding:12px;border:1px solid ${C.bd};">
-    <h4 style="font-weight:700;color:${C.txd};margin:0 0 8px;text-transform:uppercase;font-size:9pt;">${t.title}</h4>
-    ${_infStatBar(t.data, t.color, total)}
-  </div>`;
-}).join("");
+const _infBlocks = (arr, total) => {
+  const cards = arr.filter(t => t.data && Object.keys(t.data).length > 0).map(t => {
+    const C = _INF_COLORS[t.color] || _INF_COLORS.blue;
+    return `<div style="width:${_INF_COL_W}px;box-sizing:border-box;background:${C.bg};border-radius:12px;padding:12px;border:1px solid ${C.bd};">
+      <h4 style="font-weight:700;color:${C.txd};margin:0 0 8px;text-transform:uppercase;font-size:11px;">${t.title}</h4>
+      ${_infStatBar(t.data, t.color, total)}
+    </div>`;
+  });
+  return `<div style="display:flex;flex-wrap:wrap;gap:12px;">${cards.join("")}</div>`;
+};
 const _buildInformeHTMLMod = (informe, d, empName) => {
   informe = informe || {}; d = d || {};
   const total = informe.totalPacientes || 0;
@@ -14556,28 +14579,28 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
     ${hasStats ? `
     <div style="margin-bottom:20px;">
       <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">1. Perfil Demográfico y Ocupacional</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">${_infBlocks([
+      ${_infBlocks([
         { title: "Género", data: stats.genero, color: "pink" },
         { title: "Rango de Edad", data: stats.edad, color: "purple" },
         { title: "Cargo", data: stats.cargo, color: "orange" },
         { title: "Tipo Examen", data: stats.tipoExamen, color: "green" },
         { title: "Tipo Contrato", data: stats.tipoContrato, color: "amber" },
         { title: "Antigüedad", data: stats.antiguedad, color: "lime" },
-      ], total)}</div>
+      ], total)}
     </div>
     <div style="margin-bottom:20px;">
       <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">2. Perfil Clínico y de Salud</h3>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">${_infBlocks([
+      ${_infBlocks([
         { title: "Concepto Aptitud", data: stats.conceptoAptitud, color: "emerald" },
         { title: "IMC", data: stats.imc, color: "blue" },
         { title: "Tensión Arterial", data: stats.ta, color: "red" },
         { title: "Diagnóstico CIE-10", data: stats.diagnosticos, color: "indigo" },
-      ], total)}</div>
+      ], total)}
     </div>` : ""}
     ${pacientes.length > 0 ? `
     <div style="margin-bottom:20px;">
       <h3 style="font-weight:900;color:#374151;text-transform:uppercase;font-size:9pt;margin:0 0 12px;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">3. Matriz Legal — Condiciones de Salud</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #e5e7eb;">
         <thead><tr style="background:#1e3a8a;color:#fff;"><th style="padding:8px;text-align:left;">Trabajador</th><th style="padding:8px;">Edad</th><th style="padding:8px;text-align:left;">Diagnóstico</th><th style="padding:8px;text-align:left;">Concepto</th><th style="padding:8px;text-align:left;">Restricciones</th></tr></thead>
         <tbody>${pacientes.map((p, i) => {
           const cap = (p.conceptoAptitud || "").toLowerCase();
@@ -14601,7 +14624,7 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
       ${ai.recomendacionesInforme ? aiBlock("#ecfdf5", "#a7f3d0", "#065f46", "Recomendaciones — Acciones Correctivas y PVE", ai.recomendacionesInforme) : ""}
       ${(ai.tabla && ai.tabla.length > 0) ? `<div style="margin-bottom:12px;"><p style="font-weight:900;color:#374151;font-size:9pt;text-transform:uppercase;margin:0 0 8px;">📊 Morbilidad Prevalente</p><table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #d1d5db;"><thead><tr style="background:#1e293b;color:#fff;"><th style="padding:8px;text-align:left;">Diagnóstico (CIE-10)</th><th style="padding:8px;text-align:center;">Casos</th><th style="padding:8px;text-align:center;">%</th><th style="padding:8px;text-align:left;">Relación</th></tr></thead><tbody>${ai.tabla.map((r, i) => `<tr style="background:${i % 2 === 0 ? "#fff" : "#f9fafb"};"><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-weight:600;">${_sanitize(r.diagnostico)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;">${_sanitize(r.cantidad)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;color:#4338ca;">${_sanitize(r.porcentaje)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#4b5563;">${_sanitize(r.relacion || "—")}</td></tr>`).join("")}</tbody></table></div>` : ""}
       ${ai.matrizLegalNormativa ? `<div style="margin-top:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px;font-size:9pt;color:#1e3a8a;"><p style="font-weight:900;margin:0 0 8px;text-transform:uppercase;color:#1e40af;">Cumplimiento Normativo</p><p style="text-align:justify;line-height:1.6;margin:0;">${_sanitize(ai.matrizLegalNormativa)}</p></div>` : ""}
-      ${(ai.pveRecomendados && ai.pveRecomendados.length > 0) ? `<div style="margin-top:12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:14px;font-size:9pt;"><p style="font-weight:900;color:#115e59;text-transform:uppercase;margin:0 0 8px;">Programas de Vigilancia Epidemiológica Recomendados</p><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${ai.pveRecomendados.map(pve => `<div style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ccfbf1;border-radius:8px;padding:8px 12px;"><span style="color:#0d9488;font-weight:700;">✓</span><span style="color:#115e59;font-weight:600;">${_sanitize(pve)}</span></div>`).join("")}</div></div>` : ""}
+      ${(ai.pveRecomendados && ai.pveRecomendados.length > 0) ? `<div style="margin-top:12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:14px;font-size:9pt;"><p style="font-weight:900;color:#115e59;text-transform:uppercase;margin:0 0 8px;">Programas de Vigilancia Epidemiológica Recomendados</p><div style="display:flex;flex-wrap:wrap;gap:8px;">${ai.pveRecomendados.map(pve => `<div style="width:340px;box-sizing:border-box;display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ccfbf1;border-radius:8px;padding:8px 12px;"><span style="color:#0d9488;font-weight:700;">✓</span><span style="color:#115e59;font-weight:600;">${_sanitize(pve)}</span></div>`).join("")}</div></div>` : ""}
     </div>` : ""}
   </div>`;
 };
@@ -16215,7 +16238,13 @@ function PortalInformeViewer({ informe, empresaNombre, sbUrl, sbKey }) {
     if (!el) return;
     const w = window.open("", "_blank", "width=1100,height=850");
     if (!w) { alert("Permita ventanas emergentes para imprimir."); return; }
-    w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Informe Epidemiológico — ${empresaNombre}</title><script src="https://cdn.tailwindcss.com"><\/script><style>*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:sans-serif;padding:0;margin:0;}@media print{.no-print{display:none!important;}body{padding:8mm 10mm;}}@page{size:letter landscape;margin:0.8cm 1cm;}</style></head><body><div class="no-print" style="background:#1e3a5f;padding:10px 16px;display:flex;gap:10px;margin-bottom:16px;"><button onclick="window.print()" style="background:#10b981;color:white;border:none;padding:8px 20px;border-radius:6px;font-weight:900;cursor:pointer;">📥 Imprimir / PDF</button><button onclick="window.close()" style="background:#ef4444;color:white;border:none;padding:8px 14px;border-radius:6px;font-weight:900;cursor:pointer;">✕ Cerrar</button></div><div style="padding:16px;">${el.innerHTML}</div></body></html>`);
+    w.document.write(`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Informe Epidemiológico — ${empresaNombre}</title><script src="https://cdn.tailwindcss.com"><\/script><style>*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{font-family:sans-serif;padding:0;margin:0;}@media print{.no-print{display:none!important;}body{padding:8mm 10mm;}}@page{size:letter portrait;margin:0.8cm 1cm;}</style></head><body><div class="no-print" style="background:#1e3a5f;padding:10px 16px;display:flex;gap:10px;margin-bottom:16px;"><button onclick="window.print()" style="background:#10b981;color:white;border:none;padding:8px 20px;border-radius:6px;font-weight:900;cursor:pointer;">📥 Imprimir / PDF</button><button onclick="window.close()" style="background:#ef4444;color:white;border:none;padding:8px 14px;border-radius:6px;font-weight:900;cursor:pointer;">✕ Cerrar</button></div><div style="padding:16px;">${el.innerHTML}</div></body></html>`);
+    // FIX 2026-07-22: pdfinfo confirmó que el PDF real del Portal también sale
+    // en PORTRAIT (612x792pt, "Microsoft Print To PDF"), no landscape como pedía
+    // este @page — mismo driver que ignora el CSS. Eso rotaba 90° el contenido
+    // (diseñado para ancho landscape) dentro de una página portrait angosta,
+    // lo que se veía como "espacio desperdiciado" al final de algunas páginas.
+    // @page ahora coincide con lo que realmente se produce.
     w.document.close();
   };
 
@@ -32866,18 +32895,21 @@ Esta historia clínica debe conservarse mínimo 20 años.
               <LogOut className="rotate-180 w-4 h-4" /> ← Volver
             </button>
             <div className="flex items-center gap-3 flex-wrap">
+              {/* FIX 2026-07-22: cambiar el rango de fechas sin limpiar reportAIResult
+                  permitía "Guardar Informe" con un análisis de IA generado para un
+                  período distinto al que realmente se está guardando/publicando. */}
               <input
                 type="date"
                 className="text-xs border rounded p-1.5"
                 value={reportStartDate}
-                onChange={(e) => setReportStartDate(e.target.value)}
+                onChange={(e) => { setReportStartDate(e.target.value); setReportAIResult(null); }}
               />
               <span className="text-gray-400 text-xs">--</span>
               <input
                 type="date"
                 className="text-xs border rounded p-1.5"
                 value={reportEndDate}
-                onChange={(e) => setReportEndDate(e.target.value)}
+                onChange={(e) => { setReportEndDate(e.target.value); setReportAIResult(null); }}
               />
               <select
                 className="border rounded p-1.5 text-sm max-w-[200px]"
@@ -32942,11 +32974,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   + '.print-bar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: #fff; padding: 8px 16px; display: flex !important; align-items: center; gap: 10px; z-index: 9999; }'
                   + '.print-bar button { display: inline-flex !important; border: none; padding: 6px 16px; border-radius: 6px; font-weight: 900; cursor: pointer; font-size: 9pt; background: #10b981; color: #fff; }'
                   + '.print-bar .btn-close { background: #ef4444; }'
-                  + '@page { size: letter landscape; margin: 0.8cm 1cm; }'
+                  // FIX 2026-07-22: pdfinfo confirmó que el PDF real que llega al
+                  // usuario sale en PORTRAIT (612x792pt, Producer "Microsoft Print
+                  // To PDF") pese a pedir "landscape" aquí — ese driver no respeta
+                  // @page size, y el contenido diseñado para ancho landscape queda
+                  // apretado/rotado dentro de una página portrait angosta. Se fija
+                  // @page a portrait (igual a lo que realmente se produce) y se
+                  // reducen las columnas forzadas de 3-4 a 2 más abajo para que
+                  // quepan bien en ese ancho real, sin desperdiciar espacio.
+                  + '@page { size: letter portrait; margin: 0.8cm 1cm; }'
                   + '@media print { '
                   + '  .print-bar { display: none !important; } '
                   + '  body { padding: 5mm 8mm; } '
-                  + '  * { overflow: visible !important; } '
+                  // FIX 2026-07-22: "*" forzaba overflow:visible en TODO, incluyendo
+                  // los <span class="truncate"> de las tarjetas de estadísticas — eso
+                  // anulaba su overflow:hidden y, con white-space:nowrap intacto, el
+                  // texto largo (p.ej. "Concepto Aptitud") se derramaba sin cortar y
+                  // se superponía con la columna vecina. Se excluye .truncate.
+                  + '  *:not(.truncate) { overflow: visible !important; } '
                   + '  div, section, article { page-break-inside: auto !important; break-inside: auto !important; } '
                   + '  [class*="rounded"] { border-radius: 0 !important; overflow: visible !important; } '
                   + '  [class*="shadow"] { box-shadow: none !important; } '
@@ -32957,9 +33002,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   + '  tr { page-break-inside: avoid !important; break-inside: avoid !important; } '
                   + '  h1,h2,h3,h4 { page-break-after: avoid !important; break-after: avoid !important; } '
                   + '  .grid { display: grid !important; } '
-                  + '  .grid-cols-2 { grid-template-columns: repeat(2, minmax(0,1fr)) !important; } '
-                  + '  .grid-cols-3 { grid-template-columns: repeat(3, minmax(0,1fr)) !important; } '
-                  + '  .grid-cols-4 { grid-template-columns: repeat(4, minmax(0,1fr)) !important; } '
+                  + '  .grid-cols-2, .grid-cols-3, .grid-cols-4 { grid-template-columns: repeat(2, minmax(0,1fr)) !important; } '
                   + '  img { max-width: 100% !important; page-break-inside: avoid !important; } '
                   + '}'
                   + '</style></head><body>'
@@ -32990,7 +33033,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     pacientes: filtered.map(p => ({
                       docNumero: p.docNumero, nombres: p.nombres, edad: p.edad,
                       cargo: p.cargo, diagnosticoPrincipal: p.diagnosticoPrincipal,
-                      conceptoAptitud: p.conceptoAptitud, restricciones: p.restricciones,
+                      conceptoAptitud: p.conceptoAptitud,
+                      // FIX 2026-07-22: antes tomaba solo p.restricciones (texto
+                      // genérico/vacío) — el detalle legal real vive en
+                      // p.analisisRestricciones (lo que sí lee "Reportes" en vivo).
+                      // Portal y ZIP consumen este snapshot, por eso les faltaba.
+                      restricciones: p.analisisRestricciones || p.restricciones || "",
                       tipoExamen: p.tipoExamen,
                     })),
                   };
@@ -33113,15 +33161,29 @@ Esta historia clínica debe conservarse mínimo 20 años.
             {selectedCompanyReport && (
               <button
                 onClick={() => {
-                  setEnvioIntegralEmpresa({
-                    empresaId: selectedCompanyReport,
-                    empresaNombre: compName,
-                    empresaNit: companies.find(c => c.id === selectedCompanyReport)?.nit || "",
-                    totalPacientes: total,
-                    periodo: (reportStartDate || "") + " — " + (reportEndDate || ""),
-                    precioPaciente: precioPorPaciente || "35000",
-                  });
-                  setShowEnvioIntegral(true);
+                  const _abrirEnvio = () => {
+                    setEnvioIntegralEmpresa({
+                      empresaId: selectedCompanyReport,
+                      empresaNombre: compName,
+                      empresaNit: companies.find(c => c.id === selectedCompanyReport)?.nit || "",
+                      totalPacientes: total,
+                      periodo: (reportStartDate || "") + " — " + (reportEndDate || ""),
+                      precioPaciente: precioPorPaciente || "35000",
+                    });
+                    setShowEnvioIntegral(true);
+                  };
+                  // FIX 2026-07-22: no había ningún aviso si se enviaba el paquete sin
+                  // haber generado/guardado el análisis de IA para este informe — el
+                  // informe quedaba publicado con la sección de IA vacía o ausente.
+                  const _infGuardado = savedInformes.some(i => i.empresaId === selectedCompanyReport && !i.tipo);
+                  if (!reportAIResult && !_infGuardado) {
+                    showConfirm(
+                      "⚠️ Aún no has generado el Análisis Inteligente (IA) para este informe.\n\nSi continúas, el informe se enviará a la empresa SIN el análisis de IA.\n\n¿Deseas continuar de todas formas?",
+                      _abrirEnvio
+                    );
+                  } else {
+                    _abrirEnvio();
+                  }
                 }}
                 className="bg-emerald-700 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-2"
               >
@@ -59993,7 +60055,11 @@ body{padding-top:52px;}
                         // Banco / pago
                         bankName: cuentaData.bankName || (activeDoctorData?.banco || "BANCOLOMBIA"),
                         accountType: cuentaData.accountType || (activeDoctorData?.tipoCuenta || "Ahorros"),
-                        accountNumber: cuentaData.accountNumber || (activeDoctorData?.cuentaBancaria || ""),
+                        // FIX 2026-07-22: el perfil del médico guarda el número de
+                        // cuenta en "numeroCuenta" (verificado en D1) — "cuentaBancaria"
+                        // no existe en ese objeto, por eso la cuenta de cobro publicada
+                        // al portal llegaba sin número de cuenta bancaria.
+                        accountNumber: cuentaData.accountNumber || (activeDoctorData?.numeroCuenta || ""),
                         rut: activeDoctorData?.cedula || "1061750704",
                         // Médico acreedor
                         doctorNombre: (activeDoctorData?.nombre || "JULIAN CUCALON").toUpperCase(),
