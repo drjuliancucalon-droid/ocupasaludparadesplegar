@@ -20268,11 +20268,35 @@ function AppInner() {
           // ── Empresas ───────────────────────────────────────────────────────
           if (key.startsWith("siso_companies_") && Array.isArray(value) && value.length > 0) {
             setCompanies(prev => {
-              if (value.length > prev.length || JSON.stringify(value) !== JSON.stringify(prev)) {
-                _ls.setItem(_compKey(userId), JSON.stringify(value));
-                return value;
+              // FIX 2026-07-24: antes esto hacía "return value" (REEMPLAZO ciego)
+              // cada vez que la nube difería de lo local. Si la copia en la nube
+              // estaba momentáneamente incompleta (carrera de escritura, lag
+              // D1/Supabase), una empresa que sí existía localmente (caso real:
+              // BIOESCOL) desaparecía de "companies", y un guardado posterior
+              // propagaba la pérdida de vuelta a D1 Y Supabase — desapareciendo
+              // la empresa en TODAS las fuentes de forma permanente. Ahora se
+              // FUSIONA por id/NIT, igual que ya se hace con pacientes arriba
+              // y con empresas en D1ChangesWatcher: nunca se descarta una
+              // empresa que ya estaba en memoria.
+              const _normNit = (c) => (c?.nit || "").toString().replace(/[^0-9]/g, "");
+              const merged = [...value];
+              const _ids = new Set(merged.filter(c => c && c.id != null).map(c => String(c.id)));
+              const _nits = new Set(merged.map(_normNit).filter(Boolean));
+              let changed = value.length !== prev.length;
+              for (const lc of prev) {
+                if (!lc) continue;
+                const idStr = lc.id != null ? String(lc.id) : null;
+                const nit = _normNit(lc);
+                if (idStr && _ids.has(idStr)) continue;
+                if (nit && _nits.has(nit)) continue;
+                merged.push(lc);
+                if (idStr) _ids.add(idStr);
+                if (nit) _nits.add(nit);
+                changed = true;
               }
-              return prev;
+              if (!changed && JSON.stringify(merged) === JSON.stringify(prev)) return prev;
+              _ls.setItem(_compKey(userId), JSON.stringify(merged));
+              return merged;
             });
           }
 
