@@ -20299,8 +20299,13 @@ function AppInner() {
       : userId || "shared";
 
     // Cooldown: misma vista, mismo usuario → esperar 60 s
+    // FIX 2026-07-28: la vista "companies" queda EXENTA del cooldown de 5 min.
+    // Ese cooldown existe para no repetir descargas pesadas (pacientes, 6.6MB),
+    // pero la lista de empresas pesa ~16KB: hacerla esperar 5 minutos era lo
+    // que mantenía una empresa recién creada/restaurada invisible en pantalla.
+    const _esVistaLigera = view === "companies";
     const ck = `${view}::${userId}`;
-    if (now - (_viewRefreshTs.current[ck] || 0) < _VIEW_COOLDOWN) return;
+    if (!_esVistaLigera && now - (_viewRefreshTs.current[ck] || 0) < _VIEW_COOLDOWN) return;
     _viewRefreshTs.current[ck] = now;
 
     // Si venimos de "historia", no recargamos pacientes desde Supabase ahora mismo.
@@ -20632,6 +20637,47 @@ function AppInner() {
     `;
     document.head.appendChild(style);
   }, []);
+  // FIX 2026-07-28 (radical): trae SIEMPRE las empresas de la nube al arrancar
+  // y las FUSIONA por id/NIT con las locales. Ver nota completa en el punto de
+  // llamada. Solo agrega: jamás descarta una empresa local ni una remota.
+  const _sincronizarEmpresasArranque = useCallback(async (sessionUser) => {
+    if (!sessionUser || !_WORKER_TOKEN) return;
+    try {
+      const _norm = (c) => (c?.nit || "").toString().replace(/[^0-9]/g, "");
+      // Unir lo que haya en la clave del usuario y en la compartida.
+      const [remUser, remShared] = await Promise.all([
+        _workerGet(_compKeyCloud(sessionUser)).catch(() => null),
+        _workerGet("siso_companies_shared").catch(() => null),
+      ]);
+      const remotas = [
+        ...(Array.isArray(remUser) ? remUser : []),
+        ...(Array.isArray(remShared) ? remShared : []),
+      ];
+      if (remotas.length === 0) return; // nube no respondió → conservar lo local intacto
+      setCompanies((prev) => {
+        const base = Array.isArray(prev) ? prev : [];
+        const ids = new Set(base.filter(c => c && c.id != null).map(c => String(c.id)));
+        const nits = new Set(base.map(_norm).filter(Boolean));
+        const nuevas = [];
+        for (const rc of remotas) {
+          if (!rc) continue;
+          const idStr = rc.id != null ? String(rc.id) : null;
+          const nit = _norm(rc);
+          if (idStr && ids.has(idStr)) continue;
+          if (nit && nits.has(nit)) continue;
+          nuevas.push(rc);
+          if (idStr) ids.add(idStr);
+          if (nit) nits.add(nit);
+        }
+        if (nuevas.length === 0) return prev;
+        const merged = [...base, ...nuevas];
+        try { _ls.setItem(_compKey(sessionUser), JSON.stringify(merged)); } catch {}
+        console.log(`[SISO] ✅ ${nuevas.length} empresa(s) recuperada(s) desde la nube en arranque: ${nuevas.map(c => c.nombre).join(", ")}`);
+        return merged;
+      });
+    } catch (e) { console.warn("[SISO] sync empresas arranque:", e?.message); }
+  }, []);
+
   // Load desde localStorage (inmediato) + Supabase (en background, gana si más reciente)
   useEffect(() => {
     // 1. Carga local inmediata para que la UI no espere
@@ -20760,6 +20806,19 @@ function AppInner() {
         } else {
           dataReadyRef.current = true;
         }
+        // ── EMPRESAS: SINCRONIZACIÓN INCONDICIONAL EN CADA ARRANQUE ──────────
+        // FIX 2026-07-28 (radical): el bloque de arriba solo consulta la nube
+        // cuando la lista LOCAL está VACÍA (`_localCompsNow.length === 0`).
+        // Con 35 empresas en localStorage esa condición nunca se cumple, así
+        // que una empresa que SÍ existe en D1 (caso real repetido: BIOESCOL)
+        // no aparecía jamás en este dispositivo — el dato estaba bien en la
+        // nube, pero la app nunca lo miraba. El fix previo (merge en el
+        // auto-refresh por vista) no bastaba: depende de entrar a esa vista y
+        // de un cooldown de 5 min, así que el arranque quedaba sin cubrir.
+        // Las empresas pesan ~16KB (vs 6.6MB de pacientes): leerlas SIEMPRE
+        // cuesta ~300ms y es imperceptible. La fusión es solo ADITIVA por
+        // id/NIT — nunca descarta nada local ni remoto.
+        _sincronizarEmpresasArranque(sessionUser);
       }
     } else {
       // ══ Cache vacío — ESPERAR a Supabase antes de permitir login ══
