@@ -267,51 +267,22 @@ export const syncNow = async () => {
       }
     }
 
-    // FASE 2: Descargar novedades de D1 → IndexedDB (D1 PRIMARIO)
-    // FIX 2026-06-05: cambio de _sbGetAll() a _d1GetAll() — D1 autoritativo.
-    // Esto elimina el bug de sobrescritura donde SB tenía datos viejos y
-    // los metía sobre datos nuevos en local.
-    // AUDITORÍA 2026-07-11: throttle — ver _FULL_SYNC_MIN_GAP_MS arriba.
-    const _sinceFull = Date.now() - _state.lastFullSyncAt;
-    if (_sinceFull < _FULL_SYNC_MIN_GAP_MS) {
-      console.log(`[SISO SYNC] Descarga completa omitida (hace ${Math.round(_sinceFull / 1000)}s, cooldown ${_FULL_SYNC_MIN_GAP_MS / 1000}s)`);
-    } else {
-    _state.lastFullSyncAt = Date.now();
-    let cloudData = await _d1GetAll().catch(() => null);
-    let fuente = 'D1';
-    // FIX 2026-07-12 (V15): NUNCA hacer fallback a Supabase.
-    // Si D1 no responde, SALTAR este ciclo completamente.
-    // Supabase tiene datos viejos que sobreescribirían IndexedDB
-    // y causarían pérdida de datos recientes.
-    if (!cloudData) {
-      console.warn('[SISO SYNC] D1 no disponible — ciclo de descarga saltado. Datos locales preservados.');
-      _notify('d1-unavailable');
-      _state.isSyncing = false;
-      return;
-    }
-    if (cloudData) {
-      const localData = await idbGetAll();
-      let updated = 0;
-
-      for (const [key, cloudEntry] of Object.entries(cloudData)) {
-        const localEntry = localData[key];
-        const cloudTs = new Date(cloudEntry.updatedAt || 0).getTime();
-        const locTs   = new Date(localEntry?.updatedAt || 0).getTime();
-
-        // Cloud más reciente → actualizar local
-        if (!localEntry || cloudTs > locTs) {
-          await idbSet(key, cloudEntry.value, cloudEntry.updatedAt);
-          try { localStorage.setItem(key, JSON.stringify(cloudEntry.value)); } catch {}
-          updated++;
-        }
-      }
-
-      if (updated > 0) {
-        console.log(`[SISO SYNC] ${updated} claves actualizadas desde ${fuente}`);
-        _notify('updated', { count: updated });
-      }
-    }
-    } // fin del cooldown de la FASE 2
+    // FASE 2: DESACTIVADA — descarga completa de D1 → IndexedDB.
+    // FIX 2026-07-28: _d1GetAll() pedía /store/prefix/siso_ (TODO lo que
+    // empieza con "siso_" — prácticamente la base de datos completa). Con
+    // el volumen actual eso son ~54MB y hasta 22s (ver AUDITORÍA 2026-07-11
+    // más arriba), y es la causa confirmada de los 500/timeouts intermitentes
+    // reportados por el usuario. Además el reemplazo de FASE 2 comparaba una
+    // sola marca de tiempo POR CLAVE COMPLETA (ej. todo el array de
+    // pacientes de una vez), no registro por registro — si la nube tenía esa
+    // marca de tiempo más nueva por un cambio en OTRO registro, reemplazaba
+    // el bloque local entero, con riesgo real de perder un registro agregado
+    // localmente que aún no había subido.
+    // App.jsx ya mantiene sincronizados pacientes/empresas con lecturas
+    // puntuales por clave + fusión por id (no reemplazo ciego), que es más
+    // rápido y seguro que esta descarga completa. Se deja FASE 1 (subir cola
+    // pendiente) y FASE 3 (auditoría) intactas — solo se desactiva esta.
+    console.log('[SISO SYNC] Fase 2 (descarga completa D1) desactivada — ver fix 2026-07-28');
 
     // FASE 3: Flush audit queue
     await _flushAuditQueue();

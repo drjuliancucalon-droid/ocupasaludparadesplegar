@@ -19882,11 +19882,26 @@ function AppInner() {
           console.log("[AUDIT] ✅ LS ↔ D1 sincronizados");
           _markUnsyncedHC(false);
         }
-        // Detectar pacientes en D1 que faltan en LS (solo log)
+        // Detectar pacientes en D1 que faltan en LS y AGREGARLOS (fusión aditiva)
+        // FIX 2026-07-28: antes esto solo hacía console.warn — el médico veía la
+        // advertencia en consola pero los pacientes nunca se agregaban a la
+        // pantalla, así que recargar la página no los mostraba pese a existir
+        // en D1. Ahora se fusionan: solo se AGREGA lo que falta, nunca se toca
+        // ni reemplaza nada que ya exista localmente (mismo patrón seguro ya
+        // usado para "noEnD1" arriba y para empresas en otro punto del código).
         const lsIds = new Set(lsPats.filter(p => p?.id).map(p => p.id));
         const noEnLS = remote.filter(p => p?.id && !lsIds.has(p.id));
-        if (noEnLS.length > 0 && noEnLS.length <= 20) {
-          console.warn(`[AUDIT] ℹ️ ${noEnLS.length} pacientes en D1 ausentes en LS (otros dispositivos)`);
+        if (noEnLS.length > 0) {
+          console.log(`[AUDIT] ℹ️ ${noEnLS.length} pacientes en D1 ausentes en LS — agregando a la lista local...`);
+          setPatientsList(prev => {
+            const prevIds = new Set(prev.filter(p => p?.id).map(p => p.id));
+            const toAdd = noEnLS.filter(p => !prevIds.has(p.id));
+            if (toAdd.length === 0) return prev;
+            const merged = [...prev, ...toAdd];
+            try { _ls.setItem(_patKey(sid), JSON.stringify(merged)); } catch {}
+            console.log(`[AUDIT] ✅ ${toAdd.length} paciente(s) agregado(s) desde D1`);
+            return merged;
+          });
         }
       } catch (e) { console.warn("[AUDIT] excepción:", e?.message); }
     }, 8000);
