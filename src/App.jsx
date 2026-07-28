@@ -23699,7 +23699,20 @@ const handleLogin = (u, p) => {
     });
     return changed ? out : list;
   };
-  const _syncPatients = (list) => {
+  // FIX 2026-07-28: antes la escritura a D1 corría en una IIFE "disparar y
+  // olvidar" — ningún caller podía saber si realmente se guardó. Al cerrar
+  // una HC, el registro se publicaba de forma garantizada (bloqueante) en
+  // el portal/certificado, pero la actualización de la LISTA MAESTRA de
+  // pacientes podía fallar en silencio sin que nadie lo esperara (incidente
+  // real: 3 pacientes con certificado completo — derivaciones, exámenes,
+  // recomendaciones — que nunca llegaron a la lista maestra en D1, invisibles
+  // en "Pacientes Vistos" pese a tener HC cerrada y certificado emitido).
+  // Ahora _syncPatients es async y devuelve si la escritura a D1 tuvo éxito;
+  // el cierre de HC la espera (await) ANTES de publicar el certificado, para
+  // no repetir esa desincronización. El resto de los llamadores (autoguardado,
+  // ediciones menores) puede seguir invocándola sin await — no cambia su
+  // comportamiento "disparar y olvidar".
+  const _syncPatients = async (list) => {
     const _suid = currentUser?.empresaId
       ? "empresa_" + currentUser.empresaId
       : currentUser?.user || "shared";
@@ -23734,47 +23747,46 @@ const handleLogin = (u, p) => {
     // que el cliente no conoce (independiente del delta total), se preserva.
     // Garantía: ningún paciente histórico se pierde por una escritura desde
     // un cliente con vista incompleta.
-    if (_WORKER_TOKEN) {
-      (async () => {
-        try {
-          const remote = await _workerGet(key).catch(() => null);
-          let finalList = list;
-          if (Array.isArray(remote) && remote.length > 0) {
-            const localIds  = new Set(list.filter(p => p?.id).map(p => p.id));
-            const localDocs = new Set(list.filter(p => p?.docNumero).map(p => p.docNumero.toString().trim()));
-            const extras = remote.filter(p => {
-              if (!p || (!p.id && !p.docNumero)) return false;
-              if (p.id && localIds.has(p.id)) return false;
-              if (p.docNumero && localDocs.has(p.docNumero.toString().trim())) return false;
-              return true;
-            });
-            if (extras.length > 0) {
-              finalList = [...list, ...extras];
-              console.warn(`[_syncPatients] MERGE anti-regresión: cliente=${list.length}, D1=${remote.length}, +${extras.length} preservados = ${finalList.length}`);
-              // Persistir merge en LS + React state — tolerante a quota
-              _idbSet(key, finalList).catch(() => {}); // ETAPA 1: espejo del merge
-              try { _ls.setItem(key, JSON.stringify(_stripFirmaLS(finalList))); } catch (e) {
-                console.warn("[_syncPatients] LS quota:", e?.message);
-              }
-              try { setPatientsList(finalList); } catch {}
-            }
+    if (!_WORKER_TOKEN) return true;
+    try {
+      const remote = await _workerGet(key).catch(() => null);
+      let finalList = list;
+      if (Array.isArray(remote) && remote.length > 0) {
+        const localIds  = new Set(list.filter(p => p?.id).map(p => p.id));
+        const localDocs = new Set(list.filter(p => p?.docNumero).map(p => p.docNumero.toString().trim()));
+        const extras = remote.filter(p => {
+          if (!p || (!p.id && !p.docNumero)) return false;
+          if (p.id && localIds.has(p.id)) return false;
+          if (p.docNumero && localDocs.has(p.docNumero.toString().trim())) return false;
+          return true;
+        });
+        if (extras.length > 0) {
+          finalList = [...list, ...extras];
+          console.warn(`[_syncPatients] MERGE anti-regresión: cliente=${list.length}, D1=${remote.length}, +${extras.length} preservados = ${finalList.length}`);
+          // Persistir merge en LS + React state — tolerante a quota
+          _idbSet(key, finalList).catch(() => {}); // ETAPA 1: espejo del merge
+          try { _ls.setItem(key, JSON.stringify(_stripFirmaLS(finalList))); } catch (e) {
+            console.warn("[_syncPatients] LS quota:", e?.message);
           }
-          // Escribir versión final (mergeada o original) a D1
-          // FIX 2026-06-13: si una escritura falla, encolar para reintento automático.
-          const slimFinal = finalList.map(_slimPatient);
-          const ok1 = await _workerSet(cloudKey, slimFinal).catch(() => false);
-          if (!ok1) { _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); }
-          const ok2 = await _workerSet(key,      slimFinal).catch(() => false);
-          if (!ok2) { _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); }
-          // Aviso "HCs sin respaldo": marca si alguna de las dos escrituras
-          // falló (el array no cabe en la cola de pendientes); limpia cuando
-          // ambas vuelven a lograrse.
-          _markUnsyncedHC(!(ok1 && ok2));
-        } catch (e) {
-          console.warn("[_syncPatients] async D1 falló:", e?.message);
-          _markUnsyncedHC(true);
+          try { setPatientsList(finalList); } catch {}
         }
-      })();
+      }
+      // Escribir versión final (mergeada o original) a D1
+      // FIX 2026-06-13: si una escritura falla, encolar para reintento automático.
+      const slimFinal = finalList.map(_slimPatient);
+      const ok1 = await _workerSet(cloudKey, slimFinal).catch(() => false);
+      if (!ok1) { _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); }
+      const ok2 = await _workerSet(key,      slimFinal).catch(() => false);
+      if (!ok2) { _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); }
+      // Aviso "HCs sin respaldo": marca si alguna de las dos escrituras
+      // falló (el array no cabe en la cola de pendientes); limpia cuando
+      // ambas vuelven a lograrse.
+      _markUnsyncedHC(!(ok1 && ok2));
+      return ok1 && ok2;
+    } catch (e) {
+      console.warn("[_syncPatients] async D1 falló:", e?.message);
+      _markUnsyncedHC(true);
+      return false;
     }
   };
   // FIX 2026-06-09 (Opción B): helper genérico para escribir arrays con MERGE
@@ -24020,7 +24032,19 @@ const handleLogin = (u, p) => {
           if (idx >= 0) list[idx] = closed;
           else list.push(closed);
           setPatientsList(list);
-          _syncPatients(list); // escribe a localStorage (sync) y Supabase (async)
+          // FIX 2026-07-28: antes esto no se esperaba — la escritura a D1 de
+          // la LISTA MAESTRA corría en segundo plano mientras el cierre
+          // seguía de inmediato a publicar el certificado (bloqueante). Si
+          // esa escritura fallaba (ej. inestabilidad de red), el certificado
+          // quedaba publicado igual pero el paciente nunca llegaba a la
+          // lista maestra — invisible en "Pacientes Vistos" pese a tener HC
+          // cerrada y certificado emitido (incidente real: 3 casos así).
+          // Ahora se espera (await) y, si falla, se avisa de inmediato — no
+          // basta con la cola de reintento silenciosa para este momento crítico.
+          const _syncOk = await _syncPatients(list); // D1 (bloqueante) + localStorage + Supabase
+          if (!_syncOk) {
+            showAlert("⚠️ El paciente se cerró y el certificado se publicó, pero la lista maestra de pacientes no pudo guardarse en la nube en este momento. Quedó en cola de reintento automático — verifica el aviso 'HCs sin respaldo' en el encabezado hasta que se confirme.");
+          }
         }
         // PORTAL PÚBLICO: guardar resumen en clave pública (sin RLS)
         // Política SQL necesaria: CREATE POLICY portal_public_read ON siso_store FOR SELECT USING (key LIKE 'siso_portal_%');
