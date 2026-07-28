@@ -18267,6 +18267,16 @@ function AppInner() {
     } catch {}
     return initialOccupPatientState;
   });
+  // FIX 2026-07-24: en "Antecedentes" y "Revisión por Sistemas" (HC General),
+  // el textarea solo se mostraba si el campo YA tenía texto (hasContent
+  // derivado del propio valor) — pero al marcar "Sí" el valor se ponía en ""
+  // (vacío), que nunca cumplía esa condición: el cuadro de texto nunca
+  // aparecía y el médico no podía escribir. Este flag es SOLO de UI (no
+  // toca data.antecedentes/revisionSistemas, que siguen siendo strings
+  // planos leídos igual por la impresión y el prompt de IA) — solo decide
+  // si mostrar el textarea cuando el usuario acaba de marcar "Sí"/"Anormal"
+  // y aún no ha escrito nada.
+  const [_hcSiFlags, _setHcSiFlags] = useState({});
   const [dataType, setDataType] = useState(() => {
     try {
       return (
@@ -22227,7 +22237,7 @@ Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomenda
       const seg = ["cabeza","cuello","torax","abdomen","extremidades","neurologico"];
       return seg.map(k => sp[k]?.hallazgo ? `${k.charAt(0).toUpperCase()+k.slice(1)}: ${sp[k].hallazgo}` : null).filter(Boolean).join(" | ") || "Examen segmentario normal";
     };
-    const prompt = `Eres médico general con más de 20 años de experiencia clínica en Colombia, especializado en medicina ambulatoria integral, medicina interna y salud pública. Tu razonamiento clínico es meticuloso, empático y fundamentado en evidencia actualizada (guías GPC-Minsalud e internacionales). Analizas cada paciente de forma integral —bio-psico-social— considerando su contexto ocupacional, sus antecedentes completos y todos los hallazgos clínicos. Devuelve ÚNICAMENTE JSON válido, sin markdown, sin texto adicional.
+    const prompt = `Eres médico especialista con más de 15 años de experiencia clínica en Colombia, con dominio integral en múltiples áreas —medicina interna, cirugía, ginecología, sexología clínica y pediatría—, razonando en cada caso como lo haría el especialista más pertinente según el motivo de consulta específico del paciente. Tu razonamiento clínico es meticuloso, empático y fundamentado en evidencia actualizada (guías GPC-Minsalud e internacionales). Analizas cada paciente de forma integral —bio-psico-social— considerando su contexto ocupacional, sus antecedentes completos y todos los hallazgos clínicos. Devuelve ÚNICAMENTE JSON válido, sin markdown, sin texto adicional.
 
 ════════════════ HISTORIA CLÍNICA COMPLETA ════════════════
 
@@ -31146,11 +31156,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 val &&
                 val.trim().length > 0 &&
                 val.trim().toLowerCase() !== "niega";
+              // FIX 2026-07-24: mostrar el textarea también cuando el usuario
+              // acaba de marcar "Sí" pero aún no escribió nada (hasContent
+              // sigue en false porque el valor real todavía está vacío).
+              const _flagKey = "ant_" + a.k;
+              const showTextarea = hasContent || !!_hcSiFlags[_flagKey];
               return (
                 <div
                   key={a.k}
                   className={`p-1.5 border rounded text-[10px] ${
-                    hasContent
+                    showTextarea
                       ? "bg-red-50 border-red-200"
                       : "bg-gray-50 border-gray-200"
                   } print:bg-transparent print:border-gray-300`}
@@ -31164,16 +31179,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <label className="cursor-pointer flex items-center gap-0.5">
                         <input
                           type="radio"
-                          checked={!hasContent}
-                          onChange={() =>
+                          checked={!showTextarea}
+                          onChange={() => {
                             setData((p) => ({
                               ...p,
                               antecedentes: {
                                 ...p.antecedentes,
                                 [a.k]: "Niega",
                               },
-                            }))
-                          }
+                            }));
+                            _setHcSiFlags((f) => ({ ...f, [_flagKey]: false }));
+                          }}
                           className="w-3 h-3"
                         />
                         <span>No</span>
@@ -31181,13 +31197,14 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <label className="cursor-pointer flex items-center gap-0.5 text-red-600">
                         <input
                           type="radio"
-                          checked={hasContent}
-                          onChange={() =>
+                          checked={showTextarea}
+                          onChange={() => {
                             setData((p) => ({
                               ...p,
                               antecedentes: { ...p.antecedentes, [a.k]: "" },
-                            }))
-                          }
+                            }));
+                            _setHcSiFlags((f) => ({ ...f, [_flagKey]: true }));
+                          }}
                           className="w-3 h-3"
                         />
                         <span>Sí</span>
@@ -31202,7 +31219,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       {hasContent ? "✓ Positivo" : "✗ Niega"}
                     </span>
                   </div>
-                  {hasContent && (
+                  {showTextarea && (
                     <textarea
                       value={val}
                       onChange={(e) =>
@@ -31297,11 +31314,16 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 val.trim().toLowerCase() !== "niega" &&
                 !val.toLowerCase().includes("sin síntomas") &&
                 !val.toLowerCase().includes("niega");
+              // FIX 2026-07-24: mostrar el textarea también al marcar "Anormal"
+              // aunque isAbnormal siga en false porque el valor real todavía
+              // está vacío (mismo bug que en Antecedentes, arriba).
+              const _flagKey = "rs_" + s.k;
+              const showTextarea = isAbnormal || !!_hcSiFlags[_flagKey];
               return (
                 <div
                   key={s.k}
                   className={`border-b border-gray-200 pb-1.5 print:border-gray-300 ${
-                    isAbnormal ? "bg-red-50 rounded p-1" : ""
+                    showTextarea ? "bg-red-50 rounded p-1" : ""
                   }`}
                 >
                   <div className="flex justify-between items-center mb-0.5">
@@ -31313,16 +31335,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <label className="text-[10px] cursor-pointer flex items-center gap-1">
                         <input
                           type="radio"
-                          checked={!isAbnormal}
-                          onChange={() =>
+                          checked={!showTextarea}
+                          onChange={() => {
                             setData((p) => ({
                               ...p,
                               revisionSistemas: {
                                 ...p.revisionSistemas,
                                 [s.k]: s.normal,
                               },
-                            }))
-                          }
+                            }));
+                            _setHcSiFlags((f) => ({ ...f, [_flagKey]: false }));
+                          }}
                           className="text-emerald-600"
                         />
                         <span className="text-emerald-700 font-bold">
@@ -31332,16 +31355,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       <label className="text-[10px] cursor-pointer flex items-center gap-1">
                         <input
                           type="radio"
-                          checked={isAbnormal}
-                          onChange={() =>
+                          checked={showTextarea}
+                          onChange={() => {
                             setData((p) => ({
                               ...p,
                               revisionSistemas: {
                                 ...p.revisionSistemas,
                                 [s.k]: "",
                               },
-                            }))
-                          }
+                            }));
+                            _setHcSiFlags((f) => ({ ...f, [_flagKey]: true }));
+                          }}
                           className="text-red-600"
                         />
                         <span className="text-red-600 font-bold">Anormal</span>
@@ -31356,7 +31380,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       {isAbnormal ? "✗ Anormal" : "✓ Normal"}
                     </span>
                   </div>
-                  {isAbnormal ? (
+                  {showTextarea ? (
                     <textarea
                       rows={2}
                       value={val}
