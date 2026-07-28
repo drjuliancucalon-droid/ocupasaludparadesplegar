@@ -25624,13 +25624,34 @@ Esta historia clínica debe conservarse mínimo 20 años.
     }
     sections.push(sec("📋", "Antecedentes") + tb(antRows || r1("Sin antecedentes", "No registra")));
 
+    // ═══ 7b. REVISIÓN POR SISTEMAS (solo HC General) ═══
+    // FIX 2026-07-28: esta sección no existía en la impresión — data.revisionSistemas
+    // (formulario en 31310-31404, usado también por el prompt de IA generateAIGeneral)
+    // nunca se leía, así que el detalle que el médico documenta ahí desaparecía del PDF.
+    var _rs = data.revisionSistemas || {};
+    var _rsLabels = {general:"General",cardiovascular:"Cardiovascular",respiratorio:"Respiratorio",digestivo:"Digestivo",genitourinario:"Genitourinario",musculoesqueletico:"Musculoesquelético",neurologico:"Neurológico",dermatologico:"Dermatológico",endocrinologico:"Endocrinológico"};
+    var _rsRows = Object.keys(_rsLabels).map(function(k) {
+      var val = (_rs[k] || "").trim();
+      var isAbn = val && val.toLowerCase() !== "niega" && val.toLowerCase().indexOf("sin síntomas") === -1;
+      var color = isAbn ? "#dc2626" : "#065f46";
+      var texto = val || "Sin alteraciones referidas";
+      return '<tr><th style="background:#d1fae5;font-weight:700;width:28%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(_rsLabels[k]) + '</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;color:' + color + ';" colspan="3">' + _e(texto) + '</td></tr>';
+    }).join("");
+    if (Object.keys(_rs).some(function(k) { return (_rs[k] || "").trim(); })) {
+      sections.push(sec("🔄", "Revisión por Sistemas") + tb(_rsRows));
+    }
+
     // ═══ 8. SIGNOS VITALES ═══
+    // FIX 2026-07-28: para HC General estos datos viven en data.examenFisico.*
+    // (formulario en 31415-31499), no en los campos top-level de Ocupacional
+    // (data.ta, data.fc, etc.) — antes siempre salía "--" en HC General.
+    var _ef = data.examenFisico || {};
     sections.push(sec("🔍", "Signos Vitales") + tb(
-      r2("Tensión Arterial", data.ta||data.tensionArterial||"--", "F. Cardíaca", (data.fc||data.frecuenciaCardiaca||"--")+" lpm") +
-      r2("F. Respiratoria", (data.fr||data.frecuenciaRespiratoria||"--")+" rpm", "Temperatura", (data.temp||data.temperatura||"--")+"°C") +
-      r2("Peso", (data.peso||"--")+" kg", "Talla", (data.talla||"--")+" cm") +
-      r2("IMC", data.imc||"--", "Clasificación IMC", data.clasificacionIMC||"--") +
-      r2("SpO2", (data.satO2||"--")+"%", "Perímetro Abdominal", (data.perimetroAbdominal||"--")+" cm")
+      r2("Tensión Arterial", data.ta||data.tensionArterial||_ef.ta||"--", "F. Cardíaca", (data.fc||data.frecuenciaCardiaca||_ef.fc||"--")+" lpm") +
+      r2("F. Respiratoria", (data.fr||data.frecuenciaRespiratoria||_ef.fr||"--")+" rpm", "Temperatura", (data.temp||data.temperatura||_ef.temp||"--")+"°C") +
+      r2("Peso", (data.peso||_ef.peso||"--")+" kg", "Talla", (data.talla||_ef.talla||"--")+" cm") +
+      r2("IMC", data.imc||_ef.imc||"--", "Clasificación IMC", data.clasificacionIMC||"--") +
+      r2("SpO2", (data.satO2||_ef.saturacion||_ef.spo2||"--")+"%", "Perímetro Abdominal", (data.perimetroAbdominal||"--")+" cm")
     ));
 
     // ═══ 9. AGUDEZA VISUAL ═══
@@ -25643,9 +25664,18 @@ Esta historia clínica debe conservarse mínimo 20 años.
       ));
     }
 
-    // ═══ 10. EXAMEN FÍSICO POR SISTEMAS — TODOS 15 SISTEMAS ═══
-    var efSis = data.examenFisicoSistemas || {};
-    var allSystems = ["cabeza","ojos","oidos","nariz","boca","cuello","torax","corazon","pulmones","abdomen","genitourinario","columna","extremidades","piel","neurologico"];
+    // ═══ 10. EXAMEN FÍSICO POR SISTEMAS ═══
+    // FIX 2026-07-28: HC General guarda esto en data.sistemasPorExamen (solo 6
+    // sistemas: cabeza, cuello, tórax, abdomen, extremidades, neurológico —
+    // formulario en 31535-31620), NO en data.examenFisicoSistemas (15
+    // sistemas, exclusivo del formulario Ocupacional). Antes siempre salía
+    // "Normal" en los 15 para HC General, aunque el médico nunca examinó la
+    // mayoría. Ahora se usa la lista correcta según dataType.
+    var _esGeneral = dataType === "general";
+    var efSis = _esGeneral ? (data.sistemasPorExamen || {}) : (data.examenFisicoSistemas || {});
+    var allSystems = _esGeneral
+      ? ["cabeza","cuello","torax","abdomen","extremidades","neurologico"]
+      : ["cabeza","ojos","oidos","nariz","boca","cuello","torax","corazon","pulmones","abdomen","genitourinario","columna","extremidades","piel","neurologico"];
     var sysLabels = {cabeza:"Cabeza",ojos:"Ojos",oidos:"Oídos",nariz:"Nariz",boca:"Boca/Faringe",cuello:"Cuello",torax:"Tórax",corazon:"Corazón",pulmones:"Pulmones",abdomen:"Abdomen",genitourinario:"Genitourinario",columna:"Columna",extremidades:"Extremidades",piel:"Piel/Faneras",neurologico:"Neurológico"};
     var sysRows = allSystems.map(function(k) {
       var v = efSis[k] || {};
@@ -25847,7 +25877,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
       (data.vigencia ? '<p style="text-align:center;font-size:8.5pt;color:#555;margin-bottom:8px;">Vigencia: ' + _e(data.vigencia) + '</p>' : ""));
 
     // ═══ 16. RECOMENDACIONES ═══
-    var recomParts = [data.recomendaciones, data.recomendacionesOcupacionales, data.recomendacionesMedicas].filter(Boolean);
+    // FIX 2026-07-28: generateAIGeneral (HC General) guarda las recomendaciones
+    // en data.plan.recomendaciones — se veían en pantalla ("Recomendaciones al
+    // Paciente") pero nunca se leían aquí, así que no salían en el PDF.
+    var recomParts = [data.recomendaciones, data.recomendacionesOcupacionales, data.recomendacionesMedicas, data.plan?.recomendaciones].filter(Boolean);
     var recomChecklist = data.recomendacionesChecklist || [];
     if (recomParts.length > 0 || recomChecklist.length > 0) {
       var recomHtml = '<div style="margin:8px 0;"><strong style="font-size:9.5pt;color:#065f46;">RECOMENDACIONES:</strong>';
@@ -25887,7 +25920,18 @@ Esta historia clínica debe conservarse mínimo 20 años.
     if (data.analisisIA) sections.push(sec("🧠", "Análisis Clínico") + '<div style="padding:6px 10px;font-size:9pt;white-space:pre-wrap;line-height:1.5;background:#fefce8;border:1px solid #fde68a;border-radius:4px;margin:4px 0;">' + _nl(data.analisisIA) + '</div>');
 
     // ═══ 18b. CONDUCTA A SEGUIR Y DETERMINACIONES ═══
-    if (data.conductaSeguir) sections.push(sec("🗂️", "Conducta a Seguir y Determinaciones Médico-Administrativas") + '<div style="padding:6px 10px;font-size:9pt;white-space:pre-wrap;line-height:1.5;background:#eff6ff;border:1px solid #bfdbfe;border-radius:4px;margin:4px 0;">' + _nl(data.conductaSeguir) + '</div>');
+    // FIX 2026-07-28: data.conductaSeguir/data.analisisIA los llena el flujo de
+    // IA Ocupacional (generateAIAnalysis) — en HC General, generateAIGeneral
+    // guarda el plan en data.plan.conducta (visto en pantalla en "Conducta y
+    // Plan de Manejo") que nunca se leía aquí, dejando esta sección vacía.
+    var _conductaTxt = data.conductaSeguir || data.plan?.conducta || "";
+    var _planExtra = [];
+    if (data.plan?.paraclinicosSolicitados) _planExtra.push("Paraclínicos: " + data.plan.paraclinicosSolicitados);
+    if (data.plan?.remisiones) _planExtra.push("Remisiones: " + data.plan.remisiones);
+    if (data.plan?.controlEn) _planExtra.push("Control: " + data.plan.controlEn);
+    if (_conductaTxt || _planExtra.length > 0) {
+      sections.push(sec("🗂️", "Conducta a Seguir y Determinaciones Médico-Administrativas") + '<div style="padding:6px 10px;font-size:9pt;white-space:pre-wrap;line-height:1.5;background:#eff6ff;border:1px solid #bfdbfe;border-radius:4px;margin:4px 0;">' + _nl(_conductaTxt) + (_planExtra.length > 0 ? '<hr style="border:none;border-top:1px solid #bfdbfe;margin:6px 0;"/>' + _nl(_planExtra.join("\n")) : "") + '</div>');
+    }
 
     // ═══ 19. SVE ═══
     if (data.sveRecomendado?.length > 0) {
