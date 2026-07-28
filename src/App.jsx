@@ -6677,17 +6677,43 @@ const AI_PROVIDERS = {
       // ai.google.dev/gemini-api/docs/models) — cada modelo tiene cuota
       // INDEPENDIENTE, así que más modelos en la lista = más cupo real por
       // key antes de considerarla agotada, no solo más intentos redundantes.
-      const tryModels = [
+      // FIX 2026-07-28: ordenados por CAPACIDAD real, no por familia. Los
+      // "-lite" son variantes reducidas: sirven para tareas cortas (sugerir un
+      // CIE-10) pero no sostienen las respuestas largas de recomendaciones /
+      // análisis / restricciones, que truncan a mitad de frase. Van al final
+      // para que solo se usen cuando TODAS las keys agotaron los modelos
+      // completos, y las funciones de texto largo pueden excluirlos del todo.
+      const _MODELOS_ALTA = [
         "gemini-2.5-flash",
         "gemini-3.5-flash",
+        "gemini-2.0-flash",
+      ];
+      const _MODELOS_LITE = [
         "gemini-2.5-flash-lite",
         "gemini-3.1-flash-lite",
-        "gemini-2.0-flash",
         "gemini-2.0-flash-lite",
       ];
+      // systemPrompt lleva la marca [SOLO-ALTA] cuando el llamador necesita
+      // una respuesta extensa y no tolera modelos reducidos.
+      const _soloAlta = systemPrompt.includes("[SOLO-ALTA]");
+      const tryModels = _soloAlta ? _MODELOS_ALTA : [..._MODELOS_ALTA, ..._MODELOS_LITE];
+      // la marca es interna: se quita antes de enviarla al modelo
+      const _sysLimpio = systemPrompt.replace("[SOLO-ALTA]", "").trim();
       let lastErr = null;
-      for (const key of apiKeys) {
-        for (const model of tryModels) {
+      let _truncadaFallback = null; // mejor respuesta truncada vista (último recurso)
+      // FIX 2026-07-28: ORDEN INVERTIDO — antes el bucle externo eran las KEYS
+      // y el interno los MODELOS, así que con la PRIMERA key ya se recorrían
+      // todos los modelos incluidos los "lite" (capacidad reducida) ANTES de
+      // tocar la segunda key. Con 3 keys, el 3er/4º/5º intento del usuario ya
+      // caía en gemini-*-flash-lite → respuestas largas TRUNCADAS a mitad de
+      // frase, mientras las keys 2 y 3 seguían intactas sin usarse.
+      // AHORA: bucle externo = MODELO, interno = KEY. Se agotan TODAS las keys
+      // con el mejor modelo antes de bajar de calidad. Con N keys eso es N×
+      // cupo real en alta capacidad (cada key de AI Studio tiene cuota propia).
+      const _keysMuertas = new Set(); // keys inválidas: no reintentarlas con otros modelos
+      for (const model of tryModels) {
+        for (const key of apiKeys) {
+          if (_keysMuertas.has(key)) continue;
           try {
             const res = await fetchWithTimeout(
               `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
@@ -6695,7 +6721,7 @@ const AI_PROVIDERS = {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  systemInstruction: { parts: [{ text: systemPrompt }] },
+                  systemInstruction: { parts: [{ text: _sysLimpio }] },
                   contents: [{ role: "user", parts: [{ text: prompt }] }],
                   generationConfig: {
                     maxOutputTokens: 8192,
@@ -6712,23 +6738,36 @@ const AI_PROVIDERS = {
               const errData = await res.json().catch(() => ({}));
               const msg = errData?.error?.message || res.statusText;
               lastErr = new Error(`Gemini/${model} [${res.status}]: ${msg}`);
-              // 401/403 = key inválida | 400 solo si mensaje indica key inválida
-              if (res.status === 401 || res.status === 403) break;
+              // 401/403 = key inválida → marcarla muerta (no sirve con ningún modelo)
+              if (res.status === 401 || res.status === 403) { _keysMuertas.add(key); continue; }
               if (
                 res.status === 400 &&
                 (msg.includes("API_KEY_INVALID") ||
                   msg.includes("not valid") ||
                   msg.includes("API key"))
-              )
-                break;
-              continue; // 404/429 = modelo no disponible o cuota → probar siguiente modelo (misma key)
+              ) { _keysMuertas.add(key); continue; }
+              continue; // 404/429 = modelo no disponible o cuota agotada → siguiente KEY (mismo modelo)
             }
             const data = await res.json();
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            // FIX 2026-07-13: se reporta qué key (huella = últimos 6 chars)
-            // respondió, para poder contar el uso POR KEY, no solo por
-            // proveedor — necesario ahora que Gemini admite varias keys.
-            if (text?.trim().length > 5) return { text: text.trim(), keyFingerprint: key.slice(-6) };
+            const cand = data.candidates?.[0];
+            const text = cand?.content?.parts?.[0]?.text;
+            // FIX 2026-07-28: DETECCIÓN DE RESPUESTA TRUNCADA. Antes no se
+            // miraba finishReason: si el modelo agotaba su espacio de salida
+            // devolvía el texto cortado a mitad de frase y la app lo guardaba
+            // como si fuera válido (la única validación era "length > 5").
+            // Ahora, si vino truncada, NO se acepta: se pasa a la siguiente
+            // key/modelo y solo se usa como último recurso si nada más responde.
+            if (text?.trim().length > 5) {
+              if (cand?.finishReason === "MAX_TOKENS") {
+                lastErr = new Error(`Gemini/${model}: respuesta truncada (MAX_TOKENS)`);
+                _truncadaFallback = _truncadaFallback || { text: text.trim(), keyFingerprint: key.slice(-6), model };
+                continue;
+              }
+              // FIX 2026-07-13: se reporta qué key (huella = últimos 6 chars)
+              // respondió, para poder contar el uso POR KEY, no solo por
+              // proveedor — necesario ahora que Gemini admite varias keys.
+              return { text: text.trim(), keyFingerprint: key.slice(-6) };
+            }
             lastErr = new Error(`Gemini/${model}: respuesta vacía`);
           } catch (e) {
             if (e.name === "AbortError") {
@@ -6738,8 +6777,12 @@ const AI_PROVIDERS = {
             lastErr = e;
           }
         }
-        // se agotaron todos los modelos con esta key → probar la siguiente key
+        // se agotaron TODAS las keys con este modelo → bajar al siguiente modelo
       }
+      // Si ningún modelo dio respuesta completa pero sí hubo una truncada,
+      // devolverla marcada para que la capa superior avise al usuario en vez
+      // de dejarlo sin nada.
+      if (_truncadaFallback) return { ..._truncadaFallback, truncated: true };
       throw (
         lastErr ||
         new Error(
@@ -6784,7 +6827,7 @@ const AI_PROVIDERS = {
                 max_tokens: 8192,
                 temperature: 0.25,
                 messages: [
-                  { role: "system", content: systemPrompt },
+                  { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
                   { role: "user", content: prompt },
                 ],
               }),
@@ -6799,7 +6842,16 @@ const AI_PROVIDERS = {
           }
           const data = await res.json();
           const text = data.choices?.[0]?.message?.content;
-          if (text?.trim().length > 5) return text.trim();
+          // FIX 2026-07-28: no aceptar respuestas truncadas (finish_reason
+          // "length" = el modelo agotó su espacio de salida y cortó a mitad).
+          // Antes se guardaban como válidas y el usuario veía texto cortado.
+          if (text?.trim().length > 5) {
+            if (data.choices?.[0]?.finish_reason === "length") {
+              lastErr = new Error(`Groq/${model}: respuesta truncada (length)`);
+              continue;
+            }
+            return text.trim();
+          }
           lastErr = new Error(`Groq/${model}: respuesta vacía`);
         } catch (e) {
           if (e.name === "AbortError") {
@@ -6863,7 +6915,7 @@ const AI_PROVIDERS = {
                 max_tokens: 8192,
                 temperature: 0.25,
                 messages: [
-                  { role: "system", content: systemPrompt },
+                  { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
                   { role: "user", content: prompt },
                 ],
               }),
@@ -6883,7 +6935,14 @@ const AI_PROVIDERS = {
           }
           const data = await res.json();
           const text = data.choices?.[0]?.message?.content;
-          if (text?.trim().length > 5) return text.trim();
+          // FIX 2026-07-28: ver nota en Groq — no aceptar respuestas truncadas.
+          if (text?.trim().length > 5) {
+            if (data.choices?.[0]?.finish_reason === "length") {
+              lastErr = new Error(`Cerebras/${model}: respuesta truncada (length)`);
+              continue;
+            }
+            return text.trim();
+          }
           lastErr = new Error(`Cerebras/${model}: respuesta vacía`);
         } catch (e) {
           if (e.message?.includes("API Key inválida")) throw e; // re-throw 401 immediately
@@ -6954,7 +7013,7 @@ const AI_PROVIDERS = {
                 max_tokens: 8192,
                 temperature: 0.25,
                 messages: [
-                  { role: "system", content: systemPrompt },
+                  { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
                   { role: "user", content: prompt },
                 ],
               }),
@@ -6969,7 +7028,14 @@ const AI_PROVIDERS = {
           }
           const data = await res.json();
           const text = data.choices?.[0]?.message?.content;
-          if (text?.trim().length > 5) return text.trim();
+          // FIX 2026-07-28: ver nota en Groq — no aceptar respuestas truncadas.
+          if (text?.trim().length > 5) {
+            if (data.choices?.[0]?.finish_reason === "length") {
+              lastErr = new Error(`OpenRouter/${model}: respuesta truncada (length)`);
+              continue;
+            }
+            return text.trim();
+          }
           lastErr = new Error(`OpenRouter/${model}: respuesta vacía`);
         } catch (e) {
           if (e.name === "AbortError") {
@@ -21571,10 +21637,15 @@ function AppInner() {
   }, [currentUser, _resetInactivity]);
   // ── MOTOR IA ──────────────────────────────────────────────────────────────
   const callAI = useCallback(
-    async (prompt, expectJson = false) => {
-      const systemPrompt = expectJson
+    // FIX 2026-07-28: `soloAlta` — cuando el llamador necesita una respuesta
+    // EXTENSA (recomendaciones, análisis, restricciones), se excluyen los
+    // modelos "-lite" (capacidad reducida) que truncaban el texto a mitad de
+    // frase. Las tareas cortas (sugerir CIE-10, etc.) siguen pudiendo usarlos.
+    async (prompt, expectJson = false, soloAlta = false) => {
+      const _marcaAlta = soloAlta ? "[SOLO-ALTA] " : "";
+      const systemPrompt = _marcaAlta + (expectJson
         ? `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones de aptitud laboral, ingresos, egresos, seguimientos periódicos y post-incapacidad, manejo de enfermedades laborales, calificación de origen y PCL, y gestión de programas de vigilancia epidemiológica (PVE) conforme a la Res. 1843/2025 (deroga 2346/2007), Res. 2404/2019, Dec. 1072/2015 y Ley 1562/2012. Cuando la consulta sea de medicina general, actúas como médico general con especialización en medicina interna y más de 15 años de experiencia clínica. Redactas con lenguaje técnico-médico formal, directo y puntual. RESPONDE ÚNICAMENTE CON JSON VÁLIDO, sin texto previo, sin bloques markdown, sin explicaciones adicionales. El JSON debe comenzar con { y terminar con }.`
-        : `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones ocupacionales (ingreso, egreso, periódico, reintegro, post-incapacidad), restricciones médico-laborales, enfermedades laborales, vigilancia epidemiológica, calificación de origen y pérdida de capacidad laboral (PCL). Conoces a fondo la normativa vigente: Res. 1843/2025 (norma vigente, deroga Res. 2346/2007), Res. 2404/2019, Dec. 1072/2015, GTC-45:2012, GATISO-DME, GATISO-TME, Ley 1562/2012 y Res. 0312/2019. Cuando la consulta corresponde a medicina general, actúas como médico general con especialización clínica y más de 15 años de experiencia, manejando patología ambulatoria, crónica y aguda con criterio clínico sólido. Tu lenguaje es técnico, formal, directo y puntual. Respondes en español.`;
+        : `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones ocupacionales (ingreso, egreso, periódico, reintegro, post-incapacidad), restricciones médico-laborales, enfermedades laborales, vigilancia epidemiológica, calificación de origen y pérdida de capacidad laboral (PCL). Conoces a fondo la normativa vigente: Res. 1843/2025 (norma vigente, deroga Res. 2346/2007), Res. 2404/2019, Dec. 1072/2015, GTC-45:2012, GATISO-DME, GATISO-TME, Ley 1562/2012 y Res. 0312/2019. Cuando la consulta corresponde a medicina general, actúas como médico general con especialización clínica y más de 15 años de experiencia, manejando patología ambulatoria, crónica y aguda con criterio clínico sólido. Tu lenguaje es técnico, formal, directo y puntual. Respondes en español.`);
       // Orden de prioridad fijo: gemini → openrouter → groq → cerebras
       // Groq puede fallar por CORS según el dominio; gemini y openrouter son más estables en browser
       const PRIORITY_ORDER = ["gemini", "openrouter", "groq", "cerebras"];
@@ -21609,9 +21680,14 @@ function AppInner() {
           // siguen devolviendo un string plano.
           const text = typeof _raw === "string" ? _raw : _raw?.text;
           const keyFingerprint = typeof _raw === "object" ? _raw?.keyFingerprint : null;
+          // FIX 2026-07-28: si el proveedor devolvió una respuesta truncada
+          // como ÚLTIMO RECURSO (ningún modelo/key dio una completa), no se
+          // muestra en silencio: se avisa en el indicador de estado para que
+          // el médico sepa que ese texto puede estar cortado y vuelva a pedirlo.
+          const _vinoTruncada = typeof _raw === "object" && _raw?.truncated === true;
           if (text && text.trim().length > 10) {
             setAiStatus("ok");
-            setAiProviderStatus(`✅ ${_label}`);
+            setAiProviderStatus(_vinoTruncada ? `⚠️ ${_label} — respuesta posiblemente incompleta` : `✅ ${_label}`);
             // ── Contador de llamadas por proveedor (y por key individual en Gemini) ──
             setAiCallsCount(prev => {
               const updated = { ...prev };
@@ -21931,11 +22007,11 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
 {"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}${_profBlock}`;    try {
       let text;
       try {
-        text = await callAI(prompt, true);
+        text = await callAI(prompt, true, true);
       } catch (e1) {
         try {
           const retryPrompt = "Analiza esta HC ocupacional y devuelve JSON: " + JSON.stringify({cargo: data.cargo, hallazgos, antecedentes, riesgos, edad: data.edad, tipoExamen: data.tipoExamen});
-          text = await callAI(retryPrompt, true);
+          text = await callAI(retryPrompt, true, true);
         } catch (e2) {
           throw e1;
         }
@@ -22173,7 +22249,7 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 JSON REQUERIDO (sin markdown):
 {"sinRestricciones":false,"justificacionSinRestricciones":"","restricciones":[{"numero":1,"segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción","texto":"Restricción operativa y cuantificable: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO. Sin diagnósticos, sin medicamentos, sin tratamientos.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}${_profBlockRestr}`;
     try {
-      const text = await callAI(prompt, true);
+      const text = await callAI(prompt, true, true);
       const parsed = parseAIJSON(text);
       let lista;
       if (parsed.sinRestricciones) {
@@ -22254,7 +22330,7 @@ INSTRUCCIÓN: Genera MÍNIMO 14 recomendaciones numeradas. Organiza en las sigui
 
 Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.${_profBlockReco}`;
     try {
-      const text = await callAI(prompt, false);
+      const text = await callAI(prompt, false, true);
       setData((prev) => ({ ...prev, recomendaciones: text.trim() }));
       showAlert(_nivelReco > 1 ? `✅ Recomendaciones generadas (versión más profunda, intento ${_nivelReco}).` : "✅ Recomendaciones generadas por IA.");
     } catch (e) {
@@ -22341,7 +22417,7 @@ Eres el médico tratante. Tienes toda la información de esta historia clínica.
 JSON REQUERIDO (estructura exacta):
 {"diagnosticos":[{"cie10":"CÓD","descripcion":"Nombre completo y específico","tipo":"Principal|Secundario|Presuntivo|Diferencial"}],"plan":{"conducta":"Plan de manejo COMPLETO y detallado: farmacológico + no farmacológico + educación + signos de alarma específicos para ESTE paciente","medicamentos":"Resumen conciso del plan farmacológico para vista rápida","formulaMedicamentos":[{"nombre":"Principio activo genérico","presentacion":"Forma farmacéutica + concentración (ej: Tableta 500mg)","dosis":"Cantidad exacta por toma (ej: 1 tableta)","frecuencia":"Intervalo preciso (ej: cada 8 horas)","duracion":"Días exactos (ej: 7 días)","indicaciones":"Instrucción especial imprescindible o cadena vacía si no aplica"}],"paraclinicosSolicitados":"Resumen textual del plan de paraclínicos para el expediente médico.","examenesSolicitados":[{"nombre":"Nombre exacto del examen o paraclínico (ej: Hemograma completo, Glicemia en ayunas, Ecografía abdominal)","urgente":false,"justificacion":"Razón clínica concreta en 1 línea basada en los hallazgos de ESTA historia"}],"remisiones":"Descripción de remisiones o vacío si ya están en derivaciones","recomendaciones":"Recomendaciones DETALLADAS y PERSONALIZADAS: dieta, actividad, signos de alarma, cuidados, prevención, adherencia","controlEn":"Tiempo exacto de seguimiento con criterios clínicos de reevaluación"},"derivaciones":[{"especialidad":"Nombre especialidad","urgencia":"Urgente|Prioritaria|Electiva","motivo":"Motivo clínico preciso y justificado","observaciones":"Información adicional relevante para el especialista"}],"incapacidad":{"sugerida":true,"dias":3,"origen":"Enfermedad General","diagnostico":"CIE-10 + descripción del diagnóstico incapacitante","justificacion":"Justificación clínica de la incapacidad y por qué esos días específicos"},"analisis":"Razonamiento clínico EXHAUSTIVO y HUMANIZADO en 8-10 líneas: describe la presentación clínica con sus síntomas guía y su evolución temporal; hipótesis diagnóstica principal con justificación basada en hallazgos específicos de ESTA historia; diferenciales considerados y por qué se priorizan o descartan; correlación entre síntomas, antecedentes relevantes y hallazgos del examen físico; factores de riesgo identificados y su relevancia para este caso; pronóstico esperado con el tratamiento propuesto; consideraciones especiales o alertas de este paciente particular"}`;
     try {
-      const text = await callAI(prompt, true);
+      const text = await callAI(prompt, true, true);
       const parsed = parseAIJSON(text);
       // Normalizar campos string del plan: la IA a veces devuelve arrays/objetos en vez de strings
       const _normPlanStr = (v) => {
@@ -22501,11 +22577,11 @@ JSON REQUERIDO (estructura exacta):
     try {
       // ── MEJORA: llamadas secuenciales para no saturar el Rate Limit del proveedor ──
       // Antes era Promise.all (simultáneo) → ahora es secuencial para evitar error 429
-      const text1 = await callAI(prompt1, true);
+      const text1 = await callAI(prompt1, true, true);
       const parte1 = parseAIJSON(text1);
       // Pequeña pausa entre llamadas para respetar los límites de peticiones
       await new Promise(resolve => setTimeout(resolve, 800));
-      const text2 = await callAI(prompt2, true);
+      const text2 = await callAI(prompt2, true, true);
       const parte2 = parseAIJSON(text2);
       setReportAIResult({ ...parte1, conclusiones: parte2.conclusiones || "", analisisJustificado: parte2.analisisJustificado || "", recomendacionesInforme: parte2.recomendacionesInforme || "" });
     } catch (e) {
