@@ -19903,6 +19903,44 @@ function AppInner() {
             return merged;
           });
         }
+
+        // ── RECONCILIACIÓN CONTRA EL ÍNDICE DE HC CERRADAS ──────────────────
+        // FIX 2026-07-28: red de seguridad para el caso en que la escritura de
+        // la lista maestra (6.6MB / 14 trozos) falle bajo la ráfaga de ~23
+        // escrituras que dispara el cierre de una HC, mientras las escrituras
+        // pequeñas (certificado, hc_completa, índice) sí quedan guardadas.
+        // Si el índice tiene una HC cerrada que NO está en la lista maestra,
+        // se recupera el paciente COMPLETO desde siso_hc_completa_<cc> — con
+        // su id y todos sus campos originales, no un registro reconstruido.
+        try {
+          const _idxKey = "siso_hc_cerradas_idx_" + currentUser.user;
+          const _idx = await _workerGet(_idxKey).catch(() => null);
+          if (Array.isArray(_idx) && _idx.length > 0) {
+            const _enLista = new Set(remote.filter(p => p?.id).map(p => String(p.id)));
+            const _huerfanas = _idx.filter(e => e && e.id && !_enLista.has(String(e.id)));
+            if (_huerfanas.length > 0) {
+              console.warn(`[AUDIT] ⚠️ ${_huerfanas.length} HC cerrada(s) en el índice pero AUSENTES de la lista maestra — recuperando...`);
+              const _recuperados = [];
+              for (const e of _huerfanas.slice(0, 25)) {
+                try {
+                  const _hc = await _workerGet("siso_hc_completa_" + e.cc);
+                  if (_hc && _hc.id) {
+                    // Quitar la firma (imagen ~30KB): no va en la lista maestra.
+                    const { _firma, ...limpio } = _hc;
+                    _recuperados.push(_slimPatient(limpio));
+                  }
+                } catch {}
+              }
+              if (_recuperados.length > 0) {
+                const _listaFinal = [...remote, ..._recuperados];
+                const _okR = await _syncPatients(_listaFinal);
+                console.log(_okR
+                  ? `[AUDIT] ✅ ${_recuperados.length} HC(s) recuperada(s) a la lista maestra`
+                  : `[AUDIT] ⚠️ recuperación quedó en cola de reintento`);
+              }
+            }
+          }
+        } catch (e) { console.warn("[AUDIT] reconciliación índice:", e?.message); }
       } catch (e) { console.warn("[AUDIT] excepción:", e?.message); }
     }, 8000);
     return () => clearTimeout(t);
@@ -24157,6 +24195,39 @@ const handleLogin = (u, p) => {
               try { await _workerSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta); } catch {}
             }
             _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta).catch(() => {});
+          }
+          // 3b° ÍNDICE LIGERO DE HC CERRADAS — red de seguridad
+          // FIX 2026-07-28: la lista maestra (siso_db_patients_*) pesa ~6.6MB y
+          // se reescribe COMPLETA en 14 trozos en cada cierre. Al cerrar una HC
+          // se disparan ~23 escrituras seguidas al worker; bajo esa ráfaga la
+          // más pesada (la lista) es la que falla — mientras las pequeñas
+          // (certificado, hc_completa) sí quedan guardadas. Resultado real:
+          // pacientes con HC y certificado completos en D1 pero AUSENTES de
+          // "Pacientes Vistos" (3 casos confirmados el 2026-07-24/27).
+          // Este índice es diminuto (~9 campos por paciente), se escribe en UNA
+          // sola operación directa sin trocear, y por eso casi nunca falla.
+          // _reconciliarDesdeIndiceHC() lo usa al arrancar para reponer, con
+          // TODOS sus datos originales, a quien falte en la lista maestra.
+          if (_WORKER_TOKEN && _docCC) {
+            try {
+              const _idxKey = "siso_hc_cerradas_idx_" + (currentUser?.user || "shared");
+              let _idx = await _workerGet(_idxKey).catch(() => null);
+              if (!Array.isArray(_idx)) _idx = [];
+              const _entry = {
+                cc: _docCC,
+                id: closed.id,
+                nombres: closed.nombres || "",
+                fechaExamen: closed.fechaExamen || "",
+                fechaCierre: fechaCierreElegida,
+                empresaId: closed.empresaId || "",
+                empresaNombre: closed.empresaNombre || "",
+                tipoExamen: closed.tipoExamen || "",
+                dataType: (typeof dataType !== "undefined") ? dataType : "ocupacional",
+              };
+              const _pos = _idx.findIndex(e => e && (String(e.id) === String(closed.id) || (e.cc === _docCC && e.fechaExamen === _entry.fechaExamen)));
+              if (_pos >= 0) _idx[_pos] = _entry; else _idx.push(_entry);
+              await _workerSet(_idxKey, _idx);
+            } catch (e) { console.warn("[cierre] índice HC cerradas:", e?.message); }
           }
         }
         // 4° compat códigos viejos
