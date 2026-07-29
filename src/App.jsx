@@ -7013,23 +7013,24 @@ const AI_PROVIDERS = {
         throw new Error(
           "OpenRouter: API Key no configurada - obtenla gratis en openrouter.ai/keys"
         );
-      // FIX 2026-07-13: lista reemplazada por completo — el catálogo gratis
-      // de OpenRouter había cambiado y NINGUNO de los IDs anteriores (marzo
-      // 2026) seguía activo (todos daban 404 "No endpoints found"). Lista
-      // verificada por el usuario directamente en openrouter.ai/models el
-      // 2026-07-13. Ya no existe ningún modelo Gemini gratis en OpenRouter.
-      // Se excluyen los modelos especializados en código (poolside, cohere
-      // north-mini-code) y el de re-ranking (nemotron-rerank-vl, no es de
-      // generación de texto) — se priorizan los de mayor capacidad general.
+      // FIX 2026-07-29: re-auditada en vivo contra openrouter.ai/models —
+      // "openai/gpt-oss-120b:free" y "tencent/hy3:free" ya NO EXISTEN como
+      // gratuitos (retirados del catálogo, solo quedó la variante de pago;
+      // cada intento contra ellos era un 404 silencioso que gastaba un turno
+      // antes de caer al siguiente modelo). Se quitan y se agrega
+      // "inclusionai/ling-3.0-flash:free" (124B MoE, lanzado 2026-07-23).
+      // Se confirmó también que sigue sin existir ningún modelo Gemini
+      // gratis en OpenRouter (todos de pago: $0.10–$1.50+/M tokens).
+      // Orden por capacidad real (mayor primero); los más chicos quedan al
+      // final como último recurso.
       const tryModels = [
-        "openai/gpt-oss-120b:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "inclusionai/ling-3.0-flash:free",
         "nvidia/nemotron-3-super-120b-a12b:free",
         "google/gemma-4-31b-it:free",
         "openai/gpt-oss-20b:free",
-        "nvidia/nemotron-3-ultra-550b-a55b:free",
         "nvidia/nemotron-3-nano-30b-a3b:free",
         "nvidia/nemotron-nano-9b-v2:free",
-        "tencent/hy3:free",
       ];
       let lastErr = null;
       for (const model of tryModels) {
@@ -10918,7 +10919,7 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose, aiCallsCount }) => {
   const PROVIDER_INFO = {
     gemini: {
       label: "Google Gemini",
-      sub: "2.0 Flash · 1.5 Flash",
+      sub: "2.5 Flash · 3.5 Flash · 2.0 Flash",
       badge: "🟢 Gratis · Alta calidad",
       badgeClass: "bg-blue-100 text-blue-800",
       link: "https://aistudio.google.com/apikey",
@@ -10936,7 +10937,7 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose, aiCallsCount }) => {
     },
     groq: {
       label: "Groq",
-      sub: "Llama 3.3 70B · Ultra-rápido",
+      sub: "GPT-OSS 120B · Llama 3.3 70B",
       badge: "🟢 Gratis · Más rápido",
       badgeClass: "bg-green-100 text-green-800",
       link: "https://console.groq.com/keys",
@@ -10970,7 +10971,7 @@ const AIConfigPanel = ({ aiConfig, onSave, onClose, aiCallsCount }) => {
     },
     openrouter: {
       label: "OpenRouter",
-      sub: "10 modelos free · Máximo respaldo",
+      sub: "Nemotron 550B · Ling 3.0 · 7 modelos free",
       badge: "🟢 Gratis · Multi-modelo",
       badgeClass: "bg-purple-100 text-purple-800",
       link: "https://openrouter.ai/keys",
