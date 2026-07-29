@@ -774,10 +774,28 @@ const _tsOf = (v) => {
   if (!v || typeof v !== "object") return "";
   return v.updatedAt || v.updated_at || v.ts || "";
 };
+// FIX 2026-07-28 (radical, tras incidente BIOESCOL portalCode): antes, si
+// D1 Y Supabase fallaban a la vez (red caída, 503, CORS — ya demostrado
+// intermitente en este proyecto), _readSmart devolvía `null` — EXACTAMENTE
+// el mismo valor que devuelve cuando ambos responden y confirman que la
+// clave genuinamente no existe. Varios lugares del código usan el patrón
+// `existing?.codigoAcceso || generarCodigoNuevo()`: con esa ambigüedad, un
+// simple hipo de red hacía que se generara y GUARDARA un código aleatorio
+// nuevo, sobrescribiendo el código real ya emitido a la empresa — sin haber
+// verificado de verdad que no existiera. Eso es lo que le pasó a BIOESCOL.
+// AHORA: si AMBAS lecturas fallan por error (no por "no encontrado"),
+// _readSmart LANZA una excepción en vez de devolver null. "No hay dato" y
+// "no pude verificar" ya no son la misma señal — el llamador debe manejar
+// el error explícitamente antes de decidir generar algo nuevo.
+class ReadSmartUnavailableError extends Error {
+  constructor(key) { super(`_readSmart: D1 y Supabase fallaron para "${key}" — no se puede confirmar si existe`); this.key = key; }
+}
 const _readSmart = async (key, options = {}) => {
   const { catchUp = true, timeout = 6000 } = options;
-  // 1) Leer ambos en paralelo (con timeout)
-  const d1Promise = _workerGet(key).catch(() => null);
+  // 1) Leer ambos en paralelo (con timeout), distinguiendo "fallo" de "vacío"
+  let d1Failed = false;
+  const d1Promise = _workerGet(key).catch(() => { d1Failed = true; return null; });
+  let sbFailed = false;
   const sbPromise = (async () => {
     try {
       const r = await Promise.race([
@@ -786,15 +804,18 @@ const _readSmart = async (key, options = {}) => {
         }),
         new Promise((_, rej) => setTimeout(() => rej(new Error("sb-timeout")), timeout)),
       ]);
-      if (!r.ok) return null;
+      if (!r.ok) { sbFailed = true; return null; }
       const arr = await r.json();
-      if (!Array.isArray(arr) || arr.length === 0) return null;
+      if (!Array.isArray(arr) || arr.length === 0) return null; // confirmado vacío, no es fallo
       const row = arr[0];
       const v = typeof row.value === "string" ? (() => { try { return JSON.parse(row.value); } catch { return row.value; } })() : row.value;
       return { value: v, ts: row.updated_at || _tsOf(v) || "" };
-    } catch { return null; }
+    } catch { sbFailed = true; return null; }
   })();
   const [d1Val, sbResult] = await Promise.all([d1Promise, sbPromise]);
+  // Si AMBAS fuentes fallaron por error de red/servidor (no por ausencia
+  // confirmada), no hay forma de saber si la clave existe — abortar.
+  if (d1Failed && sbFailed) throw new ReadSmartUnavailableError(key);
   const d1Has = d1Val !== null && d1Val !== undefined;
   const sbHas = sbResult !== null;
   // 2) Decidir
@@ -35925,12 +35946,24 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     });
                     // Guardar en Supabase en paralelo — siempre preservar código existente
                     const codigosFinales = { ...nuevosCodigos };
+                    let _omitidas = [];
                     await Promise.all(Object.entries(nuevosCodigos).map(async ([nit, code]) => {
                       try {
                         // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha
                         // antes de reescribir — preservar codigoAcceso existente.
+                        // FIX 2026-07-28 (incidente BIOESCOL): antes, si _readSmart
+                        // fallaba (red caída), "existing" quedaba en null — INDISTINGUIBLE
+                        // de "no existe" — y se generaba/guardaba un código aleatorio
+                        // NUEVO encima del real ya emitido a la empresa. Ahora, si la
+                        // lectura genuinamente falla (no si confirma que no existe), se
+                        // OMITE esa empresa por completo: no se genera ni se escribe nada.
                         let existing = null;
-                        try { existing = await _readSmart(`siso_portal_empresa_docs_${nit}`); } catch {}
+                        try {
+                          existing = await _readSmart(`siso_portal_empresa_docs_${nit}`);
+                        } catch (e) {
+                          if (e instanceof ReadSmartUnavailableError) { _omitidas.push(nit); return; }
+                          throw e;
+                        }
                         // Prioridad: 1) código ya en nube, 2) código nuevo generado
                         const codigoFinal = existing?.codigoAcceso || code;
                         codigosFinales[nit] = codigoFinal;
@@ -35944,8 +35977,12 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         };
                         await _sbSet("siso_portal_empresa_docs_" + nit, docsData);
                         if (_WORKER_TOKEN) { try { await _workerSet("siso_portal_empresa_docs_" + nit, docsData); } catch {} }
-                      } catch {}
+                      } catch { _omitidas.push(nit); }
                     }));
+                    // Las omitidas por fallo de red no deben quedar con un código
+                    // inventado en pantalla — se retiran de codigosFinales para que
+                    // NO se apliquen a companies.portalCode más abajo.
+                    for (const nit of _omitidas) delete codigosFinales[nit];
                     // Sincronizar portalCode local con el código real de Supabase
                     const updatedWithReal = companies.map(c => {
                       const n = (c.nit || "").replace(/[^0-9]/g, "");
@@ -35954,7 +35991,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     setCompanies(updatedWithReal);
                     _syncCompanies(updatedWithReal);
                     setEmpresaPortalCodes(prev => ({ ...prev, ...codigosFinales }));
-                    showAlert("✅ " + Object.keys(nuevosCodigos).length + " empresa(s) activadas con código de portal.");
+                    const _nOk = Object.keys(codigosFinales).length;
+                    showAlert(
+                      "✅ " + _nOk + " empresa(s) activadas con código de portal." +
+                      (_omitidas.length > 0 ? `\n\n⚠️ ${_omitidas.length} empresa(s) omitida(s) por falla de conexión (no se generó ni se tocó nada) — vuelve a intentar en un momento.` : "")
+                    );
                     btn.disabled = false;
                     btn.textContent = "🔑 Activar todas";
                   }} className="px-4 py-2 bg-indigo-700 text-white text-xs font-black rounded-xl hover:bg-indigo-800 transition whitespace-nowrap">
@@ -37945,8 +37986,19 @@ Esta historia clínica debe conservarse mínimo 20 años.
                         const nitEd = (saved.nit || "").replace(/[^0-9]/g, "");
                         if (nitEd) {
                           // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha.
+                          // FIX 2026-07-28 (incidente BIOESCOL): si la lectura falla de
+                          // verdad (no si confirma ausencia), NO tocar el registro de
+                          // portal_empresa_docs — evita reescribir el código real con
+                          // saved.portalCode si este resultó vacío/desactualizado.
                           let existing = null;
-                          try { existing = await _readSmart(`siso_portal_empresa_docs_${nitEd}`); } catch {}
+                          try {
+                            existing = await _readSmart(`siso_portal_empresa_docs_${nitEd}`);
+                          } catch (e) {
+                            if (e instanceof ReadSmartUnavailableError) {
+                              showAlert("⚠️ No se pudo verificar el código de portal existente (conexión inestable). La empresa se guardó, pero el código de acceso NO se tocó — vuelve a intentar en un momento.");
+                              throw e; // corta este bloque sin escribir portal_empresa_docs
+                            }
+                          }
                           // Preservar periodos y solo actualizar nombre/código
                           const docsData = { nit: nitEd, nombre: saved.nombre || "", codigoAcceso: existing?.codigoAcceso || saved.portalCode, updatedAt: new Date().toISOString(), periodos: existing?.periodos || [] };
                           await _sbSet("siso_portal_empresa_docs_" + nitEd, docsData);
@@ -60428,7 +60480,24 @@ body{padding-top:52px;}
                   // existían en Supabase al volver a guardar.
                   try {
                     let _existVal = null;
-                    try { _existVal = await _readSmart(`siso_portal_empresa_docs_${nitClean}`); } catch {}
+                    // FIX 2026-07-28 (incidente BIOESCOL): esta es la ruta de "Enviar
+                    // TODO a Empresa" — la más usada, y la más probable causa del
+                    // código de portal corrompiéndose. Antes, si _readSmart fallaba
+                    // por red (no por confirmar ausencia), _existVal quedaba null y
+                    // el bloque "else" de abajo escribía comp?.portalCode (que puede
+                    // estar desactualizado en memoria) o un código ALEATORIO NUEVO,
+                    // sobrescribiendo el código real ya emitido — en D1 Y en el
+                    // registro de la empresa. Ahora, si la lectura falla de verdad,
+                    // se ABORTA todo este envío (no se escribe nada) en vez de
+                    // arriesgar el código de acceso de la empresa.
+                    try {
+                      _existVal = await _readSmart(`siso_portal_empresa_docs_${nitClean}`);
+                    } catch (e) {
+                      if (e instanceof ReadSmartUnavailableError) {
+                        showAlert("⚠️ No se pudo verificar el estado actual del portal de " + (emp.empresaNombre || "la empresa") + " (conexión inestable). Para proteger el código de acceso ya emitido, NO se envió nada esta vez — vuelve a intentar en un momento.");
+                        return;
+                      }
+                    }
                     if (_existVal) {
                       // Prioridad: 1) código en D1/Supabase, 2) código en registro local empresa, 3) código nuevo
                       portalDocsData.codigoAcceso = _existVal.codigoAcceso || comp?.portalCode || codigoAcceso;
