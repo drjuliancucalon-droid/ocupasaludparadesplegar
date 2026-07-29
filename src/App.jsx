@@ -22918,7 +22918,18 @@ JSON REQUERIDO (estructura exacta):
       "Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia con más de 15 años de experiencia (Res.1843/2025, Dec.1072/2015, Res.0312/2019, GTC-45:2012). Datos:\n" +
       datosBase +
       "\n\nElabora un informe técnico-epidemiológico completo con las siguientes 3 secciones:" +
-      "\n\n1. ANÁLISIS JUSTIFICADO (mínimo 300 palabras): Interpretación epidemiológica de los resultados colectivos. Prevalencia de patologías con soporte estadístico. Distribución por cargo/área. Factores de riesgo identificados según GTC-45. Correlación entre morbilidad encontrada y exposición ocupacional. Mención de normativa aplicable." +
+      // FIX 2026-07-29: sección enriquecida a pedido del médico, investigado
+      // contra la normativa real — Res. 0312/2019 Estándar 3.1.1 (Art. 16)
+      // exige identificar edad, sexo, escolaridad, estado civil como mínimo
+      // de la "descripción sociodemográfica de la población trabajadora", y
+      // la Decisión 584 CAN define el diagnóstico de condiciones de salud
+      // como el perfil sociodemográfico CRUZADO con la morbilidad — no
+      // analizados por separado. Antes esta sección solo mencionaba "cargo/
+      // área" de pasada, sin porcentajes, sin cruce con hallazgos, sin cita
+      // legal ni implicaciones prácticas.
+      "\n\n1. ANÁLISIS JUSTIFICADO (mínimo 450 palabras, en 2 partes):" +
+      "\n(1A) PERFIL SOCIODEMOGRÁFICO Y OCUPACIONAL — Conforme Res. 0312/2019 Estándar 3.1.1 (Art. 16) y Decreto 1072/2015: describe la distribución PORCENTUAL de cada variable recibida arriba (género, grupos etarios, escolaridad, estado civil, estrato, cargos, tipo de contrato, turno, antigüedad), señalando el grupo predominante de cada una respecto al total de trabajadores indicado arriba." +
+      "\n(1B) CORRELACIÓN SOCIODEMOGRÁFICA-MORBILIDAD Y ANÁLISIS CLÍNICO — Conforme Decisión 584 CAN (el perfil sociodemográfico y el de morbilidad se determinan de forma conjunta, no aislada): cruza EXPLÍCITAMENTE el perfil de arriba con los hallazgos clínicos y de riesgo (ej. qué grupo etario/cargo concentra mayor prevalencia de qué diagnóstico o riesgo, si la escolaridad o el turno se relacionan con algún hallazgo). Interpretación epidemiológica de los resultados colectivos, prevalencia de patologías con soporte estadístico, factores de riesgo según GTC-45, correlación morbilidad-exposición ocupacional. Cierra con las IMPLICACIONES PRÁCTICAS de este perfil: priorización de PVE/SVE según el grupo de mayor riesgo, estrategia de capacitación adaptada al nivel de escolaridad predominante, y consideraciones de riesgo psicosocial si el perfil (turno, tipo de contrato, antigüedad) lo amerita." +
       "\n\n2. CONCLUSIONES (mínimo 200 palabras): Resumen ejecutivo de los hallazgos más relevantes. Indicadores epidemiológicos críticos. Nivel de cumplimiento del SG-SST. Riesgos prioritarios identificados." +
       "\n\n3. RECOMENDACIONES (mínimo 250 palabras): Acciones correctivas específicas. Programas de vigilancia epidemiológica (PVE/SVE) sugeridos con base normativa. Ajustes en el SG-SST conforme Res. 0312/2019. Seguimiento médico prioritario por grupos de riesgo. Cronograma sugerido de intervenciones." +
       `\n\nDevuelve ÚNICAMENTE JSON válido sin markdown: {"analisisJustificado":"texto completo sección 1","conclusiones":"texto completo sección 2","recomendacionesInforme":"texto completo sección 3"}${_profBlockReporte}`;
