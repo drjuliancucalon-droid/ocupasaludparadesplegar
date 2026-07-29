@@ -6772,7 +6772,15 @@ const AI_PROVIDERS = {
                   systemInstruction: { parts: [{ text: _sysLimpio }] },
                   contents: [{ role: "user", parts: [{ text: prompt }] }],
                   generationConfig: {
-                    maxOutputTokens: 8192,
+                    // FIX 2026-07-29: 8192 → 16384. Con la escalada de
+                    // profundidad (nivel 2/3) y Recomendaciones ahora
+                    // pidiendo JSON con texto + exámenes/derivaciones/
+                    // medicamentos, algunos casos extensos tocaban este
+                    // techo y se cortaban (causaba "JSON irreparable" /
+                    // "todos los proveedores incompletos"). Gemini 2.5/3.5
+                    // Flash soporta hasta 65.536 tokens de salida — 16384 da
+                    // margen real sin pedir de más innecesariamente.
+                    maxOutputTokens: 16384,
                     temperature: 0.25,
                     ...(systemPrompt.includes("ÚNICAMENTE CON JSON") ||
                     systemPrompt.includes("ÚNICAMENTE JSON")
@@ -6879,7 +6887,8 @@ const AI_PROVIDERS = {
               },
               body: JSON.stringify({
                 model,
-                max_tokens: 8192,
+                // FIX 2026-07-29: 8192 → 16384, ver nota en Gemini.
+                max_tokens: 16384,
                 temperature: 0.25,
                 messages: [
                   { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
@@ -6967,7 +6976,8 @@ const AI_PROVIDERS = {
               },
               body: JSON.stringify({
                 model,
-                max_tokens: 8192,
+                // FIX 2026-07-29: 8192 → 16384, ver nota en Gemini.
+                max_tokens: 16384,
                 temperature: 0.25,
                 messages: [
                   { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
@@ -7066,7 +7076,8 @@ const AI_PROVIDERS = {
               },
               body: JSON.stringify({
                 model,
-                max_tokens: 8192,
+                // FIX 2026-07-29: 8192 → 16384, ver nota en Gemini.
+                max_tokens: 16384,
                 temperature: 0.25,
                 messages: [
                   { role: "system", content: systemPrompt.replace("[SOLO-ALTA]", "").trim() },
