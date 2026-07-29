@@ -6311,6 +6311,7 @@ const RestriccionesChecklistPanel = ({
   onApply,
   isGenerating,
   onGenerate,
+  aiProviderStatus,
 }) => {
   const [expandido, setExpandido] = useState({});
   const countSelected = Object.values(selected).filter(Boolean).length;
@@ -6456,18 +6457,28 @@ const RestriccionesChecklistPanel = ({
         </div>
         {/* Footer siempre visible */}
         <div className="border-t px-5 py-4 flex justify-between items-center flex-shrink-0 bg-gray-50 rounded-b-2xl gap-3">
-          <button
-            onClick={onGenerate}
-            disabled={isGenerating}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-3 rounded-xl text-sm font-bold hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {isGenerating ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Sparkles className="w-4 h-4" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={onGenerate}
+              disabled={isGenerating}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-3 rounded-xl text-sm font-bold hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {isGenerating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              Generar con IA
+            </button>
+            {/* FIX 2026-07-29: visibilidad de qué proveedor IA respondió, para
+                poder distinguir una respuesta corta de Gemini vs un respaldo
+                más débil (Groq/Cerebras/OpenRouter) tras cuota agotada. */}
+            {isGenerating && aiProviderStatus && (
+              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+                {aiProviderStatus}
+              </span>
             )}
-            Generar con IA
-          </button>
+          </div>
           <button
             onClick={onApply || onClose}
             className="flex items-center gap-2 bg-red-600 text-white px-7 py-3 rounded-xl text-sm font-bold hover:bg-red-700 shadow-md"
@@ -11387,6 +11398,7 @@ const RecomendacionesChecklistPanel = ({
   onApply,
   isGenerating,
   onGenerate,
+  aiProviderStatus,
 }) => {
   const [expandido, setExpandido] = useState({});
   const countSelected = Object.values(selected).filter(Boolean).length;
@@ -11504,18 +11516,28 @@ const RecomendacionesChecklistPanel = ({
           })}
         </div>
         <div className="border-t p-4 flex justify-between items-center flex-shrink-0 bg-gray-50 rounded-b-2xl">
-          <button
-            onClick={onGenerate}
-            disabled={isGenerating}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {isGenerating ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Sparkles className="w-4 h-4" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={onGenerate}
+              disabled={isGenerating}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {isGenerating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              Generar con IA
+            </button>
+            {/* FIX 2026-07-29: visibilidad de qué proveedor IA respondió, para
+                poder distinguir una respuesta corta de Gemini vs un respaldo
+                más débil (Groq/Cerebras/OpenRouter) tras cuota agotada. */}
+            {isGenerating && aiProviderStatus && (
+              <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+                {aiProviderStatus}
+              </span>
             )}
-            Generar con IA
-          </button>
+          </div>
           <button
             onClick={onApply || onClose}
             className="bg-emerald-600 text-white px-6 py-2 rounded-lg text-sm font-bold hover:bg-emerald-700"
@@ -21721,7 +21743,11 @@ function AppInner() {
     // EXTENSA (recomendaciones, análisis, restricciones), se excluyen los
     // modelos "-lite" (capacidad reducida) que truncaban el texto a mitad de
     // frase. Las tareas cortas (sugerir CIE-10, etc.) siguen pudiendo usarlos.
-    async (prompt, expectJson = false, soloAlta = false) => {
+    // FIX 2026-07-29: `promptLigero` — variante reducida del prompt (sin la
+    // escalada de profundidad "nivel junta médica" ni la versión anterior
+    // completa pegada) para cuando responde un proveedor de respaldo más
+    // débil que Gemini. Ver _bloqueProfundidad(...,liviano=true).
+    async (prompt, expectJson = false, soloAlta = false, promptLigero = null) => {
       const _marcaAlta = soloAlta ? "[SOLO-ALTA] " : "";
       const systemPrompt = _marcaAlta + (expectJson
         ? `Eres médico especialista en Medicina del Trabajo y Salud Ocupacional en Colombia, con más de 15 años de experiencia en evaluaciones de aptitud laboral, ingresos, egresos, seguimientos periódicos y post-incapacidad, manejo de enfermedades laborales, calificación de origen y PCL, y gestión de programas de vigilancia epidemiológica (PVE) conforme a la Res. 1843/2025 (deroga 2346/2007), Res. 2404/2019, Dec. 1072/2015 y Ley 1562/2012. Cuando la consulta sea de medicina general, actúas como médico general con especialización en medicina interna y más de 15 años de experiencia clínica. Redactas con lenguaje técnico-médico formal, directo y puntual. RESPONDE ÚNICAMENTE CON JSON VÁLIDO, sin texto previo, sin bloques markdown, sin explicaciones adicionales. El JSON debe comenzar con { y terminar con }.`
@@ -21753,8 +21779,11 @@ function AppInner() {
         const _label = _pLabels[providerKey] || providerKey;
         const _isLast = _pi === _validProviders.length - 1;
         setAiProviderStatus(`🔄 ${_label}${_validProviders.length > 1 ? ` (${_pi + 1}/${_validProviders.length})` : ""}...`);
+        // Gemini recibe siempre el prompt completo; cualquier respaldo más
+        // débil recibe la variante liviana (si el llamador proporcionó una).
+        const _promptAEnviar = (promptLigero && providerKey !== "gemini") ? promptLigero : prompt;
         try {
-          const _raw = await provider.call(prompt, systemPrompt, key);
+          const _raw = await provider.call(_promptAEnviar, systemPrompt, key);
           // FIX 2026-07-13: gemini.call devuelve {text, keyFingerprint} para
           // poder contar el uso POR KEY individual; los demás proveedores
           // siguen devolviendo un string plano.
@@ -21980,8 +22009,22 @@ function AppInner() {
   // Devuelve el bloque de instrucciones de profundidad a inyectar en el prompt.
   // nivel 1 → "" (comportamiento original). previo = texto del resultado
   // anterior (o vacío) para exigir superación explícita.
-  const _bloqueProfundidad = (nivel, previo) => {
+  // FIX 2026-07-29: `liviano` — el bloque completo (nivel 2/3) se diseñó para
+  // Gemini. Si por cuota agotada la respuesta termina cayendo a un proveedor
+  // de respaldo más débil (Groq/Cerebras/OpenRouter con modelos pequeños),
+  // esa exigencia ("nivel junta médica" + versión anterior completa pegada)
+  // desborda su capacidad: el modelo NO trunca, simplemente entrega algo
+  // correcto pero muy corto para poder cumplir. Esta variante liviana pide
+  // la misma idea (no repetir, profundizar) sin la estructura de 7 pasos ni
+  // el volcado de 2500 caracteres de la versión previa.
+  const _bloqueProfundidad = (nivel, previo, liviano = false) => {
     if (nivel <= 1) return "";
+    if (liviano) {
+      const _nota = previo && String(previo).trim()
+        ? " No repitas ideas ya cubiertas en el intento anterior; profundiza en aspectos nuevos."
+        : "";
+      return `\n\n⚠️ Intento ${nivel}: el resultado anterior se quedó corto para este caso. Sé más específico y completo, cita la norma exacta cuando aplique, y NO reduzcas la cantidad ni la extensión de los ítems solicitados.${_nota}`;
+    }
     const prevBlock = previo && String(previo).trim()
       ? `\n\n═══ VERSIÓN ANTERIOR (debes SUPERARLA, no repetirla) ═══\n${String(previo).slice(0, 2500)}\n═══ FIN VERSIÓN ANTERIOR ═══`
       : "";
@@ -22084,10 +22127,15 @@ CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}` : ""}
 CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba.
 JSON REQUERIDO (sin markdown, sin texto adicional):
-{"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}${_profBlock}`;    try {
+{"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}${_profBlock}`;
+    // FIX 2026-07-29: variante liviana para proveedor de respaldo (no Gemini).
+    const promptAnalisisLigero = _nivelIA > 1
+      ? prompt.slice(0, prompt.length - _profBlock.length) + _bloqueProfundidad(_nivelIA, data.analisisIA, true)
+      : null;
+    try {
       let text;
       try {
-        text = await callAI(prompt, true, true);
+        text = await callAI(prompt, true, true, promptAnalisisLigero);
       } catch (e1) {
         try {
           const retryPrompt = "Analiza esta HC ocupacional y devuelve JSON: " + JSON.stringify({cargo: data.cargo, hallazgos, antecedentes, riesgos, edad: data.edad, tipoExamen: data.tipoExamen});
@@ -22328,8 +22376,12 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 
 JSON REQUERIDO (sin markdown):
 {"sinRestricciones":false,"justificacionSinRestricciones":"","restricciones":[{"numero":1,"segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción","texto":"Restricción operativa y cuantificable: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO. Sin diagnósticos, sin medicamentos, sin tratamientos.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}${_profBlockRestr}`;
+    // FIX 2026-07-29: variante liviana para proveedor de respaldo (no Gemini).
+    const promptRestrLigero = _nivelRestr > 1
+      ? prompt.slice(0, prompt.length - _profBlockRestr.length) + _bloqueProfundidad(_nivelRestr, data.analisisRestricciones, true)
+      : null;
     try {
-      const text = await callAI(prompt, true, true);
+      const text = await callAI(prompt, true, true, promptRestrLigero);
       const parsed = parseAIJSON(text);
       let lista;
       if (parsed.sinRestricciones) {
@@ -22409,8 +22461,14 @@ INSTRUCCIÓN: Genera MÍNIMO 14 recomendaciones numeradas. Organiza en las sigui
 (F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
 
 Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.${_profBlockReco}`;
+    // FIX 2026-07-29: si esta iteración escaló profundidad y termina
+    // respondiendo un proveedor de respaldo (no Gemini), usar la variante
+    // liviana del bloque de profundidad — ver _bloqueProfundidad(liviano=true).
+    const promptRecoLigero = _nivelReco > 1
+      ? prompt.slice(0, prompt.length - _profBlockReco.length) + _bloqueProfundidad(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales, true)
+      : null;
     try {
-      const text = await callAI(prompt, false, true);
+      const text = await callAI(prompt, false, true, promptRecoLigero);
       setData((prev) => ({ ...prev, recomendaciones: text.trim() }));
       showAlert(_nivelReco > 1 ? `✅ Recomendaciones generadas (versión más profunda, intento ${_nivelReco}).` : "✅ Recomendaciones generadas por IA.");
     } catch (e) {
@@ -61925,6 +61983,7 @@ body{padding-top:52px;}
           }}
           isGenerating={isGeneratingRestr}
           onGenerate={generateAIRestricciones}
+          aiProviderStatus={aiProviderStatus}
         />
       )}
       {/* Recomendaciones Checklist Panel */}
@@ -61944,6 +62003,7 @@ body{padding-top:52px;}
           }}
           isGenerating={isGeneratingReco}
           onGenerate={generateAIRecomendaciones}
+          aiProviderStatus={aiProviderStatus}
         />
       )}
       {/* FASE 4+5 — Monitor de salud + auto-limpieza LS */}
