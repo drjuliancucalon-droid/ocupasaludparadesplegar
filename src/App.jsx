@@ -22104,6 +22104,34 @@ function AppInner() {
     }
     return `\n\n⚠️⚠️ MÁXIMA PROFUNDIDAD — NIVEL JUNTA MÉDICA / PERITAJE OCUPACIONAL. Este caso ha requerido varias iteraciones: entrega el análisis más riguroso posible. Cada recomendación/restricción DEBE seguir la estructura: [hallazgo objetivo] → [mecanismo fisiopatológico] → [correlación con la demanda específica del cargo y el riesgo ocupacional GTC-45] → [norma exacta con artículo] → [medida cuantificada] → [plazo] → [responsable de ejecución] → [indicador de verificación]. Incluye diagnóstico diferencial ocupacional cuando aplique, pronóstico funcional-laboral y criterios objetivos de reevaluación.${_notaCampos} Máximo rigor técnico-legal, sin relleno genérico. Supera de forma inequívoca todas las versiones anteriores.${prevBlock}`;
   };
+  // FIX 2026-07-29: variante de profundidad SOLO para Recomendaciones. El
+  // bloque genérico de arriba (nivel 3 sobre todo) exige una estructura de
+  // 8 pasos por ítem — diseñada para Análisis/Restricciones, que no tienen
+  // límite de extensión por ítem. Aplicada tal cual a Recomendaciones
+  // contradice su propio formato ("secciones (A)-(F), máximo 2 líneas por
+  // recomendación"): el modelo no puede cumplir 8 pasos en 2 líneas, y el
+  // resultado observado fue texto desorganizado/mezclado, más lento (más
+  // tokens gastados intentando cumplir ambas exigencias) y con más fallas
+  // en las derivaciones/exámenes/medicamentos estructurados (competían por
+  // "atención" con la estructura contradictoria). Esta variante exige más
+  // rigor SIN romper el formato de secciones ni el límite de 2 líneas.
+  const _bloqueProfundidadReco = (nivel, previo, liviano = false) => {
+    if (nivel <= 1) return "";
+    const _notaCampos = " Revisa también si los hallazgos justifican agregar alguna derivación, examen complementario o medicamento pertinente que no se haya incluido en los campos estructurados.";
+    if (liviano) {
+      const _nota = previo && String(previo).trim()
+        ? " No repitas ideas ya cubiertas en el intento anterior; profundiza en aspectos nuevos."
+        : "";
+      return `\n\n⚠️ Intento ${nivel}: el resultado anterior se quedó corto para este caso. Sé más específico y completo, cita la norma exacta cuando aplique, y NO reduzcas la cantidad ni la extensión de los ítems solicitados.${_nota}${_notaCampos}`;
+    }
+    const prevBlock = previo && String(previo).trim()
+      ? `\n\n═══ VERSIÓN ANTERIOR (debes SUPERARLA, no repetirla) ═══\n${String(previo).slice(0, 2500)}\n═══ FIN VERSIÓN ANTERIOR ═══`
+      : "";
+    if (nivel === 2) {
+      return `\n\n⚠️ SEGUNDA ITERACIÓN — EL MÉDICO EXIGE MAYOR PROFUNDIDAD. El resultado previo se quedó corto para este caso. MANTENIENDO estrictamente el formato de secciones (A)-(F) y el máximo de 2 líneas por recomendación, ahora DEBES: (1) citar la norma EXACTA que sustenta cada ítem (artículo específico, no referencia genérica); (2) cuantificar todo lo cuantificable dentro de esas 2 líneas (kg, minutos, grados, frecuencias, metros, decibeles); (3) no omitir ningún hallazgo, antecedente o riesgo relevante de la HC — si hace falta cubrir más, AGREGA más ítems a la sección correspondiente, no alargues cada ítem más allá de 2 líneas.${_notaCampos}${prevBlock}`;
+    }
+    return `\n\n⚠️⚠️ MÁXIMA PROFUNDIDAD. Este caso ha requerido varias iteraciones. MANTENIENDO estrictamente el formato de secciones (A)-(F) y el máximo de 2 líneas por recomendación (NO adoptes una estructura distinta ni más larga por ítem): entrega el mínimo de 18-20 recomendaciones en total, cada una con norma exacta y medida cuantificada dentro de esas 2 líneas, cubriendo TODOS los hallazgos, antecedentes y riesgos de la HC sin relleno genérico.${_notaCampos} Supera de forma inequívoca todas las versiones anteriores.${prevBlock}`;
+  };
 
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
   const generateAIAnalysis = async () => {
@@ -22499,7 +22527,7 @@ JSON REQUERIDO (sin markdown):
   const generateAIRecomendaciones = async () => {
     setIsGeneratingReco(true);
     const _nivelReco = _bumpAiRetry("recomendaciones");
-    const _profBlockReco = _bloqueProfundidad(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales);
+    const _profBlockReco = _bloqueProfundidadReco(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales);
     const ctx = buildFullContextHC(data);
     const hallazgosReco =
       Object.entries(data.examenFisicoSistemas || {})
@@ -22561,7 +22589,7 @@ JSON REQUERIDO (estructura exacta):
     // respondiendo un proveedor de respaldo (no Gemini), usar la variante
     // liviana del bloque de profundidad — ver _bloqueProfundidad(liviano=true).
     const promptRecoLigero = _nivelReco > 1
-      ? prompt.slice(0, prompt.length - _profBlockReco.length) + _bloqueProfundidad(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales, true)
+      ? prompt.slice(0, prompt.length - _profBlockReco.length) + _bloqueProfundidadReco(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales, true)
       : null;
     try {
       // FIX 2026-07-29: Recomendaciones ahora devuelve JSON (texto +
