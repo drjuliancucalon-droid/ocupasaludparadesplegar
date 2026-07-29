@@ -6681,6 +6681,14 @@ const fetchWithTimeout = (url, opts, ms = 40000) => {
     clearTimeout(id)
   );
 };
+// FIX 2026-07-29: rotación round-robin de keys de Gemini. Antes, para CADA
+// modelo, siempre se probaba la key #1 primero y solo se pasaba a la #2 si
+// la #1 fallaba (429) — con 4 keys, si la #1 rara vez se agota dentro del
+// minuto, esa sola key terminaba absorbiendo casi todo el uso (confirmado:
+// 311 llamadas en una key vs 5-25 en las otras 3), dejando sin aprovechar
+// el cupo diario combinado de las demás. Ahora cada llamada empieza
+// probando una key distinta por turno — el orden de MODELOS no cambia.
+let _geminiKeyRotation = 0;
 const AI_PROVIDERS = {
   // ── 1. GEMINI - API Google, CORS nativo, más estable en browsers externos ─
   gemini: {
@@ -6700,10 +6708,18 @@ const AI_PROVIDERS = {
       // o resulta inválida. Cada key de Google AI Studio tiene cupo propio
       // e independiente, así que N keys ≈ N× cupo del modelo Gemini real
       // (a diferencia de caer a otro proveedor, que ya no es Gemini).
-      const apiKeys = apiKey
+      const _apiKeysOriginal = apiKey
         .split(/[,\n]/)
         .map((k) => k.trim())
         .filter(Boolean);
+      // Rotar el punto de partida en cada llamada (round-robin) para repartir
+      // el uso entre todas las keys en vez de agotar siempre la primera.
+      const _rotStart = _apiKeysOriginal.length > 1 ? _geminiKeyRotation % _apiKeysOriginal.length : 0;
+      _geminiKeyRotation++;
+      const apiKeys = [
+        ..._apiKeysOriginal.slice(_rotStart),
+        ..._apiKeysOriginal.slice(0, _rotStart),
+      ];
       // FIX 2026-07-13: se agregan gemini-3.5-flash y gemini-3.1-flash-lite
       // (familia nueva, lanzada después de marzo 2026, confirmada vigente en
       // ai.google.dev/gemini-api/docs/models) — cada modelo tiene cuota
@@ -22007,8 +22023,17 @@ function AppInner() {
   // mayor profundidad y, si existe, el resultado anterior con la orden de
   // SUPERARLO (no repetirlo). Tope en nivel 3.
   const _aiRetryRef = React.useRef({}); // { [patientId__tipo]: nivel }
-  const _bumpAiRetry = (tipo) => {
-    const pid = data?.id || "sin_id";
+  // FIX 2026-07-29: "previo" para el escalado por reintento de Medicina
+  // General y Reporte de empresa — a diferencia de Análisis/Restricciones/
+  // Recomendaciones, estos 2 no tienen un campo persistido dedicado que
+  // guarde el texto exacto de la última respuesta IA, así que se guarda acá.
+  const _prevAnalisisGeneralRef = React.useRef("");
+  const _prevReporteEmpresaRef = React.useRef({});
+  // FIX 2026-07-29: `idOverride` — para llamadas que no son por paciente
+  // individual (ej. Reporte IA de empresa, agrupado por companyName en vez
+  // de data.id) se puede pasar la clave explícita en vez de usar data.id.
+  const _bumpAiRetry = (tipo, idOverride) => {
+    const pid = idOverride || data?.id || "sin_id";
     const k = `${pid}__${tipo}`;
     const n = (_aiRetryRef.current[k] || 0) + 1;
     _aiRetryRef.current[k] = n;
@@ -22027,19 +22052,27 @@ function AppInner() {
   // el volcado de 2500 caracteres de la versión previa.
   const _bloqueProfundidad = (nivel, previo, liviano = false) => {
     if (nivel <= 1) return "";
+    // FIX 2026-07-29: pedido explícito del médico — que "más riguroso" no
+    // sea solo texto más largo. Si el resultado incluye (o puede incluir)
+    // derivaciones, exámenes o medicamentos, la mayor profundidad debe
+    // reflejarse ahí también: revisar si los hallazgos justifican agregar
+    // alguno que no se haya considerado, no solo redactar más extenso.
+    // Frase genérica: en Restricciones (que no maneja esos 3 campos) se
+    // ignora sin efecto, no rompe nada.
+    const _notaCampos = " Revisa también si los hallazgos justifican agregar alguna derivación, examen complementario o medicamento pertinente que no se haya incluido — no te limites a extender el texto.";
     if (liviano) {
       const _nota = previo && String(previo).trim()
         ? " No repitas ideas ya cubiertas en el intento anterior; profundiza en aspectos nuevos."
         : "";
-      return `\n\n⚠️ Intento ${nivel}: el resultado anterior se quedó corto para este caso. Sé más específico y completo, cita la norma exacta cuando aplique, y NO reduzcas la cantidad ni la extensión de los ítems solicitados.${_nota}`;
+      return `\n\n⚠️ Intento ${nivel}: el resultado anterior se quedó corto para este caso. Sé más específico y completo, cita la norma exacta cuando aplique, y NO reduzcas la cantidad ni la extensión de los ítems solicitados.${_nota}${_notaCampos}`;
     }
     const prevBlock = previo && String(previo).trim()
       ? `\n\n═══ VERSIÓN ANTERIOR (debes SUPERARLA, no repetirla) ═══\n${String(previo).slice(0, 2500)}\n═══ FIN VERSIÓN ANTERIOR ═══`
       : "";
     if (nivel === 2) {
-      return `\n\n⚠️ SEGUNDA ITERACIÓN — EL MÉDICO EXIGE MAYOR PROFUNDIDAD. El resultado previo se quedó corto para este caso. Ahora DEBES: (1) ampliar la correlación fisiopatológica de CADA hallazgo con las demandas específicas del cargo; (2) citar la norma EXACTA que sustenta cada ítem (artículo específico, no referencia genérica); (3) cuantificar todo lo cuantificable (kg, minutos, grados de flexión, frecuencias, metros, decibeles); (4) agregar plazo de implementación e indicador de seguimiento verificable por ítem; (5) no omitir ningún hallazgo, antecedente ni resultado de examen relevante presente en la HC. Sé más extenso, técnico y específico que la versión anterior.${prevBlock}`;
+      return `\n\n⚠️ SEGUNDA ITERACIÓN — EL MÉDICO EXIGE MAYOR PROFUNDIDAD. El resultado previo se quedó corto para este caso. Ahora DEBES: (1) ampliar la correlación fisiopatológica de CADA hallazgo con las demandas específicas del cargo; (2) citar la norma EXACTA que sustenta cada ítem (artículo específico, no referencia genérica); (3) cuantificar todo lo cuantificable (kg, minutos, grados de flexión, frecuencias, metros, decibeles); (4) agregar plazo de implementación e indicador de seguimiento verificable por ítem; (5) no omitir ningún hallazgo, antecedente ni resultado de examen relevante presente en la HC.${_notaCampos} Sé más extenso, técnico y específico que la versión anterior.${prevBlock}`;
     }
-    return `\n\n⚠️⚠️ MÁXIMA PROFUNDIDAD — NIVEL JUNTA MÉDICA / PERITAJE OCUPACIONAL. Este caso ha requerido varias iteraciones: entrega el análisis más riguroso posible. Cada recomendación/restricción DEBE seguir la estructura: [hallazgo objetivo] → [mecanismo fisiopatológico] → [correlación con la demanda específica del cargo y el riesgo ocupacional GTC-45] → [norma exacta con artículo] → [medida cuantificada] → [plazo] → [responsable de ejecución] → [indicador de verificación]. Incluye diagnóstico diferencial ocupacional cuando aplique, pronóstico funcional-laboral y criterios objetivos de reevaluación. Máximo rigor técnico-legal, sin relleno genérico. Supera de forma inequívoca todas las versiones anteriores.${prevBlock}`;
+    return `\n\n⚠️⚠️ MÁXIMA PROFUNDIDAD — NIVEL JUNTA MÉDICA / PERITAJE OCUPACIONAL. Este caso ha requerido varias iteraciones: entrega el análisis más riguroso posible. Cada recomendación/restricción DEBE seguir la estructura: [hallazgo objetivo] → [mecanismo fisiopatológico] → [correlación con la demanda específica del cargo y el riesgo ocupacional GTC-45] → [norma exacta con artículo] → [medida cuantificada] → [plazo] → [responsable de ejecución] → [indicador de verificación]. Incluye diagnóstico diferencial ocupacional cuando aplique, pronóstico funcional-laboral y criterios objetivos de reevaluación.${_notaCampos} Máximo rigor técnico-legal, sin relleno genérico. Supera de forma inequívoca todas las versiones anteriores.${prevBlock}`;
   };
 
   // ── GENERACIÓN IA COMPLETA (Concepto + Diagnósticos) ─────────────────────
@@ -22431,7 +22464,7 @@ JSON REQUERIDO (sin markdown):
       .filter(([, v]) => v).map(([k]) => k).join(", ") || "No reportados";
     const dxRecoActivos = [data.diagnosticoPrincipal, data.diagnosticoSecundario1, data.diagnosticoSecundario2]
       .filter(Boolean).join(" | ") || "Pendiente";
-    const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en Colombia. Genera recomendaciones médico-laborales PERSONALIZADAS Y ESPECÍFICAS para el trabajador evaluado, basadas DIRECTAMENTE en los hallazgos clínicos de ESTA historia clínica. Cada recomendación debe derivar de un hallazgo, antecedente, riesgo o característica específica de ESTE paciente. NO generes recomendaciones genéricas desconectadas de la HC. Responde en texto plano numerado, sin JSON, en español formal y directo.
+    const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en Colombia. Genera recomendaciones médico-laborales PERSONALIZADAS Y ESPECÍFICAS para el trabajador evaluado, basadas DIRECTAMENTE en los hallazgos clínicos de ESTA historia clínica. Cada recomendación debe derivar de un hallazgo, antecedente, riesgo o característica específica de ESTE paciente. NO generes recomendaciones genéricas desconectadas de la HC. Responde ÚNICAMENTE JSON válido, sin markdown, en español formal y directo.
 
 ════════ HISTORIA CLÍNICA COMPLETA DEL TRABAJADOR ════════
 Cargo: ${data.cargo} | Empresa: ${data.empresaNombre} | Actividad económica: ${data.actividadEconomica || "N/E"}
@@ -22457,9 +22490,9 @@ Concepto de aptitud: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA previo: ${data.analisisIA ? data.analisisIA.substring(0, 500) + "..." : "No disponible"}
 ══════════════════════════════════════════════════════════
 
-⚠️ PROHIBICIÓN LEGAL EXPRESA (Res. 1843/2025 Art. 21 — confidencialidad diagnóstica): NO incluyas nombres de diagnósticos clínicos, nombres de enfermedades, síndromes ni patologías en las recomendaciones. NO menciones medicamentos específicos, dosis ni tratamientos farmacológicos. Las recomendaciones son de medicina preventiva, ergonomía, vigilancia epidemiológica y conducta laboral — NO de tratamiento médico. Ejemplo correcto: "Realizar pausas activas de 10 minutos cada 2 horas por el cargo de trabajo con exposición biomecánica" — NO: "Por hernia discal L4-L5 no flexionar columna y tomar ibuprofeno".
+⚠️ PROHIBICIÓN LEGAL EXPRESA para el campo "recomendacionesTexto" (Res. 1843/2025 Art. 21 — confidencialidad diagnóstica): NO incluyas nombres de diagnósticos clínicos, nombres de enfermedades, síndromes ni patologías. NO menciones medicamentos específicos, dosis ni tratamientos farmacológicos EN ESTE CAMPO. Las recomendaciones de texto son de medicina preventiva, ergonomía, vigilancia epidemiológica y conducta laboral — NO de tratamiento médico. Ejemplo correcto: "Realizar pausas activas de 10 minutos cada 2 horas por el cargo de trabajo con exposición biomecánica" — NO: "Por hernia discal L4-L5 no flexionar columna y tomar ibuprofeno". Esta prohibición NO aplica a los campos "examenesSugeridos", "derivaciones" y "medicamentosSugeridos" de más abajo — esos SÍ son parte del expediente clínico privado del paciente (no se muestran a la empresa) y deben nombrar con precisión clínica lo que corresponda.
 
-INSTRUCCIÓN: Genera MÍNIMO 14 recomendaciones numeradas. Organiza en las siguientes secciones (indica la sección antes del grupo):
+INSTRUCCIÓN para "recomendacionesTexto": Genera MÍNIMO 14 recomendaciones numeradas como texto plano (con saltos de línea \n, NO como array). Organiza en las siguientes secciones (indica la sección antes del grupo):
 
 (A) RECOMENDACIONES MÉDICAS Y DE ESTILO DE VIDA — Derivadas de los hallazgos clínicos específicos (TA, IMC, diagnósticos, antecedentes). Cada una debe citar el hallazgo que la genera.
 (B) RECOMENDACIONES ERGONÓMICAS Y PREVENTIVAS — Específicas para el CARGO y los RIESGOS identificados en ESTA HC. No genéricas.
@@ -22468,7 +22501,12 @@ INSTRUCCIÓN: Genera MÍNIMO 14 recomendaciones numeradas. Organiza en las sigui
 (E) VIGILANCIA EPIDEMIOLÓGICA Y SEGUIMIENTO — SVE que corresponden según hallazgos y riesgos (GATISO-DME, SVE Osteomuscular, Psicosocial, Visual, Auditivo, Respiratorio, Cardiovascular, etc.).
 (F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
 
-Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.${_profBlockReco}`;
+Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.
+
+ADEMÁS del texto, para que el expediente clínico quede completo, devuelve TAMBIÉN — solo si los hallazgos de ESTA historia realmente lo justifican, deja el array vacío si no aplica — las mismas derivaciones, exámenes y medicamentos que hayas mencionado en las secciones (C)/(D) arriba, ahora en formato estructurado:
+
+JSON REQUERIDO (estructura exacta):
+{"recomendacionesTexto":"el texto completo numerado en secciones (A)-(F) descrito arriba","examenesSugeridos":[{"nombre":"Nombre exacto del examen (ej: Audiometría tonal, Espirometría, Radiografía de columna lumbar)","urgente":false,"justificacion":"Razón clínica concreta en 1 línea basada en los hallazgos de ESTA historia"}],"derivaciones":[{"especialidad":"Nombre especialidad (ej: Ortopedia, Fisiatría, Psicología)","urgencia":"Urgente|Prioritaria|Electiva","motivo":"Motivo clínico preciso y justificado","observaciones":"Información adicional relevante para el especialista o cadena vacía"}],"medicamentosSugeridos":[{"nombre":"Principio activo genérico","presentacion":"Forma farmacéutica + concentración (ej: Tableta 500mg)","dosis":"Cantidad exacta por toma (ej: 1 tableta)","frecuencia":"Intervalo preciso (ej: cada 8 horas)","duracion":"Días exactos (ej: 7 días)","indicaciones":"Instrucción especial imprescindible o cadena vacía"}]}${_profBlockReco}`;
     // FIX 2026-07-29: si esta iteración escaló profundidad y termina
     // respondiendo un proveedor de respaldo (no Gemini), usar la variante
     // liviana del bloque de profundidad — ver _bloqueProfundidad(liviano=true).
@@ -22476,9 +22514,77 @@ Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomenda
       ? prompt.slice(0, prompt.length - _profBlockReco.length) + _bloqueProfundidad(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales, true)
       : null;
     try {
-      const text = await callAI(prompt, false, true, promptRecoLigero);
-      setData((prev) => ({ ...prev, recomendaciones: text.trim() }));
-      showAlert(_nivelReco > 1 ? `✅ Recomendaciones generadas (versión más profunda, intento ${_nivelReco}).` : "✅ Recomendaciones generadas por IA.");
+      // FIX 2026-07-29: Recomendaciones ahora devuelve JSON (texto +
+      // exámenes/derivaciones/medicamentos estructurados) en vez de texto
+      // plano puro — así lo que la IA sugiere en las secciones (C)/(D) deja
+      // de ser solo un párrafo y se fusiona de verdad con la historia real
+      // (mismo patrón que ya usa Análisis IA Completo / Medicina General).
+      const text = await callAI(prompt, true, true, promptRecoLigero);
+      const parsed = parseAIJSON(text);
+      const recoTexto = (parsed.recomendacionesTexto || "").trim();
+      if (!recoTexto) throw new Error("La IA no devolvió el texto de recomendaciones.");
+      setData((prev) => ({ ...prev, recomendaciones: recoTexto }));
+      // ── Exámenes sugeridos → solicitudExamenes (aditivo, dedup por nombre) ──
+      let _nExamAdd = 0;
+      if (parsed.examenesSugeridos?.length > 0) {
+        setData((prev) => {
+          const existing = prev.solicitudExamenes || [];
+          const existingNames = new Set(existing.map(e => (e.nombre || "").toLowerCase().trim()));
+          const newExams = parsed.examenesSugeridos
+            .filter(e => e?.nombre && !existingNames.has(e.nombre.toLowerCase().trim()))
+            .map((e, i) => ({
+              nombre: e.nombre,
+              fecha: new Date().toISOString().split("T")[0],
+              urgente: !!e.urgente,
+              justificacion: e.justificacion || "",
+              _fromAI: true,
+              id: Date.now() + i,
+            }));
+          _nExamAdd = newExams.length;
+          return newExams.length > 0 ? { ...prev, solicitudExamenes: [...existing, ...newExams] } : prev;
+        });
+      }
+      // ── Derivaciones sugeridas → derivaciones (aditivo, dedup por especialidad+motivo) ──
+      let _nDerivAdd = 0;
+      if (parsed.derivaciones?.length > 0) {
+        setData((prev) => {
+          const existing = prev.derivaciones || [];
+          const existingKeys = new Set(existing.map(d => `${(d.especialidad || "").toLowerCase().trim()}|${(d.motivo || "").toLowerCase().trim()}`));
+          const newDerivs = parsed.derivaciones
+            .filter(d => d?.especialidad && !existingKeys.has(`${d.especialidad.toLowerCase().trim()}|${(d.motivo || "").toLowerCase().trim()}`))
+            .map((d, i) => ({
+              especialidad: d.especialidad || "",
+              urgencia: d.urgencia || "Electiva",
+              motivo: d.motivo || "",
+              observaciones: d.observaciones || "",
+              id: Date.now() + i,
+            }));
+          _nDerivAdd = newDerivs.length;
+          return newDerivs.length > 0 ? { ...prev, derivaciones: [...existing, ...newDerivs] } : prev;
+        });
+      }
+      // ── Medicamentos sugeridos → formulaMedicamentos (aditivo, dedup por nombre) ──
+      let _nMedAdd = 0;
+      if (parsed.medicamentosSugeridos?.length > 0) {
+        setData((prev) => {
+          const existing = prev.formulaMedicamentos || [];
+          const existingNames = new Set(existing.map(m => (m.nombre || "").toLowerCase().trim()));
+          const newMeds = parsed.medicamentosSugeridos
+            .filter(m => m?.nombre && !existingNames.has(m.nombre.toLowerCase().trim()))
+            .map((m, i) => ({ ...m, id: Date.now() + i }));
+          _nMedAdd = newMeds.length;
+          return newMeds.length > 0 ? { ...prev, formulaMedicamentos: [...existing, ...newMeds] } : prev;
+        });
+      }
+      const _extras = [
+        _nExamAdd > 0 ? `${_nExamAdd} examen(es)` : null,
+        _nDerivAdd > 0 ? `${_nDerivAdd} derivación(es)` : null,
+        _nMedAdd > 0 ? `${_nMedAdd} medicamento(s)` : null,
+      ].filter(Boolean).join(", ");
+      showAlert(
+        (_nivelReco > 1 ? `✅ Recomendaciones generadas (versión más profunda, intento ${_nivelReco}).` : "✅ Recomendaciones generadas por IA.") +
+        (_extras ? `\n• Añadido a la historia real: ${_extras}.` : "")
+      );
     } catch (e) {
       showAlert(`Error IA Recomendaciones: ${e.message}`);
     } finally {
@@ -22501,6 +22607,13 @@ Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomenda
     _aiRunningRef.current = true;
     setIsGenerating(true);
     setAiProviderStatus("⏳ Iniciando análisis clínico...");
+    // FIX 2026-07-29: escalado por reintento — antes Medicina General no
+    // subía de nivel al repetir el botón (a diferencia de Análisis
+    // Completo/Restricciones/Recomendaciones), así que volver a presionar
+    // reenviaba exactamente el mismo prompt.
+    const _nivelGeneral = _bumpAiRetry("general");
+    const _profBlockGeneral = _bloqueProfundidad(_nivelGeneral, _prevAnalisisGeneralRef.current);
+    const _profBlockGeneralLigero = _bloqueProfundidad(_nivelGeneral, _prevAnalisisGeneralRef.current, true);
     const _fmtSistemas = (rs) => {
       if (!rs) return "Sin datos";
       const keys = { general:"General", cardiovascular:"Cardiovascular", respiratorio:"Respiratorio", digestivo:"Digestivo", genitourinario:"Genitourinario", musculoesqueletico:"Musculoesquelético", neurologico:"Neurológico", dermatologico:"Dermatológico", endocrinologico:"Endocrinológico" };
@@ -22561,10 +22674,14 @@ Eres el médico tratante. Tienes toda la información de esta historia clínica.
 8. ANÁLISIS CLÍNICO: Razonamiento médico EXHAUSTIVO, descriptivo y humanizado. Como si explicaras el caso a un colega: presentación clínica con síntomas guía, hipótesis diagnóstica con justificación en hallazgos específicos de ESTA historia, diferenciales y por qué se priorizan o descartan, correlación síntomas-antecedentes-examen físico, factores de riesgo y su relevancia, pronóstico con el tratamiento propuesto, consideraciones especiales de este paciente.
 
 JSON REQUERIDO (estructura exacta):
-{"diagnosticos":[{"cie10":"CÓD","descripcion":"Nombre completo y específico","tipo":"Principal|Secundario|Presuntivo|Diferencial"}],"plan":{"conducta":"Plan de manejo COMPLETO y detallado: farmacológico + no farmacológico + educación + signos de alarma específicos para ESTE paciente","medicamentos":"Resumen conciso del plan farmacológico para vista rápida","formulaMedicamentos":[{"nombre":"Principio activo genérico","presentacion":"Forma farmacéutica + concentración (ej: Tableta 500mg)","dosis":"Cantidad exacta por toma (ej: 1 tableta)","frecuencia":"Intervalo preciso (ej: cada 8 horas)","duracion":"Días exactos (ej: 7 días)","indicaciones":"Instrucción especial imprescindible o cadena vacía si no aplica"}],"paraclinicosSolicitados":"Resumen textual del plan de paraclínicos para el expediente médico.","examenesSolicitados":[{"nombre":"Nombre exacto del examen o paraclínico (ej: Hemograma completo, Glicemia en ayunas, Ecografía abdominal)","urgente":false,"justificacion":"Razón clínica concreta en 1 línea basada en los hallazgos de ESTA historia"}],"remisiones":"Descripción de remisiones o vacío si ya están en derivaciones","recomendaciones":"Recomendaciones DETALLADAS y PERSONALIZADAS: dieta, actividad, signos de alarma, cuidados, prevención, adherencia","controlEn":"Tiempo exacto de seguimiento con criterios clínicos de reevaluación"},"derivaciones":[{"especialidad":"Nombre especialidad","urgencia":"Urgente|Prioritaria|Electiva","motivo":"Motivo clínico preciso y justificado","observaciones":"Información adicional relevante para el especialista"}],"incapacidad":{"sugerida":true,"dias":3,"origen":"Enfermedad General","diagnostico":"CIE-10 + descripción del diagnóstico incapacitante","justificacion":"Justificación clínica de la incapacidad y por qué esos días específicos"},"analisis":"Razonamiento clínico EXHAUSTIVO y HUMANIZADO en 8-10 líneas: describe la presentación clínica con sus síntomas guía y su evolución temporal; hipótesis diagnóstica principal con justificación basada en hallazgos específicos de ESTA historia; diferenciales considerados y por qué se priorizan o descartan; correlación entre síntomas, antecedentes relevantes y hallazgos del examen físico; factores de riesgo identificados y su relevancia para este caso; pronóstico esperado con el tratamiento propuesto; consideraciones especiales o alertas de este paciente particular"}`;
+{"diagnosticos":[{"cie10":"CÓD","descripcion":"Nombre completo y específico","tipo":"Principal|Secundario|Presuntivo|Diferencial"}],"plan":{"conducta":"Plan de manejo COMPLETO y detallado: farmacológico + no farmacológico + educación + signos de alarma específicos para ESTE paciente","medicamentos":"Resumen conciso del plan farmacológico para vista rápida","formulaMedicamentos":[{"nombre":"Principio activo genérico","presentacion":"Forma farmacéutica + concentración (ej: Tableta 500mg)","dosis":"Cantidad exacta por toma (ej: 1 tableta)","frecuencia":"Intervalo preciso (ej: cada 8 horas)","duracion":"Días exactos (ej: 7 días)","indicaciones":"Instrucción especial imprescindible o cadena vacía si no aplica"}],"paraclinicosSolicitados":"Resumen textual del plan de paraclínicos para el expediente médico.","examenesSolicitados":[{"nombre":"Nombre exacto del examen o paraclínico (ej: Hemograma completo, Glicemia en ayunas, Ecografía abdominal)","urgente":false,"justificacion":"Razón clínica concreta en 1 línea basada en los hallazgos de ESTA historia"}],"remisiones":"Descripción de remisiones o vacío si ya están en derivaciones","recomendaciones":"Recomendaciones DETALLADAS y PERSONALIZADAS: dieta, actividad, signos de alarma, cuidados, prevención, adherencia","controlEn":"Tiempo exacto de seguimiento con criterios clínicos de reevaluación"},"derivaciones":[{"especialidad":"Nombre especialidad","urgencia":"Urgente|Prioritaria|Electiva","motivo":"Motivo clínico preciso y justificado","observaciones":"Información adicional relevante para el especialista"}],"incapacidad":{"sugerida":true,"dias":3,"origen":"Enfermedad General","diagnostico":"CIE-10 + descripción del diagnóstico incapacitante","justificacion":"Justificación clínica de la incapacidad y por qué esos días específicos"},"analisis":"Razonamiento clínico EXHAUSTIVO y HUMANIZADO en 8-10 líneas: describe la presentación clínica con sus síntomas guía y su evolución temporal; hipótesis diagnóstica principal con justificación basada en hallazgos específicos de ESTA historia; diferenciales considerados y por qué se priorizan o descartan; correlación entre síntomas, antecedentes relevantes y hallazgos del examen físico; factores de riesgo identificados y su relevancia para este caso; pronóstico esperado con el tratamiento propuesto; consideraciones especiales o alertas de este paciente particular"}${_profBlockGeneral}`;
+    const promptGeneralLigero = _nivelGeneral > 1
+      ? prompt.slice(0, prompt.length - _profBlockGeneral.length) + _profBlockGeneralLigero
+      : null;
     try {
-      const text = await callAI(prompt, true, true);
+      const text = await callAI(prompt, true, true, promptGeneralLigero);
       const parsed = parseAIJSON(text);
+      _prevAnalisisGeneralRef.current = parsed.analisis || _prevAnalisisGeneralRef.current;
       // Normalizar campos string del plan: la IA a veces devuelve arrays/objetos en vez de strings
       const _normPlanStr = (v) => {
         if (!v) return "";
@@ -22648,7 +22765,7 @@ JSON REQUERIDO (estructura exacta):
           return newExams.length > 0 ? { ...prev, solicitudExamenes: [...existing, ...newExams] } : prev;
         });
       }
-      showAlert(`✅ Análisis IA completado — diagnósticos, medicamentos, paraclínicos, derivaciones e incapacidad generados.${parsed.examenesSolicitados?.length > 0 ? `\n• ${parsed.examenesSolicitados.length} examen(es) sugerido(s) añadidos a la orden` : ""}`);
+      showAlert(`✅ Análisis IA completado${_nivelGeneral > 1 ? ` (versión más profunda, intento ${_nivelGeneral})` : ""} — diagnósticos, medicamentos, paraclínicos, derivaciones e incapacidad generados.${parsed.examenesSolicitados?.length > 0 ? `\n• ${parsed.examenesSolicitados.length} examen(es) sugerido(s) añadidos a la orden` : ""}`);
     } catch (e) {
       showAlert(`Error IA: ${e.message}`);
     } finally {
@@ -22666,6 +22783,13 @@ JSON REQUERIDO (estructura exacta):
       return;
     }
     setIsGeneratingReport(true);
+    // FIX 2026-07-29: escalado por reintento, agrupado por empresa (no por
+    // paciente — este reporte es a nivel compañía). Antes no subía de nivel
+    // al repetir el botón para la misma empresa.
+    const _nivelReporte = _bumpAiRetry("reporte_empresa", companyName);
+    const _prevReporte = _prevReporteEmpresaRef.current[companyName] || "";
+    const _profBlockReporte = _bloqueProfundidad(_nivelReporte, _prevReporte);
+    const _profBlockReporteLigero = _bloqueProfundidad(_nivelReporte, _prevReporte, true);
     const fmtDist = (obj) =>
       Object.entries(obj || {})
         .sort(([, a], [, b]) => b - a)
@@ -22719,7 +22843,10 @@ JSON REQUERIDO (estructura exacta):
       "\n\n1. ANÁLISIS JUSTIFICADO (mínimo 300 palabras): Interpretación epidemiológica de los resultados colectivos. Prevalencia de patologías con soporte estadístico. Distribución por cargo/área. Factores de riesgo identificados según GTC-45. Correlación entre morbilidad encontrada y exposición ocupacional. Mención de normativa aplicable." +
       "\n\n2. CONCLUSIONES (mínimo 200 palabras): Resumen ejecutivo de los hallazgos más relevantes. Indicadores epidemiológicos críticos. Nivel de cumplimiento del SG-SST. Riesgos prioritarios identificados." +
       "\n\n3. RECOMENDACIONES (mínimo 250 palabras): Acciones correctivas específicas. Programas de vigilancia epidemiológica (PVE/SVE) sugeridos con base normativa. Ajustes en el SG-SST conforme Res. 0312/2019. Seguimiento médico prioritario por grupos de riesgo. Cronograma sugerido de intervenciones." +
-      '\n\nDevuelve ÚNICAMENTE JSON válido sin markdown: {"analisisJustificado":"texto completo sección 1","conclusiones":"texto completo sección 2","recomendacionesInforme":"texto completo sección 3"}';
+      `\n\nDevuelve ÚNICAMENTE JSON válido sin markdown: {"analisisJustificado":"texto completo sección 1","conclusiones":"texto completo sección 2","recomendacionesInforme":"texto completo sección 3"}${_profBlockReporte}`;
+    const prompt2Ligero = _nivelReporte > 1
+      ? prompt2.slice(0, prompt2.length - _profBlockReporte.length) + _profBlockReporteLigero
+      : null;
     try {
       // ── MEJORA: llamadas secuenciales para no saturar el Rate Limit del proveedor ──
       // Antes era Promise.all (simultáneo) → ahora es secuencial para evitar error 429
@@ -22727,9 +22854,11 @@ JSON REQUERIDO (estructura exacta):
       const parte1 = parseAIJSON(text1);
       // Pequeña pausa entre llamadas para respetar los límites de peticiones
       await new Promise(resolve => setTimeout(resolve, 800));
-      const text2 = await callAI(prompt2, true, true);
+      const text2 = await callAI(prompt2, true, true, prompt2Ligero);
       const parte2 = parseAIJSON(text2);
+      _prevReporteEmpresaRef.current[companyName] = parte2.analisisJustificado || _prevReporte;
       setReportAIResult({ ...parte1, conclusiones: parte2.conclusiones || "", analisisJustificado: parte2.analisisJustificado || "", recomendacionesInforme: parte2.recomendacionesInforme || "" });
+      if (_nivelReporte > 1) showAlert(`✅ Reporte generado (versión más profunda, intento ${_nivelReporte}).`);
     } catch (e) {
       showAlert(`⚠️ Error IA Reporte: ${e.message}`);
     } finally {
