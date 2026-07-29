@@ -6836,12 +6836,19 @@ const AI_PROVIDERS = {
         throw new Error(
           "Groq: API Key no configurada - obtenla gratis en console.groq.com/keys"
         );
+      // FIX 2026-07-29: se agrega openai/gpt-oss-120b (modelo ~120B, capacidad
+      // similar a Gemini flash) como primera opción — antes NO estaba en la
+      // lista y, cuando Gemini agotaba cuota, Groq caía directo a modelos
+      // débiles (llama-3.1-8b-instant, gemma2-9b-it), que completaban la
+      // respuesta pero muy corta. Los débiles quedan al final, solo como
+      // último recurso real.
       const tryModels = [
+        "openai/gpt-oss-120b",
         "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "gemma2-9b-it",
         "llama-3.1-70b-versatile",
         "llama3-70b-8192",
+        "gemma2-9b-it",
+        "llama-3.1-8b-instant",
       ];
       let lastErr = null;
       for (const model of tryModels) {
