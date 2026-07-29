@@ -21818,6 +21818,18 @@ function AppInner() {
           // muestra en silencio: se avisa en el indicador de estado para que
           // el médico sepa que ese texto puede estar cortado y vuelva a pedirlo.
           const _vinoTruncada = typeof _raw === "object" && _raw?.truncated === true;
+          // FIX 2026-07-29: si el llamador espera JSON y la respuesta vino
+          // truncada como último recurso (ningún modelo/key completó), NO
+          // se acepta como éxito — un JSON cortado a mitad de string casi
+          // nunca es reparable y revienta parseAIJSON con un mensaje
+          // críptico ("JSON irreparable: {...") en vez de degradarse con
+          // gracia. Se trata como fallo de este proveedor y se prueba el
+          // siguiente (mismo criterio que una respuesta vacía).
+          if (expectJson && _vinoTruncada) {
+            setAiProviderStatus(`⚠️ ${_label}: respuesta incompleta (truncada) → ${_isLast ? "sin más proveedores" : "probando siguiente..."}`);
+            lastError = new Error(`${_label}: la respuesta llegó truncada/incompleta`);
+            continue;
+          }
           if (text && text.trim().length > 10) {
             setAiStatus("ok");
             setAiProviderStatus(_vinoTruncada ? `⚠️ ${_label} — respuesta posiblemente incompleta` : `✅ ${_label}`);
@@ -21870,10 +21882,17 @@ function AppInner() {
       const wasRateLimit = (lastError?.message || "").includes("429") ||
         (lastError?.message || "").toLowerCase().includes("rate limit") ||
         (lastError?.message || "").toLowerCase().includes("quota");
+      // FIX 2026-07-29: mensaje específico cuando la única causa fue
+      // respuesta truncada en todos los proveedores (JSON pedido, pero
+      // nada llegó completo) — antes cualquier caso caía en el mensaje
+      // genérico de "renueve sus keys", que no describe lo que pasó.
+      const wasTruncatedOnly = (lastError?.message || "").includes("truncada/incompleta");
       throw new Error(
         `⚠️ IA no disponible. Probados: ${providerNames}\n` +
           (wasRateLimit
             ? `Causa: Límite de peticiones gratuitas alcanzado en todos los proveedores.\n\nSOLUCIÓN RÁPIDA: Espere 1 minuto y vuelva a intentarlo. Si persiste, abra ⚙️ IA y renueve las keys gratuitas (toma menos de 2 minutos).`
+            : wasTruncatedOnly
+            ? `Causa: la respuesta llegó incompleta/cortada en todos los proveedores disponibles (el caso es extenso para el espacio de respuesta).\n\nSOLUCIÓN: vuelva a presionar el botón en un momento — con las keys rotando y varios proveedores de respaldo, suele completarse en el siguiente intento.`
             : `Último error: ${lastError?.message || "sin respuesta"}\n\nSOLUCIÓN: Abra ⚙️ IA → use el botón "Probar" en cada proveedor → obtenga una key nueva gratis en el enlace que aparece → guarde.\nLas keys gratuitas expiran o alcanzan su límite. Renovarlas toma menos de 2 minutos.`)
       );
     },
