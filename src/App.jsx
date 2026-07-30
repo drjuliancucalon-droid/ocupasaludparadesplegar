@@ -14228,6 +14228,17 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // en varias páginas de PDF sin solaparlo, así que no hace falta forzar
     // una sola hoja ahí — solo se aplica al imprimir/guardar PDF real desde
     // el navegador (window.open, sin frameElement), donde zoom sí funciona.
+    // FIX 2026-07-29: ESCALA UNIFORME entre certificados concatenados.
+    // Antes cada certificado calculaba y aplicaba SU PROPIO zoom según su
+    // largo (entre 0.70 y 1.0). En el portal de empresa, donde se imprimen
+    // decenas en un mismo documento, eso producía hojas con tamaños de letra
+    // distintos — el "se ve desordenado / cada uno diferente" reportado: el
+    // certificado 1 al 100%, el 13 al ~78%, etc. El camino de Reportes/ZIP no
+    // sufre esto porque omite el zoom (detecta el iframe) y en su lugar escala
+    // el canvas completo de forma uniforme con _tryFitCanvasOnePage.
+    // Ahora todos los certificados del documento se registran en un registro
+    // compartido y se aplica UNA sola escala: la mínima que necesite el más
+    // largo. Con un solo certificado el comportamiento es idéntico al anterior.
     "<script>(function(){" +
     "var w=document.currentScript.previousElementSibling;if(!w)return;" +
     "var dbg=w.previousElementSibling;" +
@@ -14235,15 +14246,27 @@ const _dateRef = data.fechaCierre ? new Date(data.fechaCierre + "T12:00:00") : n
     // (iframe oculto del ZIP) no respeta @media print, así que se oculta
     // también por JS aquí para que no quede horneada dentro del PDF/imagen.
     "if(window.frameElement){if(dbg)dbg.style.display='none';return;}" +
-    "function f(){try{" +
-    "var innerH=1056-80;var h=w.scrollHeight;var s=1;" +
-    "if(h>innerH){" +
-    "s=Math.max(0.70,innerH/h);" +
-    "w.style.zoom=s;" +
-    "}" +
-    "if(dbg)dbg.textContent='scrollHeight='+h+'px | innerH='+innerH+'px | excede='+(h>innerH)+' | scale='+s.toFixed(3)+' | final='+(h*s).toFixed(0)+'px (hoja=1056px) | paginas~'+Math.ceil((h*s)/1056);" +
+    "var R=window.__SISO_CERT_FIT||(window.__SISO_CERT_FIT={ws:[],t:null});" +
+    "R.ws.push({w:w,dbg:dbg});" +
+    "function fitAll(){try{" +
+    // FIX 2026-07-29: colchón de 80 → 130px. Con 80 el presupuesto quedaba en
+    // 976px de 1056, al filo: cualquier margen que agregue el diálogo de
+    // impresión ("Márgenes: Predeterminado" en Chrome ≈ 38px por lado) empujaba
+    // el contenido a una segunda hoja. Medido en el PDF real del portal: 44 de
+    // 64 certificados desbordaban por unos pocos milímetros. Con 130 hay
+    // holgura real y el costo en tamaño de letra es ~2%.
+    "var innerH=1056-130,s=1,i,h,si;" +
+    // 1) limpiar zoom previo para medir la altura real (evita acumular escalas)
+    "for(i=0;i<R.ws.length;i++){R.ws[i].w.style.zoom='';}" +
+    // 2) una sola escala: la mínima que requiera el certificado más largo
+    "for(i=0;i<R.ws.length;i++){h=R.ws[i].w.scrollHeight;if(h>innerH){si=Math.max(0.70,innerH/h);if(si<s)s=si;}}" +
+    // 3) aplicarla a TODOS por igual
+    "for(i=0;i<R.ws.length;i++){if(s<1)R.ws[i].w.style.zoom=s;" +
+    "if(R.ws[i].dbg)R.ws[i].dbg.textContent='certs='+R.ws.length+' | escala UNIFORME='+s.toFixed(3)+' | alto='+R.ws[i].w.scrollHeight+'px (hoja=1056px)';}" +
     "}catch(e){if(dbg)dbg.textContent='ERROR: '+e.message;}}" +
-    'if(document.readyState==="complete")f();else window.addEventListener("load",f);' +
+    // debounce: el último certificado en cargar dispara un único recálculo global
+    "function sched(){if(R.t)clearTimeout(R.t);R.t=setTimeout(fitAll,60);}" +
+    'if(document.readyState==="complete")sched();else window.addEventListener("load",sched);' +
     "})();</script>" +
     "</body></html>"
   );
@@ -14593,7 +14616,10 @@ const _buildCertificadosEmpresaHTML = (pacientes) => {
     const certHtml = _generarCertificadoDesdePortal(p);
     const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
     const body = bodyMatch ? bodyMatch[1] : certHtml;
-    return `<div style="${i > 0 ? "page-break-before:always;padding-top:8mm;" : ""}">${body}</div>`;
+    // FIX 2026-07-29: se quita el `padding-top:8mm` — mismo defecto que en el
+    // portal: el auto-ajuste del certificado no ve el padding de este div
+    // exterior, así que el excedente caía a una segunda hoja en blanco.
+    return `<div style="${i > 0 ? "page-break-before:always;" : ""}">${body}</div>`;
   }).join("");
   const first = (pacientes && pacientes[0]) ? _generarCertificadoDesdePortal(pacientes[0]) : "";
   const styleMatch = first.match(/<style>([\s\S]*?)<\/style>/);
@@ -16816,7 +16842,15 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
                             const certHtml = _generarCertificadoDesdePortal(p);
                             const bodyMatch = certHtml.match(/<body[^>]*>([\s\S]*)<\/body>/);
                             const bodyContent = bodyMatch ? bodyMatch[1] : certHtml;
-                            return `<div style="${i > 0 ? "page-break-before:always;padding-top:10mm;" : ""}">${bodyContent}</div>`;
+                            // FIX 2026-07-29: se quita el `padding-top:10mm`. El script de
+                            // auto-ajuste del certificado mide SU PROPIO wrapper
+                            // (w.scrollHeight) y lo compara contra la hoja, pero ese padding
+                            // vivía en este div de AFUERA, así que no lo contaba: el script
+                            // creía que cabía y esos 10mm lo empujaban a una segunda hoja.
+                            // Resultado medido en el PDF real del portal: 120 páginas para
+                            // 64 certificados, con 44 hojas que solo traían dos líneas
+                            // huérfanas del pie legal (47% de desperdicio).
+                            return `<div style="${i > 0 ? "page-break-before:always;" : ""}">${bodyContent}</div>`;
                           }).join("");
                           const firstCert = _generarCertificadoDesdePortal(pacs[0]);
                           const styleMatch = firstCert.match(/<style>([\s\S]*?)<\/style>/);
