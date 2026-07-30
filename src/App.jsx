@@ -15624,17 +15624,37 @@ function PortalCustodiaViewer({ custodia, empresaNombre, periodo, sbUrl, sbKey }
   const fechaISO = custodia.fecha || new Date().toISOString().split("T")[0];
   const [y, m] = fechaISO.split("-").map(Number);
   const fechaTexto = (() => { const [yr, mo, dy] = fechaISO.split("-").map(Number); return `${dy} de ${_MONTHS_PORTAL[mo - 1]} de ${yr}`; })();
-  const mesRef = (m - 2 + 12) % 12;
+  // FIX 2026-07-29: el portal mostraba el MES EQUIVOCADO en la carta de
+  // custodia. Antes: `mesRef = (m - 2 + 12) % 12`, que resta DOS al mes de la
+  // fecha de emisión — uno por el índice base-0 y otro más porque asumía que
+  // la carta siempre se emite el mes siguiente al que cubre. Con una carta
+  // emitida el 2026-07-29 para el periodo de julio daba (7-2)%12 = 5 =
+  // "junio" (reportado por el médico: el portal decía junio y la plataforma,
+  // que sí usa el mes guardado, decía julio).
+  // Ahora se usa el `mes`/`anio` que el registro guarda explícitamente (0-11,
+  // tal como lo escribe la creación de la carta), y solo si NO vienen se cae
+  // al periodo del propio registro y, en último caso, al mes de la fecha
+  // (SIN restar uno de más).
+  const _mesGuardado = Number.isInteger(custodia.mes) ? custodia.mes : null;
+  const _perMatch = String(custodia.periodo || "").match(/^(\d{4})-(\d{2})/);
+  const mesRef = _mesGuardado !== null
+    ? _mesGuardado
+    : (_perMatch ? Number(_perMatch[2]) - 1 : (m - 1 + 12) % 12);
   const mesTexto = _MONTHS_PORTAL[mesRef];
-  const anioVal = mesRef === 11 && m === 1 ? y - 1 : y;
-  const docNombre = (custodia.medicoNombre || "JULIAN CUCALON").toUpperCase();
-  const docTitulo = (custodia.medicoTitulo || "MEDICO ESPECIALISTA EN SST").toUpperCase();
-  const docLicencia = custodia.medicoLicencia || "14497-12-2019";
-  const docCC = custodia.medicoCC || "1061750704";
-  const docCel = custodia.medicoTel || "3182213979";
-  const docEmail = custodia.medicoEmail || "dr.juliancucalon@gmail.com";
-  const docCiudad = custodia.medicoCiudad || "Popayán";
-  const firmaSrc = custodia.firma || null;
+  const anioVal = custodia.anio || custodia.anioVal
+    || (_perMatch ? Number(_perMatch[1]) : y);
+  const docNombre = (custodia.medicoNombre || custodia.docNombre || "JULIAN CUCALON").toUpperCase();
+  const docTitulo = (custodia.medicoTitulo || custodia.docTitulo || "MEDICO ESPECIALISTA EN SST").toUpperCase();
+  const docLicencia = custodia.medicoLicencia || custodia.docLicencia || "14497-12-2019";
+  const docCC = custodia.medicoCC || custodia.docCC || "1061750704";
+  const docCel = custodia.medicoTel || custodia.docCel || "3182213979";
+  const docEmail = custodia.medicoEmail || custodia.docEmail || "dr.juliancucalon@gmail.com";
+  const docCiudad = custodia.medicoCiudad || custodia.docCiudad || "Popayán";
+  // FIX 2026-07-29: aceptar también `firmaSrc` (así la nombra la carta guardada
+  // en siso_cartas_custodia). Antes solo se miraba `custodia.firma`, y como el
+  // registro publicado al portal venía sin ese campo, la carta salía con el
+  // recuadro vacío "Firma digital" pese a estar firmada en la plataforma.
+  const firmaSrc = custodia.firma || custodia.firmaSrc || null;
 
   const handleSave = async () => {
     setSaving(true);
@@ -21741,7 +21761,14 @@ function AppInner() {
           ] : []),
           // ── Datos operativos — usuarios sin base64 de firmas ─────────────────────
           _sbSetSafe("siso_users",                        usersList),  // strip firma/logo
-          _sbSet(`siso_saved_bills_${_asSuf}`,            savedBillsList),
+          // FIX 2026-07-29: esta escritura NO tenía la guardia anti-borrado que
+          // sí tienen sus vecinas (la de savedReports justo abajo y la copia
+          // duplicada de cuentas ~45 líneas más adelante, que ya usa
+          // `if (savedBillsList?.length)`). Si el autoguardado corría con la
+          // lista de cuentas vacía en memoria, empujaba [] sobre la nube y
+          // borraba todas las cuentas de cobro guardadas. Reportado por el
+          // médico: crea la cuenta, al día siguiente inicia sesión y ya no está.
+          ((savedBillsList || []).length ? _sbSet(`siso_saved_bills_${_asSuf}`, savedBillsList) : Promise.resolve(true)),
           // Guardia anti-borrado: no empujar lista vacía sobre la nube
           ((savedReports || []).length ? _sbSet("siso_saved_reports", savedReports) : Promise.resolve(true)),
           _sbSet("siso_audit_log",                        auditLog),
@@ -24528,21 +24555,40 @@ const handleLogin = (u, p) => {
   const _suf = () => currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user || "shared";
   const _persistBillsSafe = (upd) => {
     const k1 = `siso_saved_bills_${_suf()}`, k2 = "siso_saved_bills";
-    try { _ls.setItem(k1, JSON.stringify(upd)); } catch {}
-    try { _ls.setItem(k2, JSON.stringify(upd)); } catch {}
+    // FIX 2026-07-29 (instrumentación): las cuentas de cobro desaparecían entre
+    // sesiones y no había forma de saber en qué eslabón se perdían. Este
+    // registro deja traza del resultado de CADA destino (localStorage, D1 y
+    // Supabase) con el número de cuenta, para poder confirmar la causa con
+    // evidencia en vez de suponerla. Se guarda además la última traza en
+    // localStorage para poder revisarla al día siguiente.
+    const _traza = { ts: new Date().toISOString(), n: (upd || []).length, numeros: (upd || []).map(b => b?.number).filter(Boolean), ls1: false, ls2: false, d1: null, sb: null };
+    try { _ls.setItem(k1, JSON.stringify(upd)); _traza.ls1 = true; } catch (e) { console.warn("[cuentas] localStorage", k1, e?.message); }
+    try { _ls.setItem(k2, JSON.stringify(upd)); _traza.ls2 = true; } catch (e) { console.warn("[cuentas] localStorage", k2, e?.message); }
+    const _dejarTraza = () => { try { _ls.setItem("siso_debug_bills_last", JSON.stringify(_traza)); } catch {} };
     // AUDITORÍA 2026-07-09: los fallos de subida ya no se tragan en silencio —
     // alimentan el badge "Datos sin respaldo en nube" (fuente "cuentas").
     if (_WORKER_TOKEN) {
       Promise.all([
         _writeArrayMergeD1(k1, upd, "id"),
         _writeArrayMergeD1(k2, upd, "id"),
-      ]).then(([a, b]) => _markUnsyncedHC(!(a && b), "cuentas"))
-        .catch(() => _markUnsyncedHC(true, "cuentas"));
+      ]).then(([a, b]) => {
+        _traza.d1 = { [k1]: !!a, [k2]: !!b };
+        console.info(`[cuentas] D1 ${k1}=${a ? "OK" : "FALLÓ"} ${k2}=${b ? "OK" : "FALLÓ"} · ${_traza.n} cuenta(s): ${_traza.numeros.join(", ")}`);
+        _dejarTraza();
+        _markUnsyncedHC(!(a && b), "cuentas");
+      }).catch((e) => {
+        _traza.d1 = { error: e?.message || "excepción" };
+        console.warn("[cuentas] D1 excepción:", e?.message); _dejarTraza();
+        _markUnsyncedHC(true, "cuentas");
+      });
     } else {
+      _traza.d1 = { error: "sin token de worker" };
+      console.warn("[cuentas] D1 omitido: sin token de worker"); _dejarTraza();
       _markUnsyncedHC(true, "cuentas");
     }
-    _sbSet(k1, upd).catch(() => {});
-    _sbSet(k2, upd).catch(() => {});
+    Promise.all([_sbSet(k1, upd), _sbSet(k2, upd)])
+      .then(([a, b]) => { _traza.sb = { [k1]: !!a, [k2]: !!b }; console.info(`[cuentas] Supabase ${k1}=${a ? "OK" : "FALLÓ"} ${k2}=${b ? "OK" : "FALLÓ"}`); _dejarTraza(); })
+      .catch((e) => { _traza.sb = { error: e?.message || "excepción" }; console.warn("[cuentas] Supabase excepción:", e?.message); _dejarTraza(); });
   };
   // AUDITORÍA 2026-07-09: persistencia SEGURA de propuestas económicas
   // (siso_saved_reports). Antes se escribían con _sync → _workerSet directo
