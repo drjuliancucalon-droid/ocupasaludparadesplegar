@@ -14459,25 +14459,73 @@ const _tryFitCanvasOnePage = (pdf, canvas, mg, cW, pcHpx, pxPerMm) => {
 // Convierte HTML completo → Blob PDF (iframe + html2canvas + jsPDF, multipágina).
 // Versión módulo del conversor del portal, para armar paquetes ZIP.
 // singlePage=true intenta ajustar a una sola hoja (solo para certificados).
-const _htmlToPdfBlobMod = (htmlContent, singlePage) => new Promise((resolve, reject) => {
+// FIX 2026-07-29 (incidente paquete ZIP con certificados cruzados): esta
+// función entregaba el PDF de la llamada ANTERIOR. Causa: `ifr.onload` se
+// asignaba ANTES de fijar `srcdoc`, así que también atrapaba la carga inicial
+// de `about:blank`; sumado a una espera FIJA de 300 ms (insuficiente cuando el
+// certificado trae la firma en base64) y a un `cleanup()` que dejaba el iframe
+// anterior vivo otros 300 ms, la captura corría contra el documento equivocado.
+// Resultado real medido: cada archivo del ZIP contenía el documento de la
+// posición previa — certificados con el nombre de un trabajador y los datos
+// clínicos de otro, más la pérdida del primero y del último de la cadena.
+//
+// Ahora la espera es DETERMINISTA y verificada:
+//   1) no se usa `onload`: se sondea hasta que el documento de `srcdoc` esté
+//      realmente completo y con contenido (elimina de raíz el about:blank),
+//   2) se esperan las fuentes y la decodificación real de cada imagen,
+//   3) `expectMarker` (opcional) — texto que DEBE aparecer en el documento
+//      capturado (se le pasa la cédula). Si no aparece, se rechaza en vez de
+//      devolver un PDF que no corresponde. Un certificado equivocado es un
+//      documento legal equivocado: es preferible fallar.
+//   4) el iframe se retira de inmediato, sin dejar copias solapadas.
+const _htmlToPdfBlobMod = (htmlContent, singlePage, expectMarker) => new Promise((resolve, reject) => {
   const ifr = document.createElement("iframe");
-  // FIX 2026-07-22: visibility:hidden causaba que html2canvas renderizara el
-  // TEXTO casi invisible (barras/cajas con color sí se veían bien) — bug
-  // conocido de html2canvas con ancestros visibility:hidden. El iframe ya
-  // está fuera de pantalla por "left:-9999px", así que visibility:hidden era
-  // redundante para ocultarlo al usuario; se quita sin tocar el resto del
-  // mecanismo de captura (tamaño, scale, paginación).
+  // NOTA: NO usar visibility:hidden — html2canvas renderiza el texto casi
+  // invisible si un ancestro lo tiene. El iframe ya está fuera de pantalla.
   ifr.style.cssText = "position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;";
+  let done = false;
+  const _to = setTimeout(() => settle(reject, new Error("timeout")), 25000);
+  function settle(fn, arg) {
+    if (done) return;
+    done = true;
+    clearTimeout(_to);
+    if (document.body.contains(ifr)) document.body.removeChild(ifr);
+    fn(arg);
+  }
   document.body.appendChild(ifr);
-  const cleanup = () => { setTimeout(() => { if (document.body.contains(ifr)) document.body.removeChild(ifr); }, 300); };
-  const _to = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, 25000);
-  ifr.onload = async () => {
+  ifr.srcdoc = htmlContent;
+  (async () => {
     try {
-      const iDoc = ifr.contentDocument;
+      // 1) Esperar el documento REAL de srcdoc (no el about:blank inicial).
+      // Dos plazos distintos a propósito: mientras el documento AÚN no carga se
+      // espera hasta 20s (puede ser lento), pero si ya cargó y la marca no está,
+      // el contenido ya es definitivo — se concede solo una gracia corta y se
+      // falla. Así un lote de 56 certificados no tarda minutos en abortar.
+      const t0 = Date.now();
+      let tCargado = 0;
+      let iDoc = null;
+      for (;;) {
+        iDoc = ifr.contentDocument;
+        const cargado = iDoc && iDoc.readyState === "complete" && iDoc.body && iDoc.body.childElementCount > 0;
+        if (cargado && !tCargado) tCargado = Date.now();
+        const conMarca = !expectMarker || (cargado && (iDoc.body.innerText || "").includes(expectMarker));
+        if (cargado && conMarca) break;
+        if (cargado && Date.now() - tCargado > 2000) {
+          throw new Error(`el documento capturado no contiene "${expectMarker}" — se aborta para no emitir un PDF que no corresponde`);
+        }
+        if (Date.now() - t0 > 20000) throw new Error("el contenido no terminó de cargar");
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      // 2) Fuentes e imágenes REALMENTE listas (la firma va en base64 y tarda).
+      try { if (iDoc.fonts && iDoc.fonts.ready) await iDoc.fonts.ready; } catch {}
+      try {
+        await Promise.all([...iDoc.images].map((im) => im.complete ? null : new Promise((r) => { im.onload = im.onerror = r; })));
+      } catch {}
       const nb = iDoc.querySelector(".np-dl,.np-bar,.print-toolbar"); if (nb) nb.style.display = "none";
       const sh = iDoc.documentElement.scrollHeight;
       ifr.style.height = sh + "px";
-      await new Promise((r) => setTimeout(r, 300));
+      // dos frames para que el reflow por la nueva altura quede aplicado
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const canvas = await html2canvas(iDoc.body, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: "#ffffff", width: 816, windowWidth: 816, scrollX: 0, scrollY: 0, height: sh, windowHeight: sh });
       const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
       const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
@@ -14493,10 +14541,9 @@ const _htmlToPdfBlobMod = (htmlContent, singlePage) => new Promise((resolve, rej
         ctx.drawImage(canvas, 0, y0, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
         pdf.addImage(tmp.toDataURL("image/jpeg", 0.92), "JPEG", mg, mg, cW, slicePx / pxPerMm);
       }
-      clearTimeout(_to); cleanup(); resolve(pdf.output("blob"));
-    } catch (e) { clearTimeout(_to); cleanup(); reject(e); }
-  };
-  ifr.srcdoc = htmlContent;
+      settle(resolve, pdf.output("blob"));
+    } catch (e) { settle(reject, e); }
+  })();
 });
 
 // Genera el HTML de TODOS los certificados de una lista de pacientes (cada uno
@@ -14665,7 +14712,10 @@ const _INF_COLORS = {
 // página (816px fijos). Reemplazado por flex con ancho en PX explícito por
 // tarjeta, que html2canvas renderiza de forma confiable (igual que el flex
 // del kpi() de arriba, que nunca mostró este problema).
-const _INF_COL_W = Math.floor((728 - 24) / 3); // 728px área útil (816 - padding), 2 gaps de 12px, 3 columnas
+// FIX 2026-07-29: de 3 a 2 columnas. Con 3 columnas la etiqueta quedaba en
+// 114px y los cargos reales se truncaban con "…"; con 2 queda en ~238px y caben
+// completos. 728px de área útil menos 1 gap de 12px, entre 2.
+const _INF_COL_W = Math.floor((728 - 12) / 2);
 // FIX 2026-07-22: la etiqueta usaba flex:1 (flex-basis:0%) dentro de la fila
 // flex — html2canvas calcula mal ese ancho "flexible" y lo colapsa a ~0px;
 // con overflow:hidden el texto queda casi invisible (visto como una mancha
@@ -14673,14 +14723,27 @@ const _INF_COL_W = Math.floor((728 - 24) / 3); // 728px área útil (816 - paddi
 // sí se veían bien). Fix: ancho fijo en px para la etiqueta también, nada
 // de flex-grow. _INF_LABEL_W = ancho de tarjeta menos padding, barra, gaps y %.
 const _INF_LABEL_W = _INF_COL_W - 24 /*padding*/ - 56 /*barra*/ - 12 /*gaps*/ - 28 /*%*/;
+// FIX 2026-07-29: el informe del ZIP salía con las etiquetas CORTADAS. Dos
+// causas, ambas aquí:
+//   1) La fila tenía `height:16px` FIJO + `overflow:hidden`. Con font-size 11px
+//      el glifo no cabe en 16px exactos al renderizar con html2canvas (métricas
+//      distintas por el fallback de fuente), así que el texto quedaba partido
+//      horizontalmente por la mitad ("Femenino", "Masculino", "INGRESO"…).
+//      → altura automática con min-height; el recorte se elimina de raíz.
+//   2) La etiqueta tenía solo 114px de ancho con `text-overflow:ellipsis`, así
+//      que los cargos reales se truncaban ("ADMINISTRADORA DE…", "CONDUCTOR
+//      TANATO…"). → tarjetas de 3 a 2 por fila (ver _INF_COL_W), lo que duplica
+//      el ancho de la etiqueta, y se permite envolver en 2 líneas en vez de
+//      cortar. Se conserva el ancho FIJO en px (no flex) porque html2canvas
+//      colapsa los anchos flexibles a ~0.
 const _infStatBar = (dat, color, total) => {
   const C = _INF_COLORS[color] || _INF_COLORS.blue;
   return Object.entries(dat || {}).sort(([, a], [, b]) => b - a).slice(0, 6).map(([k, v]) => {
     const pct = Math.round((v / Math.max(1, total)) * 100);
-    return `<div style="display:flex;align-items:center;gap:6px;height:16px;line-height:16px;margin-bottom:4px;overflow:hidden;">
-      <span style="font-size:11px;line-height:16px;color:#4b5563;width:${_INF_LABEL_W}px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_sanitize(k || "N/R")}</span>
+    return `<div style="display:flex;align-items:center;gap:6px;min-height:18px;margin-bottom:5px;">
+      <span style="font-size:11px;line-height:1.35;color:#4b5563;width:${_INF_LABEL_W}px;flex-shrink:0;overflow-wrap:anywhere;">${_sanitize(k || "N/R")}</span>
       <div style="width:56px;background:#f3f4f6;border-radius:9999px;height:6px;overflow:hidden;flex-shrink:0;"><div style="background:${C.bar};height:100%;border-radius:9999px;width:${pct}%;"></div></div>
-      <span style="font-size:11px;line-height:16px;font-weight:700;color:${C.tx};width:28px;text-align:right;flex-shrink:0;">${pct}%</span>
+      <span style="font-size:11px;line-height:1.35;font-weight:700;color:${C.tx};width:28px;text-align:right;flex-shrink:0;">${pct}%</span>
     </div>`;
   }).join("");
 };
@@ -18996,6 +19059,9 @@ function AppInner() {
     showAlert("📦 Generando paquete ZIP...\n\nPuede tardar unos segundos. Se descargará automáticamente.");
     const zip = new JSZip();
     let total = 0;
+    // Avisos no bloqueantes que se muestran al terminar (cuenta de otro mes,
+    // carta sin firma, documentos ausentes…). Antes esas faltas eran silenciosas.
+    const _avisos = [];
 
     // Leer el periodo EMITIDO del portal (fuente de verdad; funciona aunque el estado
     // local haya perdido informe/cuenta/custodia al reentrar). Une variantes de NIT.
@@ -19013,24 +19079,57 @@ function AppInner() {
     } catch {}
 
     // 1) Certificados — uno por trabajador con el generador REAL (idéntico a la app).
+    // FIX 2026-07-29: se pasa la CÉDULA como marcador de verificación a la
+    // conversión (3er parámetro) — el PDF no se acepta si su contenido no
+    // contiene esa cédula. Y si UNO falla, se ABORTA el paquete completo: un
+    // certificado con el nombre de un trabajador y los datos de otro es un
+    // documento legal equivocado, así que es preferible no entregar nada.
+    const _certsFallidos = [];
     try {
       let cedulas = (per?.certificados?.documentos || []).map(d => String(d).replace(/\s/g, "")).filter(Boolean);
       if (!cedulas.length) cedulas = patientsList.filter(p => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada").map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean);
+      // Sin duplicados: la lista publicada puede repetir cédulas.
+      cedulas = [...new Set(cedulas)];
       let idx = 0;
       for (const cc of cedulas) {
         let pd = null;
         if (_WORKER_TOKEN) { try { pd = await _workerGet("siso_portal_doc_" + cc); } catch {} }
         if (!pd) pd = patientsList.find(p => (p.docNumero || "").replace(/\s/g, "") === cc) || null;
-        if (!pd) continue;
+        if (!pd) { _certsFallidos.push(`${cc} (sin datos)`); continue; }
+        const nm = (pd.nombres || "Trab").replace(/[^a-zA-Z0-9 ]/g, "").trim().substring(0, 28);
+        // FIX 2026-07-29: los registros publicados antes (p.ej. marzo) NO
+        // guardaron _firma ni _doctorData, así que el certificado salía SIN
+        // firma del médico (solo la línea). Se completan desde el perfil del
+        // médico activo, que sí las tiene, en vez de emitir sin firmar.
+        if (!pd._firma && (activeSignature || activeDoctorData?.firma)) {
+          pd = { ...pd, _firma: activeSignature || activeDoctorData.firma };
+        }
+        if (!pd._doctorData && activeDoctorData) {
+          pd = { ...pd, _doctorData: activeDoctorData };
+        }
         try {
           const html = _generarCertificadoDesdePortal(pd); // HTML completo, diseño real
-          const blob = await _htmlToPdfBlobMod(html, true);
+          const blob = await _htmlToPdfBlobMod(html, true, cc);
           idx++;
-          const nm = (pd.nombres || "Trab").replace(/[^a-zA-Z0-9 ]/g, "").trim().substring(0, 28);
           zip.file(`01_Certificados/${String(idx).padStart(2, "0")}_${nm}_${cc}.pdf`, blob); total++;
-        } catch (e) { console.warn("[ZIP] cert", cc, e?.message); }
+        } catch (e) {
+          console.warn("[ZIP] cert", cc, e?.message);
+          _certsFallidos.push(`${nm} (${cc})`);
+          // Se va a abortar de todos modos: no seguir generando 50 PDFs más.
+          if (_certsFallidos.length >= 3) break;
+        }
       }
     } catch (e) { console.warn("[ZIP] certificados:", e?.message); }
+    if (_certsFallidos.length) {
+      showAlert(
+        "🛑 Paquete NO generado — verificación de identidad fallida.\n\n" +
+        `No se pudo confirmar que ${_certsFallidos.length} certificado(s) correspondan al trabajador correcto:\n• ` +
+        _certsFallidos.slice(0, 8).join("\n• ") +
+        (_certsFallidos.length > 8 ? `\n• …y ${_certsFallidos.length - 8} más` : "") +
+        "\n\nNo se descargó nada para evitar entregar un certificado con los datos de otra persona. Vuelve a intentar en un momento."
+      );
+      return;
+    }
 
     // 2) Informe epidemiológico — diseño REAL (réplica del portal, carga statsKey)
     try {
@@ -19078,16 +19177,62 @@ function AppInner() {
       } : null;
       if (c) {
         const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCuentaCobroHTMLMod(c))); zip.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
+        // FIX 2026-07-29: avisar si la cuenta incluida NO es del período que se
+        // está descargando. Antes se tomaba en silencio la única cuenta que
+        // existiera de la empresa — así se colaba una de marzo por $70.000 en
+        // un paquete de julio, sin que nada lo advirtiera.
+        const _mesCuenta = String(c.date || "").slice(0, 7);
+        if (per?.periodo && _mesCuenta && _mesCuenta !== per.periodo) {
+          _avisos.push(`La cuenta de cobro incluida (No ${c.number}, ${_mesCuenta}, $${Number(c.amount || 0).toLocaleString("es-CO")}) NO es del período ${per.periodo}: es la única registrada para esta empresa. Emite la cuenta del período antes de entregar el paquete.`);
+        }
+      } else {
+        _avisos.push("No hay ninguna cuenta de cobro registrada para esta empresa; el paquete va sin ella.");
       }
     } catch (e) { console.warn("[ZIP] cuenta:", e?.message); }
 
     // 4) Carta de custodia (portal con respaldo local)
     try {
-      let cartas = null; if (_WORKER_TOKEN) { try { cartas = await _workerGet("siso_cartas_custodia"); } catch {} }
-      let cust = (cartas || []).find(c => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase()));
+      // FIX 2026-07-29: antes solo se leía la clave `siso_cartas_custodia`, pero
+      // al crear la carta se guarda en `siso_cartas_custodia_<usuario>` y en
+      // savedInformes (tipo "custodia"). Si estaba en cualquiera de esas otras,
+      // el ZIP no la encontraba y armaba una carta vacía. Ahora se buscan TODAS
+      // las fuentes y se toma la primera que corresponda a la empresa.
+      const _coincide = (c) => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase());
+      let cust = null;
+      for (const _k of ["siso_cartas_custodia", `siso_cartas_custodia_${currentUser?.user || "shared"}`]) {
+        if (cust || !_WORKER_TOKEN) break;
+        try { const arr = await _workerGet(_k); cust = (arr || []).find(_coincide) || null; } catch {}
+      }
+      if (!cust) {
+        try { const arr = JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]"); cust = (arr || []).find(_coincide) || null; } catch {}
+      }
+      if (!cust) cust = (savedInformes || []).find(i => i && i.tipo === "custodia" && _coincide(i)) || null;
       if (!cust && per?.custodia) { const pc = per.custodia; cust = { empresaNombre: empName, docNombre: pc.medicoNombre, medicoNombre: pc.medicoNombre, docTitulo: pc.medicoTitulo, docLicencia: pc.medicoLicencia, docCC: pc.medicoCC, docEmail: pc.medicoEmail, docCel: pc.medicoTel, docCiudad: pc.medicoCiudad, firma: pc.firma, firmaSrc: pc.firma, fecha: pc.fecha }; }
-      if (cust) { const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCartaCustodiaHTML(cust))); zip.file("04_Carta_de_Custodia.pdf", blob); total++; }
-    } catch (e) { console.warn("[ZIP] custodia:", e?.message); }
+      // FIX 2026-07-29: al publicar al portal solo se guardaba {id, fecha} de la
+      // custodia — sin médico, sin firma y sin mes — así que la carta salía muda
+      // (fue lo que el usuario vio como "sin firma y sin mes"). Se completan los
+      // datos del médico activo y el mes se deriva del período/fecha.
+      if (cust) {
+        if (!cust.firmaSrc && !cust.firma && (activeSignature || activeDoctorData?.firma)) {
+          cust = { ...cust, firma: activeSignature || activeDoctorData.firma, firmaSrc: activeSignature || activeDoctorData.firma };
+        }
+        if (!cust.docNombre && !cust.medicoNombre && activeDoctorData) {
+          cust = { ...cust,
+            docNombre: activeDoctorData.nombre, medicoNombre: activeDoctorData.nombre,
+            docTitulo: activeDoctorData.titulo, docLicencia: activeDoctorData.licencia,
+            docCC: activeDoctorData.cedula, docEmail: activeDoctorData.email,
+            docCel: activeDoctorData.celular, docCiudad: activeDoctorData.ciudad };
+        }
+        if (!Number.isInteger(cust.mes) && !cust.mesTexto) {
+          const _ref = String(cust.fecha || per?.periodo || "").match(/^(\d{4})-(\d{2})/);
+          if (_ref) cust = { ...cust, mes: Number(_ref[2]) - 1, anioVal: Number(_ref[1]) };
+        }
+        if (!cust.firma && !cust.firmaSrc) _avisos.push("La carta de custodia va SIN firma: no se encontró firma ni en el registro ni en el perfil del médico.");
+        const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCartaCustodiaHTML(cust))); zip.file("04_Carta_de_Custodia.pdf", blob); total++;
+      } else {
+        _avisos.push("No se encontró carta de custodia para esta empresa; el paquete va sin ella.");
+      }
+    } catch (e) { console.warn("[ZIP] custodia:", e?.message); _avisos.push("La carta de custodia falló al generarse."); }
 
     if (!total) { showAlert("⚠️ No se pudo generar ningún documento. Verifica que la empresa tenga documentos emitidos."); return; }
     try {
@@ -19098,7 +19243,10 @@ function AppInner() {
       a.download = "Paquete_" + empName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 25) + "_" + (emitidoEmpresa?.periodo || new Date().toISOString().slice(0, 7)) + ".zip";
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 3000);
-      showAlert("✅ Paquete descargado\n\n• " + total + " documento(s) en el ZIP");
+      showAlert(
+        "✅ Paquete descargado\n\n• " + total + " documento(s) en el ZIP" +
+        (_avisos.length ? "\n\n⚠️ REVISAR ANTES DE ENTREGAR:\n• " + _avisos.join("\n• ") : "")
+      );
     } catch (e) { showAlert("Error generando el ZIP: " + (e?.message || "")); }
   };
 
@@ -35348,56 +35496,23 @@ Esta historia clínica debe conservarse mínimo 20 años.
                               : null;
                             showAlert(`📦 Generando ZIP con ${selectedList.length} certificado${selectedList.length > 1 ? 's' : ''}...\nEspera, esto puede tardar unos segundos.`);
                             // Helper: renderiza HTML en iframe → canvas → jsPDF blob (sub-canvas por página, sin overlap)
-                            const _htmlToPdfBlob = (htmlContent) => new Promise((resolve, reject) => {
-                              const ifr = document.createElement('iframe');
-                              ifr.style.cssText = 'position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;';
-                              document.body.appendChild(ifr);
-                              const cleanup = () => { setTimeout(() => { if(document.body.contains(ifr)) document.body.removeChild(ifr); }, 300); };
-                              const _to = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, 20000);
-                              ifr.onload = async () => {
-                                try {
-                                  const iDoc = ifr.contentDocument;
-                                  const nb = iDoc.querySelector('.np-dl,.np-bar'); if(nb) nb.style.display='none';
-                                  const sh = iDoc.documentElement.scrollHeight;
-                                  ifr.style.height = sh + 'px';
-                                  await new Promise(r => setTimeout(r, 350));
-                                  const canvas = await html2canvas(iDoc.body, {
-                                    scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff',
-                                    width: 816, windowWidth: 816, scrollX: 0, scrollY: 0, height: sh, windowHeight: sh
-                                  });
-                                  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
-                                  const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
-                                  const mg = 12, cW = pW - mg*2, pcH = pH - mg*2; // FIX 2026-07-13: unificado a 12mm (era 15) con el resto de conversores de certificado
-                                  const pxPerMm = canvas.width / cW;
-                                  const pcHpx = Math.round(pcH * pxPerMm);
-                                  let totalPages = Math.ceil(canvas.height / pcHpx);
-                                  if (totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
-                                  for (let pg = 0; pg < totalPages; pg++) {
-                                    if (pg > 0) pdf.addPage();
-                                    const y0 = pg * pcHpx, y1 = Math.min(y0 + pcHpx, canvas.height);
-                                    const slicePx = y1 - y0;
-                                    const tmp = document.createElement('canvas');
-                                    tmp.width = canvas.width; tmp.height = slicePx;
-                                    const ctx = tmp.getContext('2d');
-                                    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, tmp.width, tmp.height);
-                                    ctx.drawImage(canvas, 0, y0, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
-                                    pdf.addImage(tmp.toDataURL('image/jpeg', 0.93), 'JPEG', mg, mg, cW, slicePx / pxPerMm);
-                                  }
-                                  clearTimeout(_to); cleanup();
-                                  resolve(pdf.output('blob'));
-                                } catch(e) { clearTimeout(_to); cleanup(); reject(e); }
-                              };
-                              ifr.srcdoc = htmlContent;
-                            });
+                            // FIX 2026-07-29: era la 3ª COPIA del conversor, con los
+                            // mismos dos defectos ya corregidos en el canónico:
+                            // `visibility:hidden` (html2canvas dibuja el texto casi
+                            // invisible) y la carrera onload/espera-fija que devolvía
+                            // el PDF de la llamada anterior. Delega en el canónico.
+                            const _htmlToPdfBlob = (htmlContent, expectMarker) =>
+                              _htmlToPdfBlobMod(htmlContent, true, expectMarker);
                             const zip = new JSZip();
                             let errCount = 0;
                             for (let i = 0; i < selectedList.length; i++) {
                               const p = selectedList[i];
+                              const nombre = (p.nombres || 'Paciente').replace(/[^a-zA-Z0-9]/g,'_').substring(0,30);
+                              const cc = (p.docNumero || p.cedula || '').replace(/\D/g,'');
                               try {
                                 const html = _generarCertificadoHTMLNormalizado(p, docData, sig, _miIPSCertSel);
-                                const blob = await _htmlToPdfBlob(html);
-                                const nombre = (p.nombres || 'Paciente').replace(/[^a-zA-Z0-9]/g,'_').substring(0,30);
-                                const cc = (p.docNumero || p.cedula || '').replace(/\D/g,'');
+                                // verificación de identidad: el PDF debe contener la cédula
+                                const blob = await _htmlToPdfBlob(html, cc || undefined);
                                 zip.file(`${String(i+1).padStart(2,'0')}_${nombre}_${cc}.pdf`, blob);
                               } catch(e) { console.error('[ZIP] cert',i,e); errCount++; }
                             }
@@ -56118,40 +56233,13 @@ ${
     if (_descFTxt) _descListaFiltrada = _descListaFiltrada.filter(p => (p.nombres||"").toLowerCase().includes(_descFTxt)||(p.docNumero||"").includes(_descFTxt));
 
     // Helper HTML→PDF blob
-    const _descHtmlToPdfBlob = (htmlContent, singlePage) => new Promise((resolve, reject) => {
-      const ifr = document.createElement('iframe');
-      ifr.style.cssText = 'position:fixed;left:-9999px;top:0;width:816px;height:1px;border:0;visibility:hidden;';
-      document.body.appendChild(ifr);
-      const cleanup = () => { setTimeout(()=>{ if(document.body.contains(ifr)) document.body.removeChild(ifr); },300); };
-      const _to = setTimeout(()=>{ cleanup(); reject(new Error('timeout')); }, 25000);
-      ifr.onload = async () => {
-        try {
-          const iDoc = ifr.contentDocument;
-          const nb = iDoc.querySelector('.np-dl,.np-bar'); if(nb) nb.style.display='none';
-          const sh = iDoc.documentElement.scrollHeight;
-          ifr.style.height = sh+'px';
-          await new Promise(r=>setTimeout(r,300));
-          const canvas = await html2canvas(iDoc.body,{ scale:2, useCORS:true, allowTaint:true, backgroundColor:'#ffffff', width:816, windowWidth:816, scrollX:0, scrollY:0, height:sh, windowHeight:sh });
-          const pdf = new jsPDF({ orientation:'portrait', unit:'mm', format:'letter' });
-          const pW=pdf.internal.pageSize.getWidth(), pH=pdf.internal.pageSize.getHeight();
-          const mg=12, cW=pW-mg*2, pcH=pH-mg*2; // FIX 2026-07-13: unificado a 12mm (era 15)
-          const pxPerMm=canvas.width/cW, pcHpx=Math.round(pcH*pxPerMm);
-          let totalPages=Math.ceil(canvas.height/pcHpx);
-          if (singlePage && totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
-          for(let pg=0;pg<totalPages;pg++){
-            if(pg>0) pdf.addPage();
-            const y0=pg*pcHpx, y1=Math.min(y0+pcHpx,canvas.height), slicePx=y1-y0;
-            const tmp=document.createElement('canvas'); tmp.width=canvas.width; tmp.height=slicePx;
-            const ctx=tmp.getContext('2d');
-            ctx.fillStyle='#fff'; ctx.fillRect(0,0,tmp.width,tmp.height);
-            ctx.drawImage(canvas,0,y0,canvas.width,slicePx,0,0,canvas.width,slicePx);
-            pdf.addImage(tmp.toDataURL('image/jpeg',0.92),'JPEG',mg,mg,cW,slicePx/pxPerMm);
-          }
-          clearTimeout(_to); cleanup(); resolve(pdf.output('blob'));
-        } catch(e){ clearTimeout(_to); cleanup(); reject(e); }
-      };
-      ifr.srcdoc = htmlContent;
-    });
+    // FIX 2026-07-29: era una COPIA del conversor con dos defectos ya corregidos
+    // en el canónico: (a) `visibility:hidden`, que hace que html2canvas dibuje el
+    // texto casi invisible, y (b) la carrera del `onload`/espera fija que
+    // devolvía el PDF de la llamada anterior. Ahora delega en
+    // `_htmlToPdfBlobMod`, que es idéntico en tamaño, escala y paginación.
+    const _descHtmlToPdfBlob = (htmlContent, singlePage, expectMarker) =>
+      _htmlToPdfBlobMod(htmlContent, singlePage, expectMarker);
 
     // Generador HTML por tipo
     const _descGenHtml = (p, tipo) => {
@@ -60753,7 +60841,13 @@ body{padding-top:52px;}
                         medicoEmail: custodiaData.medicoEmail || "dr.juliancucalon@gmail.com",
                         medicoTel: custodiaData.medicoTel || "3182213979",
                         medicoCiudad: custodiaData.medicoCiudad || "Popayán",
-                        firma: custodiaData.firma || null,
+                        // FIX 2026-07-29: la cuenta de cobro de arriba ya cae al
+                        // perfil del médico para la firma; la custodia no lo hacía
+                        // y se publicaba con firma null → carta sin firma.
+                        firma: custodiaData.firma || activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || null,
+                        // el mes/año del período los necesita la carta para su texto
+                        mes: Number.isInteger(custodiaData.mes) ? custodiaData.mes : undefined,
+                        anio: custodiaData.anio,
                       } : null,
                     }],
                   };
