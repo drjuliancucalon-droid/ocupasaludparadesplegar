@@ -300,6 +300,21 @@ const _WORKER_TOKEN = (() => {
 // desde uno. Resultado: links enviados a trabajadores apuntan a bundles viejos
 // SIN los últimos fixes (causando "se queda enviando", botones rotos, etc).
 // Esta función SIEMPRE devuelve el dominio estable cuando detecta un preview.
+// FIX 2026-07-29 (auditoría del portal): las claves del portal se derivaban del
+// NIT, pero cada ruta lo calculaba distinto. Unas usaban `comp.nit` (9 dígitos:
+// "901584797") y otras armaban `${comp.nit}-${comp.dv}` y luego quitaban los
+// no-dígitos, obteniendo 10 dígitos con el dígito de verificación pegado
+// ("9015847975"). Resultado: DOS claves para la misma empresa, y cada
+// publicación escribía en una sola — los datos quedaron partidos a la mitad en
+// 17 de 34 empresas (una clave con los certificados, la otra con el informe y
+// la custodia). De ahí que la empresa viera una fracción de lo emitido.
+// Esta es la ÚNICA forma válida de derivar la clave: el NIT sin el dígito de
+// verificación. Acepta un objeto empresa o una cadena tipo "901584797-5".
+const _nitPortal = (x) => {
+  if (!x) return "";
+  const raw = typeof x === "object" ? (x.nit ?? "") : x;
+  return String(raw).split("-")[0].replace(/\D/g, "");
+};
 const _SISO_STABLE_HOST = "https://ocupasaludparadesplegar-f4q.pages.dev";
 const _sisoStableOrigin = () => {
   if (typeof window === "undefined") return _SISO_STABLE_HOST;
@@ -623,6 +638,31 @@ const _workerGet = async (key) => {
   }
   try { return JSON.parse(joined); }
   catch (e) { console.warn(`[_workerGet] JSON inválido para ${key}:`, e?.message); return null; }
+};
+
+// FIX 2026-07-29 (fuga del portal de empresas — misma familia que el
+// incidente BIOESCOL/_readSmart): `_workerGet` devuelve `null` tanto cuando
+// la clave NO EXISTE (respuesta 200 con array vacío) como cuando la lectura
+// FALLÓ de verdad (red caída, 5xx, timeout) — son casos indistinguibles con
+// el valor de retorno solo. El cierre de HC usaba ese `null` como "está
+// vacío, creo un agregado nuevo" y sobrescribía el agregado real del portal
+// con uno que solo traía la atención de hoy, borrando en la práctica todas
+// las anteriores (visto en producción: FUNERALES LA ERMITA pasó de ~59
+// atenciones publicadas a 16). Este helper SÍ distingue: la clave del
+// worker D1 (`/store/:key`) responde 200 con array vacío cuando no existe
+// (r.ok=true) — solo falla `r.ok` cuando la lectura fue un error real.
+const _workerGetChecked = async (key) => {
+  if (!_WORKER_TOKEN) return { failed: true, value: null };
+  try {
+    const r = await _workerFetch(`${_WORKER_URL}/store/${encodeURIComponent(key)}`, {
+      headers: { "X-Siso-Token": _WORKER_TOKEN },
+    });
+    if (!r || !r.ok) return { failed: true, value: null };
+    const data = await r.json();
+    return { failed: false, value: data[0]?.value ?? null };
+  } catch {
+    return { failed: true, value: null };
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24750,17 +24790,27 @@ const handleLogin = (u, p) => {
         //  trabajador y portal empresa apenas se cierre, sin tardanza)
         // ═════════════════════════════════════════════════════════════════════
         const _docCC = (closed.docNumero || "").replace(/\s/g, "");
+        // FIX 2026-07-29: estas 3 escrituras (portal_<code>, portal_doc,
+        // hc_completa) son las copias individuales que usan el paquete ZIP y
+        // el verificador de certificados. Antes, si `_workerSet` fallaba, el
+        // `catch` solo registraba una advertencia en consola y la copia se
+        // perdía en silencio — sin reintento. Se confirmó en producción: 8
+        // trabajadores de FUNERALES LA ERMITA (lote PERIODICO 2026-07-14)
+        // tienen su certificado completo en la fila del paciente pero SIN
+        // esta copia publicada. Ahora, si falla, se encola en la cola de
+        // pendientes ya existente (`_enqueuePendingD1`, reintenta cada 30s)
+        // en vez de perderse sin dejar rastro.
         // 1° siso_portal_<code> — D1 bloqueante + SB backup
         if (_WORKER_TOKEN) {
           try { await _workerSet("siso_portal_" + code, portalData); }
-          catch (e) { console.warn("[cierre] D1 portal_<code>:", e?.message); }
+          catch (e) { console.warn("[cierre] D1 portal_<code>:", e?.message); _enqueuePendingD1("siso_portal_" + code, portalData); }
         }
         _sbSet("siso_portal_" + code, portalData).catch(() => {});
         // 2° siso_portal_doc_<cc> — D1 bloqueante + SB backup
         if (_docCC) {
           if (_WORKER_TOKEN) {
             try { await _workerSet("siso_portal_doc_" + _docCC, portalData); }
-            catch (e) { console.warn("[cierre] D1 portal_doc:", e?.message); }
+            catch (e) { console.warn("[cierre] D1 portal_doc:", e?.message); _enqueuePendingD1("siso_portal_doc_" + _docCC, portalData); }
           }
           _sbSet("siso_portal_doc_" + _docCC, portalData).catch(() => {});
         }
@@ -24775,12 +24825,13 @@ const handleLogin = (u, p) => {
           };
           if (_WORKER_TOKEN) {
             try { await _workerSet("siso_hc_completa_" + _docCC, _hcCompleta); }
-            catch (e) { console.warn("[cierre] D1 hc_completa:", e?.message); }
+            catch (e) { console.warn("[cierre] D1 hc_completa:", e?.message); _enqueuePendingD1("siso_hc_completa_" + _docCC, _hcCompleta); }
           }
           _sbSet("siso_hc_completa_" + _docCC, _hcCompleta).catch(() => {});
           if (code) {
             if (_WORKER_TOKEN) {
-              try { await _workerSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta); } catch {}
+              try { await _workerSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta); }
+              catch { _enqueuePendingD1("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta); }
             }
             _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta).catch(() => {});
           }
@@ -24826,82 +24877,113 @@ const handleLogin = (u, p) => {
           _sbSet("siso_portal_CV-" + code, portalData).catch(() => {});
         }
         // 5° Portal empresa — TRES claves coordinadas
+        // FIX 2026-07-29 (fuga que vació el portal de FUNERALES LA ERMITA de
+        // ~59 atenciones a 16): las 3 lecturas de abajo usaban `_workerGet`,
+        // que devuelve `null` tanto si la clave no existe como si la lectura
+        // FALLÓ por red — y el código trataba cualquier `null` como "está
+        // vacío, arranco un agregado nuevo desde cero". Con el worker
+        // intermitente (confirmado antes en esta sesión: ~2 de 8 conexiones
+        // fallan), cada cierre de HC era una oportunidad de sobrescribir el
+        // agregado real con uno que solo traía la atención de HOY. Ahora se
+        // usa `_workerGetChecked`, que sí distingue "confirmado vacío" de
+        // "no se pudo leer" — si falla de verdad, se OMITE esa actualización
+        // (no se escribe nada) en vez de arriesgar el agregado completo.
+        // También: NIT canónico (antes podía quedar con el dígito de
+        // verificación pegado, partiendo los datos de la empresa en 2 claves
+        // — ver _nitPortal), y el contador de certificados del periodo ahora
+        // siempre mantiene su lista `documentos` (antes solo se incrementaba
+        // un número sin la lista, y el portal no podía mostrar nada pese a
+        // decir "19 certificados").
         if (closed.empresaNit && closed.empresaId && closed.empresaId !== "particular") {
-          const _nitIdx = (closed.empresaNit || "").replace(/[^0-9]/g, "");
+          const _nitIdx = _nitPortal(closed.empresaNit);
           if (_nitIdx.length >= 3) {
+            const fechaHoy = new Date().toISOString().split("T")[0];
             try {
               // 5a) portal_empresa_<NIT>.documentos
-              let pe = null;
-              if (_WORKER_TOKEN) { try { pe = await _workerGet(`siso_portal_empresa_${_nitIdx}`); } catch {} }
-              if (!pe) pe = { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
-              pe.documentos = pe.documentos || [];
-              if (_docCC && !pe.documentos.includes(_docCC)) pe.documentos.push(_docCC);
-              pe.updatedAt = new Date().toISOString();
-              pe.nombre = closed.empresaNombre || pe.nombre;
-              if (_WORKER_TOKEN) {
-                try { await _workerSet(`siso_portal_empresa_${_nitIdx}`, pe); } catch {}
-              }
-              _sbSet(`siso_portal_empresa_${_nitIdx}`, pe).catch(() => {});
-              // 5b) portal_empresa_atenciones_<NIT> — MERGE por docNumero + fecha
-              let pa = null;
-              if (_WORKER_TOKEN) { try { pa = await _workerGet(`siso_portal_empresa_atenciones_${_nitIdx}`); } catch {} }
-              if (!pa) pa = { nit: _nitIdx, nombre: closed.empresaNombre || "", atenciones: [], fechas: [], _firma: portalData._firma, _doctorData: portalData._doctorData };
-              pa.atenciones = pa.atenciones || [];
-              const fechaHoy = new Date().toISOString().split("T")[0];
-              const yaExiste = pa.atenciones.some(a =>
-                String(a?.docNumero || "").trim() === _docCC &&
-                (a?.fechaCierre || a?.fechaExamen || "").slice(0,10) === fechaHoy
-              );
-              if (!yaExiste) {
-                const { _firma: _f, _doctorData: _d, ...rest } = closed;
-                pa.atenciones.push({
-                  ...rest,
-                  fechaCierre: fechaHoy,
-                  fechaExamen: closed.fechaExamen || fechaHoy,
-                  estadoHistoria: "Cerrada",
-                  codigoVerificacion: code,
-                });
-                pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0,10)).filter(Boolean))].sort();
-                pa.updatedAt = new Date().toISOString();
-              }
-              // FIX 2026-06-15: garantizar firma+médico en el ROOT del agregado
-              // SIEMPRE (no solo cuando se agrega atención nueva). Antes esto vivía
-              // dentro de if(!yaExiste) → agregados creados por scripts/recuperación
-              // (ej. AMEZQUITA) quedaban sin firma y sus certificados salían vacíos.
-              // Ahora cualquier cierre repara/garantiza la firma del root, para todas
-              // las empresas presentes y futuras.
-              const _firmaOk = pa._firma && typeof pa._firma === "string" && pa._firma.length > 100;
-              const _drOk = pa._doctorData && pa._doctorData.nombre && pa._doctorData.nombre !== "MÉDICO OCUPACIONAL";
-              let _needWrite = !yaExiste;
-              if (!_firmaOk && portalData._firma) { pa._firma = portalData._firma; _needWrite = true; }
-              if (!_drOk && portalData._doctorData?.nombre) { pa._doctorData = portalData._doctorData; _needWrite = true; }
-              if (_needWrite) {
-                pa.updatedAt = new Date().toISOString();
+              const _peR = await _workerGetChecked(`siso_portal_empresa_${_nitIdx}`);
+              if (_peR.failed) {
+                console.warn(`[cierre] portal_empresa_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe), reintentará en el próximo cierre de esta empresa.`);
+              } else {
+                let pe = _peR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
+                pe.documentos = pe.documentos || [];
+                if (_docCC && !pe.documentos.includes(_docCC)) pe.documentos.push(_docCC);
+                pe.updatedAt = new Date().toISOString();
+                pe.nombre = closed.empresaNombre || pe.nombre;
                 if (_WORKER_TOKEN) {
-                  try { await _workerSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa); } catch (e) { console.warn("[cierre] D1 portal_empresa_atenciones:", e?.message); }
+                  try { await _workerSet(`siso_portal_empresa_${_nitIdx}`, pe); } catch {}
                 }
-                _sbSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa).catch(() => {});
+                _sbSet(`siso_portal_empresa_${_nitIdx}`, pe).catch(() => {});
               }
-              // 5c) portal_empresa_docs_<NIT> — contador del periodo actual
-              let pd = null;
-              if (_WORKER_TOKEN) { try { pd = await _workerGet(`siso_portal_empresa_docs_${_nitIdx}`); } catch {} }
-              if (!pd) pd = { nit: _nitIdx, nombre: closed.empresaNombre || "", codigoAcceso: "", periodos: [], updatedAt: new Date().toISOString() };
-              pd.periodos = pd.periodos || [];
-              const periodoYM = fechaHoy.slice(0, 7);
-              let periodo = pd.periodos.find(p => p.periodo === periodoYM || (p.fecha || "").startsWith(periodoYM));
-              if (!periodo) {
-                periodo = { periodo: periodoYM, fecha: periodoYM + "-01", certificados: { count: 0, updatedAt: new Date().toISOString() } };
-                pd.periodos.push(periodo);
+
+              // 5b) portal_empresa_atenciones_<NIT> — MERGE por docNumero + fecha
+              const _paR = await _workerGetChecked(`siso_portal_empresa_atenciones_${_nitIdx}`);
+              let _yaExiste = false;
+              if (_paR.failed) {
+                console.warn(`[cierre] portal_empresa_atenciones_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe el agregado), reintentará en el próximo cierre.`);
+              } else {
+                let pa = _paR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", atenciones: [], fechas: [], _firma: portalData._firma, _doctorData: portalData._doctorData };
+                pa.atenciones = pa.atenciones || [];
+                _yaExiste = pa.atenciones.some(a =>
+                  String(a?.docNumero || "").trim() === _docCC &&
+                  (a?.fechaCierre || a?.fechaExamen || "").slice(0,10) === fechaHoy
+                );
+                if (!_yaExiste) {
+                  const { _firma: _f, _doctorData: _d, ...rest } = closed;
+                  pa.atenciones.push({
+                    ...rest,
+                    fechaCierre: fechaHoy,
+                    fechaExamen: closed.fechaExamen || fechaHoy,
+                    estadoHistoria: "Cerrada",
+                    codigoVerificacion: code,
+                  });
+                  pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0,10)).filter(Boolean))].sort();
+                  pa.updatedAt = new Date().toISOString();
+                }
+                // FIX 2026-06-15: garantizar firma+médico en el ROOT del agregado
+                // SIEMPRE (no solo cuando se agrega atención nueva). Antes esto vivía
+                // dentro de if(!yaExiste) → agregados creados por scripts/recuperación
+                // (ej. AMEZQUITA) quedaban sin firma y sus certificados salían vacíos.
+                // Ahora cualquier cierre repara/garantiza la firma del root, para todas
+                // las empresas presentes y futuras.
+                const _firmaOk = pa._firma && typeof pa._firma === "string" && pa._firma.length > 100;
+                const _drOk = pa._doctorData && pa._doctorData.nombre && pa._doctorData.nombre !== "MÉDICO OCUPACIONAL";
+                let _needWrite = !_yaExiste;
+                if (!_firmaOk && portalData._firma) { pa._firma = portalData._firma; _needWrite = true; }
+                if (!_drOk && portalData._doctorData?.nombre) { pa._doctorData = portalData._doctorData; _needWrite = true; }
+                if (_needWrite) {
+                  pa.updatedAt = new Date().toISOString();
+                  if (_WORKER_TOKEN) {
+                    try { await _workerSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa); } catch (e) { console.warn("[cierre] D1 portal_empresa_atenciones:", e?.message); }
+                  }
+                  _sbSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa).catch(() => {});
+                }
               }
-              if (!periodo.certificados) periodo.certificados = { count: 0 };
-              if (!yaExiste) periodo.certificados.count = (periodo.certificados.count || 0) + 1;
-              periodo.certificados.updatedAt = new Date().toISOString();
-              periodo.updatedAt = new Date().toISOString();
-              pd.updatedAt = new Date().toISOString();
-              if (_WORKER_TOKEN) {
-                try { await _workerSet(`siso_portal_empresa_docs_${_nitIdx}`, pd); } catch (e) { console.warn("[cierre] D1 portal_empresa_docs:", e?.message); }
+
+              // 5c) portal_empresa_docs_<NIT> — contador Y lista del periodo actual
+              const _pdR = await _workerGetChecked(`siso_portal_empresa_docs_${_nitIdx}`);
+              if (_pdR.failed) {
+                console.warn(`[cierre] portal_empresa_docs_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe), reintentará en el próximo cierre.`);
+              } else {
+                let pd = _pdR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", codigoAcceso: "", periodos: [], updatedAt: new Date().toISOString() };
+                pd.periodos = pd.periodos || [];
+                const periodoYM = fechaHoy.slice(0, 7);
+                let periodo = pd.periodos.find(p => p.periodo === periodoYM || (p.fecha || "").startsWith(periodoYM));
+                if (!periodo) {
+                  periodo = { periodo: periodoYM, fecha: periodoYM + "-01", certificados: { count: 0, documentos: [], updatedAt: new Date().toISOString() } };
+                  pd.periodos.push(periodo);
+                }
+                if (!periodo.certificados) periodo.certificados = { count: 0, documentos: [] };
+                if (!periodo.certificados.documentos) periodo.certificados.documentos = [];
+                if (_docCC && !periodo.certificados.documentos.includes(_docCC)) periodo.certificados.documentos.push(_docCC);
+                periodo.certificados.count = periodo.certificados.documentos.length;
+                periodo.certificados.updatedAt = new Date().toISOString();
+                periodo.updatedAt = new Date().toISOString();
+                pd.updatedAt = new Date().toISOString();
+                if (_WORKER_TOKEN) {
+                  try { await _workerSet(`siso_portal_empresa_docs_${_nitIdx}`, pd); } catch (e) { console.warn("[cierre] D1 portal_empresa_docs:", e?.message); }
+                }
+                _sbSet(`siso_portal_empresa_docs_${_nitIdx}`, pd).catch(() => {});
               }
-              _sbSet(`siso_portal_empresa_docs_${_nitIdx}`, pd).catch(() => {});
             } catch (e) {
               console.warn("[cierre] portal empresa publish error:", e?.message);
             }
@@ -60781,7 +60863,14 @@ body{padding-top:52px;}
                   const portalUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
                   const docD = activeDoctorData || {};
                   const nitEmp = comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit;
-                  const nitClean = (nitEmp || "").replace(/[^0-9]/g, "");
+                  // FIX 2026-07-29: ANTES era (nitEmp||"").replace(/[^0-9]/g,""),
+                  // que sobre "901584797-5" da "9015847975" — el NIT con el
+                  // dígito de verificación pegado. Esa era la clave que partía
+                  // los datos del portal en dos. Ahora se usa la canónica.
+                  // `nitLegacy` se conserva solo para LEER lo ya escrito bajo la
+                  // clave vieja y fusionarlo, no para escribir.
+                  const nitClean = _nitPortal(comp || nitEmp);
+                  const nitLegacy = (nitEmp || "").replace(/[^0-9]/g, "");
                   // Código de acceso: usar el existente en la empresa local, o generar uno nuevo solo si no hay ninguno
                   const _charsEI = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
                   const _randEI = (n) => Array.from({length:n}, () => _charsEI[Math.floor(Math.random()*_charsEI.length)]).join("");
@@ -60800,7 +60889,15 @@ body{padding-top:52px;}
                       periodo: mesActual,
                       fecha: new Date().toISOString().split("T")[0],
                       informe: informeData ? { totalPacientes: informeData.totalPacientes || emp.totalPacientes, resumen: informeData.resumen || "", fecha: informeData.fecha, statsKey: informeData.statsKey || null } : null,
-                      certificados: { count: certCount, documentos: certsEmpresa.map(p => (p.docNumero || "").replace(/\s/g, "")) },
+                      // FIX 2026-07-29: `count` se DERIVA de la lista, no se guarda
+                      // aparte. Antes se guardaba certCount por separado y la lista
+                      // podía quedar vacía: el portal decía "19 certificados" y no
+                      // podía mostrar ninguno (pasaba en 8 empresas). Además se
+                      // deduplica: un trabajador con dos atenciones aparecía repetido.
+                      certificados: (() => {
+                        const docsCert = [...new Set(certsEmpresa.map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean))];
+                        return { count: docsCert.length, documentos: docsCert };
+                      })(),
                       cuenta: cuentaData ? {
                         // Datos base
                         number: cuentaData.number,
@@ -60874,6 +60971,36 @@ body{padding-top:52px;}
                       if (e instanceof ReadSmartUnavailableError) {
                         showAlert("⚠️ No se pudo verificar el estado actual del portal de " + (emp.empresaNombre || "la empresa") + " (conexión inestable). Para proteger el código de acceso ya emitido, NO se envió nada esta vez — vuelve a intentar en un momento.");
                         return;
+                      }
+                    }
+                    // FIX 2026-07-29: fusionar también lo que quedó guardado bajo
+                    // la clave VIEJA (NIT + dígito de verificación). Sin esto, al
+                    // pasar a la clave canónica se dejarían atrás los períodos que
+                    // solo viven en la otra mitad — en LA ERMITA eran 56
+                    // certificados y la cuenta de cobro. Unión por período,
+                    // conservando el dato que exista en cualquiera de las dos.
+                    if (nitLegacy && nitLegacy !== nitClean) {
+                      let _legacy = null;
+                      try { _legacy = await _readSmart(`siso_portal_empresa_docs_${nitLegacy}`); } catch {}
+                      if (_legacy) {
+                        if (!_existVal) _existVal = _legacy;
+                        else {
+                          const mapa = new Map();
+                          for (const p of [...(_legacy.periodos || []), ...(_existVal.periodos || [])]) {
+                            const k = p.periodo || "";
+                            const prev = mapa.get(k) || {};
+                            mapa.set(k, { ...prev, ...p,
+                              informe: p.informe || prev.informe || null,
+                              cuenta: p.cuenta || prev.cuenta || null,
+                              custodia: p.custodia || prev.custodia || null,
+                              certificados: ((p.certificados?.documentos || []).length >= (prev.certificados?.documentos || []).length)
+                                ? (p.certificados || prev.certificados || null)
+                                : (prev.certificados || null),
+                            });
+                          }
+                          _existVal = { ..._legacy, ..._existVal, periodos: [...mapa.values()],
+                            codigoAcceso: _existVal.codigoAcceso || _legacy.codigoAcceso };
+                        }
                       }
                     }
                     if (_existVal) {
