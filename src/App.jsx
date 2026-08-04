@@ -9,7 +9,7 @@ import VersionWatcher from "./components/VersionWatcher";
 import D1ChangesWatcher from "./components/D1ChangesWatcher";
 import StorageHealth from "./components/StorageHealth";
 // ETAPA 1/2 (migración a IndexedDB): espejo local completo (cuota de GBs, offline).
-import { idbSet as _idbSet, idbGet as _idbGet } from "./utils/offlineDB";
+import { idbSet as _idbSet, idbGet as _idbGet, idbDelete as _idbDelete } from "./utils/offlineDB";
 import {
   User,
   FileText,
@@ -688,13 +688,31 @@ const _pendingSize = (v) => {
   if (v === _PENDING_D1_OVERSIZE_FLAG) return 1; // referencia ligera, siempre cabe
   try { return JSON.stringify(v).length; } catch { return Infinity; }
 };
+// FIX 2026-08-04: el payload de las entradas grandes de la cola se guarda en
+// IndexedDB (cuota de cientos de MB) en vez de duplicarlo en localStorage
+// (~5-10MB por origen, compartidos con TODO lo demás). Antes, la "referencia
+// ligera" apuntaba a que processQueue releería el dato desde localStorage bajo
+// la MISMA clave — pero claves como `siso_patients_<uid>` NUNCA se escriben en
+// localStorage (solo su gemela `siso_db_patients_<uid>`), así que ese dato no
+// era recuperable y la referencia quedaba huérfana. Guardar el payload aquí lo
+// hace recuperable SIEMPRE, sin gastar cuota de localStorage.
+const _PENDING_PAYLOAD_PREFIX = "siso_pending_payload_";
+const _stashPendingPayload = (key, value) => {
+  try { _idbSet(_PENDING_PAYLOAD_PREFIX + key, value).catch(() => {}); } catch {}
+};
 const _enqueuePendingD1 = (key, value) => {
   let serializedLen;
   try { serializedLen = JSON.stringify(value).length; } catch { return false; }
-  // Si el valor excede 5MB, guardar SOLO una referencia ligera.
-  // processQueue leerá el valor real desde localStorage al reintentar.
+  // Valores grandes: NO duplicar el JSON completo dentro de la cola de
+  // localStorage (causa confirmada de "[pending] enqueue oversize falló:
+  // ... exceeded the quota"). Se guarda el payload en IndexedDB y en la cola
+  // solo una referencia de unos bytes. Cero riesgo de pérdida: el payload
+  // queda persistido antes de que processQueue lo necesite, y si aún no
+  // estuviera disponible, la entrada se conserva y reintenta (nunca se
+  // descarta por no encontrarlo — ver processQueue).
   if (serializedLen > _PENDING_D1_MAX_VALUE) {
-    console.warn(`[pending] ${key} (${(serializedLen / 1024) | 0}KB > 5MB) — guardando referencia ligera. Se resolverá desde localStorage al reintentar.`);
+    console.warn(`[pending] ${key} (${(serializedLen / 1024) | 0}KB) — payload a IndexedDB, referencia ligera en la cola.`);
+    _stashPendingPayload(key, value);
     const write = (p) => localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(p));
     const pending = _getPendingD1();
     pending[key] = { value: _PENDING_D1_OVERSIZE_FLAG, ts: Date.now(), retries: 0, _oversizeKey: key };
@@ -706,19 +724,38 @@ const _enqueuePendingD1 = (key, value) => {
   pending[key] = { value, ts: Date.now(), retries: 0 };
   try { write(pending); return true; }
   catch (e1) {
-    // Cuota llena: purgar entradas pesadas existentes y reintentar.
+    // Cuota llena: en vez de BORRAR las entradas pesadas (pérdida de datos),
+    // convertirlas a referencia ligera moviendo su payload a IndexedDB. Se
+    // libera el espacio igual, pero ningún dato pendiente se pierde.
     try {
       const slim = {};
       for (const [k, v] of Object.entries(pending)) {
-        if (k !== key && _pendingSize(v) <= _PENDING_D1_MAX_VALUE) slim[k] = v;
+        if (k === key) continue;
+        if (_pendingSize(v) > _PENDING_D1_MAX_VALUE) {
+          _stashPendingPayload(k, v?.value);
+          slim[k] = { value: _PENDING_D1_OVERSIZE_FLAG, ts: v?.ts || Date.now(), retries: v?.retries || 0, _oversizeKey: k };
+        } else slim[k] = v;
       }
       slim[key] = { value, ts: Date.now(), retries: 0 };
       write(slim);
-      console.warn(`[pending] cuota llena → purgadas entradas pesadas, reencolado ${key}`);
+      console.warn(`[pending] cuota llena → entradas pesadas movidas a IndexedDB (sin pérdida), reencolado ${key}`);
       return true;
     } catch {
-      // Último recurso: dejar solo este item.
-      try { write({ [key]: { value, ts: Date.now(), retries: 0 } }); return true; }
+      // Último recurso: mover TODO lo anterior a IndexedDB y dejar solo este
+      // item inline. Las demás entradas siguen recuperables por su payload.
+      try {
+        const soloRefs = {};
+        for (const [k, v] of Object.entries(pending)) {
+          if (k === key) continue;
+          // Si ya era referencia, su payload YA está en IndexedDB — no
+          // sobreescribirlo (lo dejaría vacío y sí perdería el dato).
+          if (v?.value !== _PENDING_D1_OVERSIZE_FLAG) _stashPendingPayload(k, v?.value);
+          soloRefs[k] = { value: _PENDING_D1_OVERSIZE_FLAG, ts: v?.ts || Date.now(), retries: v?.retries || 0, _oversizeKey: k };
+        }
+        soloRefs[key] = { value, ts: Date.now(), retries: 0 };
+        write(soloRefs);
+        return true;
+      }
       catch (e3) { console.warn("[pending] enqueue falló (cuota):", e3?.message); return false; }
     }
   }
@@ -20051,12 +20088,19 @@ function AppInner() {
     if (!_WORKER_TOKEN) return;
     const processQueue = async () => {
       const pending = _getPendingD1();
-      // FIX 2026-06-24: purgar entradas heredadas demasiado grandes que hayan
-      // inflado la cuota de localStorage antes de este fix. No se pierde nada:
-      // son arrays que ya viven en LS y se re-sincronizan por guardado/auto-sync.
+      // FIX 2026-08-04: las entradas heredadas demasiado grandes ya NO se
+      // borran (antes `delete pending[_k]` — pérdida silenciosa del pendiente,
+      // apoyada en la suposición de que "ya viven en LS", falsa para claves
+      // como siso_patients_<uid> que solo existen en la nube). Ahora se
+      // MIGRAN: el payload va a IndexedDB y en la cola queda la referencia
+      // ligera. Se libera la cuota de localStorage igual, sin perder nada.
       let _trimmed = false;
       for (const _k of Object.keys(pending)) {
-        if (_pendingSize(pending[_k]?.value) > _PENDING_D1_MAX_VALUE) { delete pending[_k]; _trimmed = true; }
+        if (_pendingSize(pending[_k]?.value) > _PENDING_D1_MAX_VALUE) {
+          _stashPendingPayload(_k, pending[_k]?.value);
+          pending[_k] = { value: _PENDING_D1_OVERSIZE_FLAG, ts: pending[_k]?.ts || Date.now(), retries: pending[_k]?.retries || 0, _oversizeKey: _k };
+          _trimmed = true;
+        }
       }
       if (_trimmed) { try { localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(pending)); } catch {} }
       const keys = Object.keys(pending);
@@ -20070,12 +20114,42 @@ function AppInner() {
         if (!item || item.retries >= _PENDING_D1_MAX_RETRIES) {
           console.warn(`[pending] descartando ${k} tras ${_PENDING_D1_MAX_RETRIES} reintentos`);
           _clearPendingD1(k);
+          try { _idbDelete(_PENDING_PAYLOAD_PREFIX + k).catch(() => {}); } catch {}
           continue;
         }
         try {
-          const ok = await _workerSet(k, item.value);
+          // FIX 2026-08-04: las referencias "oversize" (item.value ===
+          // _PENDING_D1_OVERSIZE_FLAG) nunca resolvían el dato real — se
+          // intentaba subir el string del flag tal cual a D1, dejando el
+          // reintento roto en la práctica desde que existe el mecanismo.
+          // Resolución en cascada: payload en IndexedDB (donde lo dejó
+          // _stashPendingPayload) → localStorage bajo su propia clave (para
+          // referencias heredadas de la versión anterior). Si NINGUNA de las
+          // dos lo encuentra NO se descarta: se cuenta como reintento fallido
+          // y se conserva, por si el payload aún no terminó de persistirse.
+          let _valueToSend = item.value;
+          if (item.value === _PENDING_D1_OVERSIZE_FLAG) {
+            const _srcKey = item._oversizeKey || k;
+            _valueToSend = await _idbGet(_PENDING_PAYLOAD_PREFIX + k).catch(() => null);
+            if (_valueToSend === null || _valueToSend === undefined) {
+              try {
+                const _raw = localStorage.getItem(_srcKey);
+                _valueToSend = _raw ? JSON.parse(_raw) : null;
+              } catch { _valueToSend = null; }
+            }
+            if (_valueToSend === null || _valueToSend === undefined) {
+              item.retries++;
+              const all = _getPendingD1();
+              all[k] = item;
+              try { localStorage.setItem(_PENDING_D1_KEY, JSON.stringify(all)); } catch {}
+              console.warn(`[pending] ${k}: payload aún no disponible — se conserva y reintenta (${item.retries}/${_PENDING_D1_MAX_RETRIES})`);
+              continue;
+            }
+          }
+          const ok = await _workerSet(k, _valueToSend);
           if (ok) {
             _clearPendingD1(k);
+            try { _idbDelete(_PENDING_PAYLOAD_PREFIX + k).catch(() => {}); } catch {}
             console.log(`[pending] ✅ ${k} subido tras ${item.retries} reintento(s)`);
           } else {
             item.retries++;
