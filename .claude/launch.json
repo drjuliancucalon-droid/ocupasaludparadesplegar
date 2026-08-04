@@ -1,1 +1,17 @@
-version:0.0.1 configurations:[name:mockup] configurations:[runtimeExecutable:npx] configurations:[runtimeArgs:[serve] configurations:[-l] configurations:[4200] configurations:[.]] configurations:[port:4200]
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mockup",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-l", "4200", "."],
+      "port": 4200
+    },
+    {
+      "name": "siso-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
+    }
+  ]
+}

@@ -995,8 +995,35 @@ const _sbAuthSignUp = async (username, plainPassword) => {
     });
     const d = await r.json();
     // Si el usuario ya existe devuelve 400 con "User already registered"
-    if (!r.ok && !d?.msg?.includes("already")) return false;
-    return true;
+    const alreadyExists = !r.ok && !!d?.msg?.includes("already");
+    if (!r.ok && !alreadyExists) return { ok: false, alreadyExists: false };
+    return { ok: true, alreadyExists };
+  } catch { return { ok: false, alreadyExists: false }; }
+};
+// FIX 2026-08-04: sincroniza la contraseña del usuario espejo de Supabase
+// Auth cuando ya existe pero quedó desactualizada (el usuario cambió su
+// clave dentro de SISO y ese cambio nunca se replicó a Supabase Auth) — sin
+// esto, cada login de ese usuario repetía signIn+signUp fallidos (2 errores
+// 400 visibles en consola) indefinidamente. Requiere Service Role Key
+// (Admin API); si no está configurada, se omite — degradado seguro, el
+// login de la app sigue funcionando igual con la anon key.
+const _sbAuthSyncPassword = async (username, plainPassword) => {
+  if (!_SB_SERVICE_KEY) return false;
+  const email = `${username}@siso.ocupasalud.app`;
+  try {
+    const rFind = await fetch(`${_SB_URL}/auth/v1/admin/users?email=${encodeURIComponent(email)}`, {
+      headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY}` },
+    });
+    if (!rFind.ok) return false;
+    const dFind = await rFind.json();
+    const uid = dFind?.users?.[0]?.id || dFind?.[0]?.id;
+    if (!uid) return false;
+    const rUpd = await fetch(`${_SB_URL}/auth/v1/admin/users/${uid}`, {
+      method: "PUT",
+      headers: { apikey: _SB_KEY, Authorization: `Bearer ${_SB_SERVICE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ password: plainPassword }),
+    });
+    return rUpd.ok;
   } catch { return false; }
 };
 const _sbAuthSignOut = async () => {
@@ -9732,15 +9759,13 @@ const _FortalezaPass = ({ pw }) => {
     </div>
   );
 };
-// SEC-F1-06: Content Security Policy via meta tag
-const SecurityHeaders = () => (
-  <>
-    <meta httpEquiv="Content-Security-Policy" content="default-src 'self' https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.anthropic.com; font-src 'self' https:; frame-ancestors 'none';" />
-    <meta httpEquiv="X-Content-Type-Options" content="nosniff" />
-    <meta httpEquiv="X-Frame-Options" content="DENY" />
-    <meta name="referrer" content="strict-origin-when-cross-origin" />
-  </>
-);
+// SEC-F1-06 (retirado 2026-08-04): estas cabeceras vía <meta> se renderizaban
+// dentro de #root (fuera de <head>), donde el navegador las ignora por
+// completo — y X-Frame-Options/CSP frame-ancestors tampoco son válidas vía
+// meta en ninguna ubicación (solo header HTTP). Nunca protegieron nada, solo
+// generaban ruido en consola. La protección real ya la da public/_headers
+// (X-Frame-Options, X-Content-Type-Options, Referrer-Policy como headers HTTP
+// reales). Eliminado sin reemplazo — no hay pérdida de seguridad.
 const PrintStyles = () => (
   <style>{`
     /* ═══════════════════════════════════════════════════════
@@ -20422,15 +20447,11 @@ function AppInner() {
   // propio bundler, rompiendo la aplicación.
   // La política CSP correcta debe ir en los HTTP headers del servidor:
   //   Content-Security-Policy: script-src 'self' 'unsafe-inline' 'unsafe-eval' ...
-  // Solo X-Frame-Options se mantiene (es seguro y no interfiere con nada).
+  // X-Frame-Options retirado 2026-08-04: la spec NO permite entregarlo vía
+  // <meta> en ninguna ubicación (solo header HTTP) — el navegador lo ignora
+  // siempre y solo generaba ruido en consola. Ya se entrega como header HTTP
+  // real desde public/_headers.
   useEffect(() => {
-    // SEC-FIX-08a: X-Frame-Options - previene clickjacking (CWE-1021)
-    if (!document.querySelector('meta[http-equiv="X-Frame-Options"]')) {
-      const xfo = document.createElement("meta");
-      xfo.httpEquiv = "X-Frame-Options";
-      xfo.content = "SAMEORIGIN";
-      document.head.appendChild(xfo);
-    }
     // SEC-FIX-08b: Referrer-Policy - no expone URL en peticiones externas (CWE-200)
     if (!document.querySelector('meta[name="referrer"]')) {
       const rp = document.createElement("meta");
@@ -23652,10 +23673,22 @@ const handleLogin = (u, p) => {
         _sbAuthSignIn(found.user, p).then(tok => {
           if (!tok) {
             // Usuario no existe aún en Supabase Auth — crearlo automáticamente
-            _sbAuthSignUp(found.user, p).then(() => {
+            _sbAuthSignUp(found.user, p).then((su) => {
               // Intentar login nuevamente tras crear la cuenta
               _sbAuthSignIn(found.user, p).then(tok2 => {
-                if (tok2) console.log("[SISO Auth] Usuario creado y autenticado en Supabase Auth:", found.user);
+                if (tok2) {
+                  console.log("[SISO Auth] Usuario creado y autenticado en Supabase Auth:", found.user);
+                } else if (su?.alreadyExists) {
+                  // La cuenta espejo ya existe pero con otra contraseña (drift) —
+                  // sincronizar y reintentar una última vez.
+                  _sbAuthSyncPassword(found.user, p).then((synced) => {
+                    if (synced) {
+                      _sbAuthSignIn(found.user, p).then(tok3 => {
+                        if (tok3) console.log("[SISO Auth] Contraseña sincronizada y autenticado en Supabase Auth:", found.user);
+                      });
+                    }
+                  });
+                }
               });
             });
           }
@@ -60563,7 +60596,6 @@ body{padding-top:52px;}
   return (
     <>
       <PrintStyles />
-      <SecurityHeaders />
       {showEncuestaPublica ? (
         <EncuestaPublicaForm
           token={encuestaToken}
