@@ -611,33 +611,62 @@ const _workerGet = async (key) => {
   // costo es una reconstrucción algo más lenta, aceptable frente al riesgo
   // de descartar la lectura completa por una pieza corrupta/faltante.
   // Se agrega además 1 reintento individual por chunk antes de rendirse.
-  const parts = new Array(meta.count);
-  let _huboError = false;
-  let _nextIdx = 0;
-  const _CONC = 2;
-  const _lector = async () => {
-    while (!_huboError) {
-      const i = _nextIdx++;
-      if (i >= meta.count) return;
-      let p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
-      if (p === null) {
-        await new Promise((res) => setTimeout(res, 300));
-        p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
+  // FIX 2026-08-14: reintento de la RECONSTRUCCIÓN COMPLETA antes de descartar.
+  // Una corrupción TRANSITORIA de lectura (un chunk que llega mal por un glitch
+  // de streams QUIC) provocaba un hash-mismatch que descartaba TODA la lista
+  // maestra (p.ej. 383 pacientes) → un paciente "desaparecía" de pantalla hasta
+  // que el AUDIT lo recuperaba 8s después desde el índice. Como cada pieza se
+  // re-lee con fetch fresco (sin caché de app), un 2º/3er intento suele traer
+  // bytes limpios y evita el descarte. Si tras N intentos sigue fallando
+  // (corrupción PERSISTENTE por escritura parcial), se devuelve null y la red
+  // del AUDIT reconstruye desde el índice de HC cerradas. Defensa en dos capas.
+  const _MAX_RECON = 3;
+  for (let _try = 1; _try <= _MAX_RECON; _try++) {
+    const parts = new Array(meta.count);
+    let _huboError = false;
+    let _nextIdx = 0;
+    const _CONC = 2;
+    const _lector = async () => {
+      while (!_huboError) {
+        const i = _nextIdx++;
+        if (i >= meta.count) return;
+        let p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
+        if (p === null) {
+          await new Promise((res) => setTimeout(res, 300));
+          p = await _workerGetChunkPiece(key + _CHUNK_SUF_PIECE + i);
+        }
+        if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key} (intento ${_try}/${_MAX_RECON})`); return; }
+        parts[i] = p;
       }
-      if (p === null) { _huboError = true; console.warn(`[_workerGet] chunk ${i}/${meta.count} faltante para ${key} (tras reintento)`); return; }
-      parts[i] = p;
+    };
+    await Promise.all(Array.from({ length: Math.min(_CONC, meta.count) }, () => _lector()));
+    if (_huboError) {
+      if (_try < _MAX_RECON) { await new Promise((res) => setTimeout(res, 400 * _try)); continue; }
+      console.warn(`[_workerGet] ${key}: piezas faltantes tras ${_MAX_RECON} intentos — descartada.`);
+      return null;
     }
-  };
-  await Promise.all(Array.from({ length: Math.min(_CONC, meta.count) }, () => _lector()));
-  if (_huboError) return null;
-  const joined = parts.join("");
-  // Verificación de integridad opcional (si meta tiene hash)
-  if (meta.hash && _hash64(joined) !== meta.hash) {
-    console.warn(`[_workerGet] CORRUPCIÓN detectada en ${key} — hash no coincide. Reconstrucción descartada por seguridad.`);
-    return null;
+    const joined = parts.join("");
+    // Verificación de integridad (si meta tiene hash)
+    if (meta.hash && _hash64(joined) !== meta.hash) {
+      if (_try < _MAX_RECON) {
+        console.warn(`[_workerGet] hash no coincide en ${key} (intento ${_try}/${_MAX_RECON}) — reintentando lectura completa...`);
+        await new Promise((res) => setTimeout(res, 400 * _try));
+        continue;
+      }
+      console.warn(`[_workerGet] CORRUPCIÓN detectada en ${key} tras ${_MAX_RECON} intentos — hash no coincide. Reconstrucción descartada por seguridad.`);
+      return null;
+    }
+    try { return JSON.parse(joined); }
+    catch (e) {
+      if (_try < _MAX_RECON) {
+        console.warn(`[_workerGet] JSON inválido en ${key} (intento ${_try}/${_MAX_RECON}) — reintentando...`);
+        await new Promise((res) => setTimeout(res, 400 * _try));
+        continue;
+      }
+      console.warn(`[_workerGet] JSON inválido para ${key}:`, e?.message); return null;
+    }
   }
-  try { return JSON.parse(joined); }
-  catch (e) { console.warn(`[_workerGet] JSON inválido para ${key}:`, e?.message); return null; }
+  return null;
 };
 
 // FIX 2026-07-29 (fuga del portal de empresas — misma familia que el
