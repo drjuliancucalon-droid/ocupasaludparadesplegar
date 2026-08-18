@@ -6993,21 +6993,18 @@ const AI_PROVIDERS = {
         throw new Error(
           "Groq: API Key no configurada - obtenla gratis en console.groq.com/keys"
         );
-      // FIX 2026-07-29: se agrega openai/gpt-oss-120b (modelo ~120B, capacidad
-      // similar a Gemini flash) como primera opción — antes NO estaba en la
-      // lista y, cuando Gemini agotaba cuota, Groq caía directo a modelos
-      // débiles (llama-3.1-8b-instant, gemma2-9b-it), que completaban la
-      // respuesta pero muy corta. Los débiles quedan al final, solo como
-      // último recurso real.
+      // FIX 2026-08-14: catálogo de modelos verificado en vivo contra
+      // console.groq.com/docs/models — Groq retiró de producción todos los
+      // llama-3.x/gemma2 que estaban aquí (404 en todos). Solo quedan los dos
+      // gpt-oss. Este catálogo gratuito cambia con frecuencia (2ª vez que se
+      // rompe); ver el acumulado de errores por modelo más abajo para poder
+      // diagnosticar rápido la próxima vez sin adivinar.
       const tryModels = [
         "openai/gpt-oss-120b",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-70b-versatile",
-        "llama3-70b-8192",
-        "gemma2-9b-it",
-        "llama-3.1-8b-instant",
+        "openai/gpt-oss-20b",
       ];
       let lastErr = null;
+      const _erroresPorModelo = [];
       for (const model of tryModels) {
         try {
           const res = await fetchWithTimeout(
@@ -7034,6 +7031,7 @@ const AI_PROVIDERS = {
             const errData = await res.json().catch(() => ({}));
             const msg = errData?.error?.message || res.statusText;
             lastErr = new Error(`Groq/${model} [${res.status}]: ${msg}`);
+            _erroresPorModelo.push(`${model}[${res.status}]:${msg}`);
             if (res.status === 401 || res.status === 403) break;
             continue; // 404/429 → probar siguiente modelo
           }
@@ -7045,14 +7043,17 @@ const AI_PROVIDERS = {
           if (text?.trim().length > 5) {
             if (data.choices?.[0]?.finish_reason === "length") {
               lastErr = new Error(`Groq/${model}: respuesta truncada (length)`);
+              _erroresPorModelo.push(`${model}:truncada`);
               continue;
             }
             return text.trim();
           }
           lastErr = new Error(`Groq/${model}: respuesta vacía`);
+          _erroresPorModelo.push(`${model}:vacía`);
         } catch (e) {
           if (e.name === "AbortError") {
             lastErr = new Error(`Groq/${model}: timeout`);
+            _erroresPorModelo.push(`${model}:timeout`);
             continue;
           }
           if (e.message === "Failed to fetch") {
@@ -7062,7 +7063,14 @@ const AI_PROVIDERS = {
             break; // error de red = no tiene sentido intentar más modelos
           }
           lastErr = e;
+          _erroresPorModelo.push(`${model}:${e.message}`);
         }
+      }
+      // FIX 2026-08-14: si hubo más de un modelo probado, mostrar el detalle
+      // de TODOS (no solo el último) — el catálogo gratuito cambia seguido y
+      // un solo error genérico no basta para diagnosticar la próxima vez.
+      if (_erroresPorModelo.length > 1 && lastErr) {
+        lastErr = new Error(`Groq: ${_erroresPorModelo.join(" | ")}`);
       }
       throw (
         lastErr ||
@@ -7089,14 +7097,17 @@ const AI_PROVIDERS = {
         throw new Error(
           "Cerebras: API Key no configurada - obtenla gratis en cloud.cerebras.ai"
         );
-      // Modelos gratuitos verificados en vivo contra
-      // inference-docs.cerebras.ai/models/overview el 2026-07-13
+      // FIX 2026-08-14: catálogo re-verificado en vivo contra
+      // inference-docs.cerebras.ai/models/overview — zai-glm-4.7 ya NO existe
+      // en el catálogo de Cerebras (404 en todos los intentos). Solo quedan
+      // gpt-oss-120b y gemma-4-31b, confirmados en la referencia de API
+      // (inference-docs.cerebras.ai/api-reference/chat-completions).
       const tryModels = [
         "gpt-oss-120b",
         "gemma-4-31b",
-        "zai-glm-4.7",
       ];
       let lastErr = null;
+      const _erroresPorModelo = [];
       for (const model of tryModels) {
         try {
           const res = await fetchWithTimeout(
@@ -7123,6 +7134,7 @@ const AI_PROVIDERS = {
             const errData = await res.json().catch(() => ({}));
             const msg = errData?.error?.message || res.statusText;
             lastErr = new Error(`Cerebras/${model} [${res.status}]: ${msg}`);
+            _erroresPorModelo.push(`${model}[${res.status}]:${msg}`);
             if (res.status === 401 || res.status === 403) {
               // Key inválida - no tiene sentido seguir probando modelos
               throw new Error(
@@ -7137,19 +7149,27 @@ const AI_PROVIDERS = {
           if (text?.trim().length > 5) {
             if (data.choices?.[0]?.finish_reason === "length") {
               lastErr = new Error(`Cerebras/${model}: respuesta truncada (length)`);
+              _erroresPorModelo.push(`${model}:truncada`);
               continue;
             }
             return text.trim();
           }
           lastErr = new Error(`Cerebras/${model}: respuesta vacía`);
+          _erroresPorModelo.push(`${model}:vacía`);
         } catch (e) {
           if (e.message?.includes("API Key inválida")) throw e; // re-throw 401 immediately
           if (e.name === "AbortError") {
             lastErr = new Error(`Cerebras/${model}: timeout`);
+            _erroresPorModelo.push(`${model}:timeout`);
             continue;
           }
           lastErr = e;
+          _erroresPorModelo.push(`${model}:${e.message}`);
         }
+      }
+      // FIX 2026-08-14: acumulado de errores por modelo (ver nota en Groq).
+      if (_erroresPorModelo.length > 1 && lastErr) {
+        lastErr = new Error(`Cerebras: ${_erroresPorModelo.join(" | ")}`);
       }
       throw (
         lastErr ||
