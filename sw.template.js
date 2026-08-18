@@ -5,7 +5,19 @@
 // Sync: cuando vuelve la conexión sincroniza automáticamente
 // ═══════════════════════════════════════════════════════════════
 
-const SW_VERSION = 'siso-sw-v1.0.0';
+// FIX 2026-08-18: __BUILD_VERSION__ se reemplaza en build time por el commit
+// hash real (ver versionJsonPlugin en vite.config.js). Antes este string era
+// fijo ('v1.0.0') en TODOS los despliegues, así que el nombre de caché nunca
+// cambiaba y el handler `activate` (que borra cachés cuya clave no coincide
+// con la actual) nunca encontraba nada que purgar. Un navegador que visitaba
+// seguido el dominio estable podía acumular una mezcla de assets .js/.css de
+// distintos despliegues; si además `networkFirstStrategy` servía un
+// index.html viejo desde caché ante un hipo de red (timeout de 5s), ese HTML
+// viejo podía terminar de pie sobre assets que ya no encajaban entre sí →
+// pantalla en blanco, sin que React llegara a montar. Con el hash real,
+// cada despliegue tiene su propio nombre de caché y `activate` purga el
+// anterior por completo — arranque limpio garantizado en cada commit.
+const SW_VERSION = 'siso-sw-__BUILD_VERSION__';
 const CACHE_ASSETS = `${SW_VERSION}-assets`;
 const CACHE_PAGES  = `${SW_VERSION}-pages`;
 
