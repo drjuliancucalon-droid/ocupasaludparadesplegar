@@ -346,14 +346,38 @@ const _wRelease = () => {
   if (next) next();          // transfiere el slot (mantiene _wInFlight)
   else _wInFlight--;
 };
+// FIX 2026-08-18: circuit breaker para 401 repetidos (token del Worker
+// rechazado — típicamente SISO_TOKEN desincronizado entre Worker y Pages).
+// Sin esto, CADA clave leída/escrita durante el arranque (docenas) imprime
+// su propio 401 en consola y golpea la red igual, aunque ya se sepa que el
+// Worker completo está rechazando auth. Tras varios 401 consecutivos se abre
+// el circuito: nuevas llamadas fallan rápido y en silencio (sin red, sin
+// log repetido) durante un enfriamiento corto, y se avisa UNA sola vez. Al
+// expirar el enfriamiento el siguiente intento vuelve a golpear la red
+// normalmente — autocurativo, sin necesidad de recargar la página.
+let _wAuth401Count = 0;
+let _wCircuitOpenUntil = 0;
+const _W_CIRCUIT_THRESHOLD = 3;
+const _W_CIRCUIT_COOLDOWN_MS = 45_000;
+const _workerCircuitOpen = () => Date.now() < _wCircuitOpenUntil;
 const _workerFetch = async (url, opts = {}, retries = 3) => {
+  if (_workerCircuitOpen()) return null; // falla rápido, sin red, sin log repetido
   await _wAcquire();
   try {
     for (let attempt = 0; ; attempt++) {
       let r = null;
       try { r = await fetch(url, opts); } catch { r = null; }
+      if (r && r.status === 401) {
+        _wAuth401Count++;
+        if (_wAuth401Count >= _W_CIRCUIT_THRESHOLD) {
+          _wAuth401Count = 0;
+          _wCircuitOpenUntil = Date.now() + _W_CIRCUIT_COOLDOWN_MS;
+          console.warn(`[SISO] El Worker rechaza el token repetidamente (401) — pausando llamadas ${_W_CIRCUIT_COOLDOWN_MS / 1000}s para no saturar consola/red. Verifica que SISO_TOKEN (Worker) y VITE_WORKER_TOKEN (Pages) sean idénticos. Los datos se conservan localmente y se reintentan solos.`);
+        }
+        return r;
+      }
       // Éxito, o error definitivo (4xx que no sea 429) → devolver tal cual
-      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) return r;
+      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) { _wAuth401Count = 0; return r; }
       // Transitorio (null / 429 / 5xx): reintentar si quedan intentos
       if (attempt >= retries) return r;
       await new Promise((res) => setTimeout(res, 200 * Math.pow(2, attempt))); // 200/400/800ms
@@ -785,7 +809,18 @@ const _enqueuePendingD1 = (key, value) => {
         write(soloRefs);
         return true;
       }
-      catch (e3) { console.warn("[pending] enqueue falló (cuota):", e3?.message); return false; }
+      catch (e3) {
+        // FIX 2026-08-18: este es el peor caso — ni siquiera la referencia
+        // ligera cupo en localStorage. El valor de ESTA escritura puede haber
+        // quedado solo en memoria (React state), sin ninguna cola que lo
+        // reintente. Antes esto era un console.warn que nadie ve; ahora
+        // también enciende el marcador persistente "sin respaldo en la nube"
+        // (mismo badge que ya usa el header para otras fuentes) para que el
+        // médico lo note en pantalla, no solo en la consola.
+        console.warn("[pending] enqueue falló (cuota):", e3?.message);
+        _markUnsyncedHC(true, "pending-queue");
+        return false;
+      }
     }
   }
 };
@@ -1446,16 +1481,26 @@ const _secretariaMedicoAsignado = (currentUser, medicoId, usersList) => {
 
 // _sbSet: ahora usa _securePost que soporta proxy (prod) o Supabase directo (dev/piloto)
 // SEC-07: Rate limiter simple para requests a Supabase
-const _sbRl = { count: 0, reset: Date.now() + 60000 };
+// FIX 2026-08-18: cuando el límite se dispara durante una racha de escrituras
+// (p.ej. D1 caído y decenas de claves cayendo a Supabase como respaldo), cada
+// llamada posterior repetía el mismo console.warn — cientos de líneas idénticas
+// sin aportar nada nuevo. Ahora se avisa UNA sola vez por ventana de 60s; el
+// bloqueo (return false) sigue intacto en cada llamada, así que ningún llamador
+// pierde su red de seguridad (cola de reintento / marcador de "sin respaldo").
+const _sbRl = { count: 0, reset: Date.now() + 60000, warned: false };
 const _rlCheck = () => {
   const now = Date.now();
   if (now > _sbRl.reset) {
     _sbRl.count = 0;
     _sbRl.reset = now + 60000;
+    _sbRl.warned = false;
   }
   _sbRl.count++;
   if (_sbRl.count > 120) {
-    console.warn("[SISO SEC] Rate limit alcanzado");
+    if (!_sbRl.warned) {
+      _sbRl.warned = true;
+      console.warn("[SISO SEC] Límite de peticiones a Supabase alcanzado — pausando escrituras a la nube ~1 min. Los cambios se conservan localmente y se reintentan solos.");
+    }
     return false;
   }
   return true;
@@ -20136,6 +20181,13 @@ function AppInner() {
   useEffect(() => {
     if (!_WORKER_TOKEN) return;
     const processQueue = async () => {
+      // FIX 2026-08-18: si el circuito del Worker está abierto (401 repetidos
+      // recientes, ver _workerFetch), no tiene sentido recorrer la cola entera
+      // golpeando un backend que ya sabemos que rechaza — antes esto disparaba
+      // un _workerSet fallido por CADA item pendiente (podían ser decenas),
+      // cada uno con su propio intento de red. Se salta este ciclo completo y
+      // se reintenta en el próximo (30s) — mismo mecanismo, sin ruido extra.
+      if (_workerCircuitOpen()) return;
       const pending = _getPendingD1();
       // FIX 2026-08-04: las entradas heredadas demasiado grandes ya NO se
       // borran (antes `delete pending[_k]` — pérdida silenciosa del pendiente,
