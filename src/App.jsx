@@ -360,6 +360,18 @@ let _wCircuitOpenUntil = 0;
 const _W_CIRCUIT_THRESHOLD = 3;
 const _W_CIRCUIT_COOLDOWN_MS = 45_000;
 const _workerCircuitOpen = () => Date.now() < _wCircuitOpenUntil;
+// FIX 2026-08-19: segundo circuito para cortes de RED (fetch lanzó excepción
+// — DNS caído, socket suspendido por el SO al reconectar WiFi/salir de
+// reposo — o 5xx del Worker/edge tras agotar los reintentos internos).
+// Enfriamiento corto (15s, no 45s): a diferencia de un token mal — que no se
+// arregla solo — un corte de red del propio equipo suele resolverse en
+// segundos, así que no tiene sentido bloquear tanto tiempo como el caso de
+// auth. Reutiliza el mismo _wCircuitOpenUntil (un solo punto de corte en
+// _workerFetch), pero con su propio contador y mensaje para no confundir
+// "token rechazado" con "tu red tuvo un hipo" — son causas y arreglos distintos.
+let _wNetFailCount = 0;
+const _W_NET_CIRCUIT_THRESHOLD = 3;
+const _W_NET_COOLDOWN_MS = 15_000;
 const _workerFetch = async (url, opts = {}, retries = 3) => {
   if (_workerCircuitOpen()) return null; // falla rápido, sin red, sin log repetido
   await _wAcquire();
@@ -369,6 +381,7 @@ const _workerFetch = async (url, opts = {}, retries = 3) => {
       try { r = await fetch(url, opts); } catch { r = null; }
       if (r && r.status === 401) {
         _wAuth401Count++;
+        _wNetFailCount = 0;
         if (_wAuth401Count >= _W_CIRCUIT_THRESHOLD) {
           _wAuth401Count = 0;
           _wCircuitOpenUntil = Date.now() + _W_CIRCUIT_COOLDOWN_MS;
@@ -377,9 +390,17 @@ const _workerFetch = async (url, opts = {}, retries = 3) => {
         return r;
       }
       // Éxito, o error definitivo (4xx que no sea 429) → devolver tal cual
-      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) { _wAuth401Count = 0; return r; }
+      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) { _wAuth401Count = 0; _wNetFailCount = 0; return r; }
       // Transitorio (null / 429 / 5xx): reintentar si quedan intentos
-      if (attempt >= retries) return r;
+      if (attempt >= retries) {
+        _wNetFailCount++;
+        if (_wNetFailCount >= _W_NET_CIRCUIT_THRESHOLD) {
+          _wNetFailCount = 0;
+          _wCircuitOpenUntil = Date.now() + _W_NET_COOLDOWN_MS;
+          console.warn(`[SISO] Varias peticiones al Worker fallaron por red (conexión/DNS/servidor) — pausando ${_W_NET_COOLDOWN_MS / 1000}s. Probablemente un corte breve de tu red; los cambios se conservan localmente y se reintentan solos.`);
+        }
+        return r;
+      }
       await new Promise((res) => setTimeout(res, 200 * Math.pow(2, attempt))); // 200/400/800ms
     }
   } finally {
@@ -6909,15 +6930,23 @@ const AI_PROVIDERS = {
       // análisis / restricciones, que truncan a mitad de frase. Van al final
       // para que solo se usen cuando TODAS las keys agotaron los modelos
       // completos, y las funciones de texto largo pueden excluirlos del todo.
+      // FIX 2026-08-19: gemini-2.0-flash y gemini-2.0-flash-lite fueron dados
+      // de baja (confirmado contra ai.google.dev/gemini-api/docs/models — no
+      // aparecen ni siquiera en la lista de modelos vigentes, solo en la de
+      // retirados). Reemplazados por gemini-2.5-pro (tier Pro, mayor calidad
+      // y ventana de salida que cualquier flash — ideal para el último
+      // recurso de texto largo antes de caer a Groq/Cerebras/OpenRouter) y
+      // gemini-3.5-flash-lite (generación lite más nueva vigente). Todos
+      // confirmados en la documentación oficial en esta misma verificación.
       const _MODELOS_ALTA = [
         "gemini-2.5-flash",
         "gemini-3.5-flash",
-        "gemini-2.0-flash",
+        "gemini-2.5-pro",
       ];
       const _MODELOS_LITE = [
         "gemini-2.5-flash-lite",
         "gemini-3.1-flash-lite",
-        "gemini-2.0-flash-lite",
+        "gemini-3.5-flash-lite",
       ];
       // systemPrompt lleva la marca [SOLO-ALTA] cuando el llamador necesita
       // una respuesta extensa y no tolera modelos reducidos.
@@ -15637,7 +15666,12 @@ const _portalVerifyPayment = async (base64, mime, amount) => {
   if (!key) throw new Error("Configura una API Key de Gemini en ⚙️ IA para verificar comprobantes.");
   const amountFmt = Number(amount || 0).toLocaleString("es-CO");
   const prompt = `Analiza este comprobante de pago. Valor esperado: $${amountFmt} COP. Responde ÚNICAMENTE con JSON válido sin markdown: {"esPago":true,"montoCoincide":true,"montoPagado":"valor encontrado o N/A","confirmado":true,"observacion":"breve nota"}. confirmado=true solo si es comprobante válido Y monto coincide o es mayor.`;
-  const models = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"];
+  // FIX 2026-08-19: gemini-2.0-flash/-lite dados de baja (verificado contra
+  // ai.google.dev/gemini-api/docs/models). gemini-2.5-flash y sus variantes
+  // lite mantienen entrada multimodal (texto+imagen) igual que la familia
+  // 2.0 que reemplazan — no se necesitan los modelos "-image" (esos son para
+  // GENERAR imágenes, no para leer/interpretar la que se envía aquí).
+  const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite"];
   let lastErr = "Sin key";
   for (const model of models) {
     try {
@@ -15674,7 +15708,12 @@ const _analizarExamenIA = async (base64, mime, nombreArchivo) => {
   const prompt = `Eres médico especialista en Medicina del Trabajo. Analiza este examen paraclínico (archivo: ${nombreArchivo || "sin nombre"}) y extrae sus resultados. Responde ÚNICAMENTE con JSON válido sin markdown:
 {"tipoExamen":"tipo de examen identificado (audiometría/espirometría/laboratorio/RX/optometría/EKG/otro)","fechaExamen":"fecha del examen si es visible o N/R","resultadosClave":"resumen conciso de los valores/resultados principales con sus cifras","valoresAnormales":"SOLO los hallazgos fuera de rango o patológicos, con valores; si todo es normal escribe 'Sin alteraciones'","interpretacion":"interpretación clínica breve del examen","relevanciaOcupacional":"implicación para la aptitud laboral y el cargo, en 1-2 frases"}
 Si el archivo NO es un examen médico legible, responde {"error":"descripción del problema"}.`;
-  const models = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash-lite"];
+  // FIX 2026-08-19: gemini-2.0-flash/-lite dados de baja (verificado contra
+  // ai.google.dev/gemini-api/docs/models). gemini-2.5-flash y sus variantes
+  // lite mantienen entrada multimodal (texto+imagen) igual que la familia
+  // 2.0 que reemplazan — no se necesitan los modelos "-image" (esos son para
+  // GENERAR imágenes, no para leer/interpretar la que se envía aquí).
+  const models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash-lite"];
   let lastErr = "Sin key";
   for (const model of models) {
     try {
@@ -24710,13 +24749,17 @@ const handleLogin = (u, p) => {
       // FIX 2026-06-13: si una escritura falla, encolar para reintento automático.
       const slimFinal = finalList.map(_slimPatient);
       const ok1 = await _workerSet(cloudKey, slimFinal).catch(() => false);
-      if (!ok1) { _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); }
-      const ok2 = await _workerSet(key,      slimFinal).catch(() => false);
-      if (!ok2) { _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); }
-      // Aviso "HCs sin respaldo": marca si alguna de las dos escrituras
-      // falló (el array no cabe en la cola de pendientes); limpia cuando
-      // ambas vuelven a lograrse.
-      _markUnsyncedHC(!(ok1 && ok2));
+      const queued1 = ok1 || (() => { const q = _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); return q; })();
+      const ok2 = await _workerSet(key, slimFinal).catch(() => false);
+      const queued2 = ok2 || (() => { const q = _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); return q; })();
+      // FIX 2026-08-19: el badge rojo "sin respaldo" antes se disparaba por
+      // CUALQUIER fallo de escritura, aunque _enqueuePendingD1 ya lo hubiera
+      // encolado con éxito para el reintento automático de 30s — duplicando
+      // la alarma del badge ámbar "⏳ N pendientes", que ya comunica lo mismo
+      // sin pánico. Ahora el rojo se reserva para cuando NI el reintento
+      // automático pudo encolarse (_enqueuePendingD1 devolvió false) — el
+      // único caso donde de verdad no hay nada reintentando el dato.
+      _markUnsyncedHC(!(queued1 && queued2));
       return ok1 && ok2;
     } catch (e) {
       console.warn("[_syncPatients] async D1 falló:", e?.message);
