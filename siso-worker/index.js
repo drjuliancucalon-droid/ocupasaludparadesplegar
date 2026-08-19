@@ -72,7 +72,14 @@ async function decompressValue(stored) {
 // sesión (con su copia local desactualizada) guardaba esta clave, porque el
 // POST /store normal siempre reemplazaba el arreglo completo. Ahora
 // siso_encuestas también se fusiona por id en ambas rutas de escritura.
-const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas|^siso_companies|^siso_cartas_custodia|^siso_saved_reports|^siso_informes|^siso_users|^siso_portal_empresa_docs|^siso_portal_empresa_atenciones/;
+// FIX 2026-08-19: siso_saved_bills (cuentas de cobro) agregada — era la única
+// de las listas protegidas por id que quedaba fuera del candado server-side.
+// Solo tenía el merge del lado del cliente (_writeArrayMergeD1), que no puede
+// distinguir "la nube está vacía" de "la lectura falló" — una sesión con un
+// glitch de red podía sobreescribir D1 con solo su lista local y borrar
+// cuentas de cobro creadas por otra sesión. Ver también el fix del mismo día
+// en _writeArrayMergeD1 (App.jsx) que corrige esa causa raíz del lado cliente.
+const _PROTECTED = /^siso_(db_)?patients_|^siso_atenciones|^siso_hc_|^siso_encuestas|^siso_companies|^siso_cartas_custodia|^siso_saved_reports|^siso_informes|^siso_users|^siso_portal_empresa_docs|^siso_portal_empresa_atenciones|^siso_saved_bills/;
 
 // siso_portal_empresa_docs_<nit> no es un arreglo: es un objeto
 // {nit, nombre, codigoAcceso, periodos:[{periodo, informe, cuenta, custodia, certificados}]}.

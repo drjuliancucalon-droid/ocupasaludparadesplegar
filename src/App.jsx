@@ -18928,19 +18928,36 @@ function AppInner() {
         periodo.periodoLabel = periodo.periodoLabel || periodoNombreLargo;
       }
       // Vincular según el tipo (custodia o informe sociodemográfico)
+      // FIX 2026-08-19: FUSIONAR con lo ya publicado, no reemplazar. Esta
+      // auto-publicación se dispara en CADA saveInforme (incluida una edición
+      // menor). Antes escribía siempre un objeto "pobre" (solo metadatos) que
+      // pisaba por completo lo que el botón manual "Enviar TODO a Empresa"
+      // hubiera publicado antes (firma, statsKey, datos bancarios, etc.) —
+      // un simple re-guardado dejaba el documento del portal sin firma o,
+      // en el caso del informe, sin `statsKey` (con lo que el portal deja de
+      // poder mostrarlo — ver el guard en el visor: !informe.statsKey).
+      // Ahora se conserva todo lo previamente publicado y solo se actualizan
+      // los campos que este guardado realmente trae.
       if (informe.tipo === "custodia") {
         periodo.custodia = {
+          ...(periodo.custodia || {}),
           id: informe.id,
           fecha: informe.fecha,
-          // mantener solo metadatos en portal — el documento completo vive en savedInformes
+          // La firma ya viene resuelta en el objeto custodia (ver creación,
+          // línea ~61111); si por algún motivo no viene, se preserva la que
+          // ya estuviera publicada antes de caer a null.
+          firma: informe.firma || periodo.custodia?.firma || activeSignature || null,
         };
       } else {
         // Informe sociodemográfico (sin tipo)
         periodo.informe = {
+          ...(periodo.informe || {}),
           id: informe.id,
           fecha: informe.fecha,
           totalPacientes: informe.totalPacientes,
           resumen: informe.resumen,
+          // Sin statsKey el portal no puede renderizar el informe completo.
+          statsKey: informe.statsKey || periodo.informe?.statsKey || null,
         };
       }
       periodo.updatedAt = new Date().toISOString();
@@ -18970,6 +18987,140 @@ function AppInner() {
       return { ok: true, portalKey, periodoLabel };
     } catch (e) {
       console.warn("[_publicarAlPortalEmpresa] error:", e?.message);
+      return { ok: false, error: e?.message };
+    }
+  };
+  // ─── AUTO-PUBLICACIÓN de cuenta de cobro al portal de empresa ──────────────
+  // FIX 2026-08-19: la cuenta de cobro NUNCA se auto-publicaba — solo llegaba
+  // al portal si el médico usaba manualmente el botón "Enviar TODO a
+  // Empresa". Si ese botón no se usaba, la empresa nunca veía la cuenta (ni
+  // firmada ni sin firmar): simplemente no existía en `periodos[].cuenta`.
+  // Ahora se publica automáticamente al guardar/editar una cuenta, con el
+  // mismo patrón anti-sobreescritura que _publicarAlPortalEmpresa: si la
+  // lectura previa del portal falla de verdad (no "clave inexistente"), se
+  // aborta sin escribir nada para no arriesgar documentos ya publicados.
+  // FIRE-AND-FORGET: nunca debe romper el guardado local de la cuenta.
+  const _publicarCuentaAlPortalEmpresa = async (bill) => {
+    try {
+      if (!bill) return { ok: false, error: "sin cuenta" };
+      const _ppNormNit = (v) => (v || "").toString().replace(/[^0-9]/g, "");
+      let emp = companies.find(c => c.id === bill.companyId);
+      if (!emp && bill.clientNit) {
+        const iNit = _ppNormNit(bill.clientNit);
+        if (iNit) emp = companies.find(c => { const cN = _ppNormNit(c.nit); return cN && (cN === iNit || cN.startsWith(iNit) || iNit.startsWith(cN)); });
+      }
+      if (!emp && bill.clientName) {
+        const iNom = bill.clientName.trim().toUpperCase();
+        if (iNom) emp = companies.find(c => (c.nombre || "").trim().toUpperCase() === iNom);
+      }
+      if (!emp) return { ok: false, error: "empresa no encontrada" };
+      const nit = _ppNormNit(emp.nit);
+      if (!nit || nit.length < 3) return { ok: false, error: "NIT inválido" };
+      const ymMatch = (bill.date || "").match(/^(\d{4}-\d{2})/);
+      const ym = ymMatch ? ymMatch[1] : new Date().toISOString().slice(0, 7);
+      const [y, m] = ym.split("-");
+      const periodoLabel = ym;
+      const periodoNombreLargo = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"][parseInt(m) - 1] + " " + y;
+
+      let portalKey = `siso_portal_empresa_docs_${nit}`;
+      let portalData = null;
+      if (_WORKER_TOKEN) {
+        try { portalData = await _workerGet(portalKey); } catch {}
+        if (!portalData && nit.length > 6) {
+          const altKey = `siso_portal_empresa_docs_${nit.slice(0, -1)}`;
+          try {
+            const altData = await _workerGet(altKey);
+            if (altData) { portalKey = altKey; portalData = altData; }
+          } catch {}
+        }
+      }
+      // ANTI-SOBREESCRITURA: ver mismo criterio en _publicarAlPortalEmpresa.
+      if (!portalData) {
+        let _existeEnD1 = false;
+        if (_WORKER_TOKEN) {
+          try {
+            const _raw = await _workerGetRaw(portalKey);
+            const _meta = await _workerGetRaw(portalKey + _CHUNK_SUF_META);
+            if (_raw !== null || _meta !== null) _existeEnD1 = true;
+          } catch { _existeEnD1 = true; }
+        }
+        if (_existeEnD1) {
+          return { ok: false, error: "lectura del portal falló — no se sobreescribe para proteger los documentos previos de la empresa. Reintente en unos segundos." };
+        }
+        portalData = { nit, nombre: emp.nombre || "", codigoAcceso: emp.portalCode || "", periodos: [] };
+      }
+      portalData.periodos = portalData.periodos || [];
+      let periodo = portalData.periodos.find(p => {
+        if (!p) return false;
+        if (p.periodo === periodoLabel) return true;
+        if (p.periodo === periodoNombreLargo) return true;
+        if ((p.fecha || "").startsWith(ym)) return true;
+        const legacyMatch = (p.periodo || "").match(/^(\w+) (\d{4})$/);
+        if (legacyMatch) {
+          const idx = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"].indexOf(legacyMatch[1]);
+          if (idx >= 0) {
+            const ymLegacy = `${legacyMatch[2]}-${String(idx+1).padStart(2,"0")}`;
+            if (ymLegacy === ym) return true;
+          }
+        }
+        return false;
+      });
+      if (!periodo) {
+        periodo = { periodo: periodoLabel, periodoLabel: periodoNombreLargo, fecha: bill.date || `${ym}-01` };
+        portalData.periodos.push(periodo);
+      } else {
+        periodo.periodo = periodoLabel;
+        periodo.periodoLabel = periodo.periodoLabel || periodoNombreLargo;
+      }
+      // FUSIONAR con lo ya publicado (no reemplazar) — mismo motivo que el
+      // fix de informe/custodia: preserva `comprobante`/`pagado` si otro
+      // flujo ya los había fijado, y no deja la firma en null si por algún
+      // motivo activeSignature no está disponible en este render.
+      periodo.cuenta = {
+        ...(periodo.cuenta || {}),
+        number: bill.number,
+        amount: bill.amount,
+        date: bill.date,
+        concept: bill.concept,
+        amountWords: bill.amountWords || "",
+        pagado: !!bill.pagada,
+        comprobante: periodo.cuenta?.comprobante || null,
+        clientName: bill.clientName || emp.nombre || "",
+        clientNit: bill.clientNit || nit,
+        bankName: bill.bankName || activeDoctorData?.banco || "BANCOLOMBIA",
+        accountType: bill.accountType || activeDoctorData?.tipoCuenta || "Ahorros",
+        accountNumber: bill.accountNumber || activeDoctorData?.numeroCuenta || "",
+        rut: activeDoctorData?.cedula || "1061750704",
+        doctorNombre: (activeDoctorData?.nombre || "JULIAN CUCALON").toUpperCase(),
+        doctorCC: activeDoctorData?.cedula || "1061750704",
+        doctorLicencia: activeDoctorData?.licencia || "14497-12-2019",
+        doctorTitulo: (activeDoctorData?.titulo || "MEDICO ESPECIALISTA EN SST").toUpperCase(),
+        doctorCel: activeDoctorData?.celular || "3182213979",
+        doctorEmail: activeDoctorData?.email || "dr.juliancucalon@gmail.com",
+        doctorCiudad: activeDoctorData?.ciudad || "Popayán",
+        firma: activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || periodo.cuenta?.firma || null,
+      };
+      periodo.updatedAt = new Date().toISOString();
+      portalData.updatedAt = new Date().toISOString();
+      portalData.nombre = portalData.nombre || emp.nombre || "";
+      portalData.codigoAcceso = portalData.codigoAcceso || emp.portalCode || "";
+
+      let okD1 = false;
+      if (_WORKER_TOKEN) {
+        try {
+          okD1 = await _workerSet(portalKey, portalData);
+        } catch (e) {
+          console.warn("[_publicarCuentaAlPortalEmpresa] D1 write excepción:", e?.message);
+        }
+      }
+      _sbSet(portalKey, portalData).catch((e) => console.warn("[_publicarCuentaAlPortalEmpresa] SB backup falló:", e?.message));
+      if (!okD1) {
+        console.warn("[_publicarCuentaAlPortalEmpresa] D1 write falló para", portalKey);
+        return { ok: false, error: "D1 write falló", portalKey };
+      }
+      return { ok: true, portalKey, periodoLabel };
+    } catch (e) {
+      console.warn("[_publicarCuentaAlPortalEmpresa] error:", e?.message);
       return { ok: false, error: e?.message };
     }
   };
@@ -24779,17 +24930,39 @@ const handleLogin = (u, p) => {
     try {
       const remote = await _workerGet(key);
       let finalList = list;
-      if (Array.isArray(remote) && remote.length > 0) {
-        const localIds = new Set(
-          (list || []).filter(x => x && x[idField] != null).map(x => String(x[idField]))
-        );
-        const extras = remote.filter(x => {
-          if (!x || x[idField] == null) return false;
-          return !localIds.has(String(x[idField]));
-        });
-        if (extras.length > 0) {
-          finalList = [...(list || []), ...extras];
-          console.warn(`[_writeArrayMergeD1] ${key}: MERGE +${extras.length} preservados, total ${finalList.length}`);
+      if (Array.isArray(remote)) {
+        if (remote.length > 0) {
+          const localIds = new Set(
+            (list || []).filter(x => x && x[idField] != null).map(x => String(x[idField]))
+          );
+          const extras = remote.filter(x => {
+            if (!x || x[idField] == null) return false;
+            return !localIds.has(String(x[idField]));
+          });
+          if (extras.length > 0) {
+            finalList = [...(list || []), ...extras];
+            console.warn(`[_writeArrayMergeD1] ${key}: MERGE +${extras.length} preservados, total ${finalList.length}`);
+          }
+        }
+      } else {
+        // FIX 2026-08-19: `remote` no-arreglo puede significar "la clave no
+        // existe todavía" (OK, escribir) o "la lectura falló" (red inestable,
+        // circuit breaker abierto, chunk corrupto) — antes ambos casos se
+        // trataban igual y se escribía SOLO la lista local, borrando en la
+        // nube lo que esta sesión no tenía cargado (causa raíz confirmada de
+        // que "las cuentas de cobro desaparecían entre sesiones", incidente
+        // instrumentado el 2026-07-29 sin encontrar la causa). Verificamos
+        // existencia real (raw + meta) antes de decidir, mismo criterio que
+        // ya usa _publicarAlPortalEmpresa.
+        let _existeEnD1 = false;
+        try {
+          const _raw = await _workerGetRaw(key);
+          const _meta = await _workerGetRaw(key + _CHUNK_SUF_META);
+          if (_raw !== null || _meta !== null) _existeEnD1 = true;
+        } catch { _existeEnD1 = true; } // ante la duda, proteger
+        if (_existeEnD1) {
+          console.warn(`[_writeArrayMergeD1] ${key}: lectura falló pero SÍ hay datos en D1 — abortando para no sobreescribir`);
+          return false;
         }
       }
       return await _workerSet(key, finalList);
@@ -39516,13 +39689,15 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       : currentUser?.user || "shared";
                     if (editingBillId) {
                       // ── MODO EDICIÓN: actualizar la cuenta existente ──
+                      const editedBill = { ...(savedBillsList.find(b => b.id === editingBillId) || {}), ...billData, editadoEn: new Date().toISOString() };
                       const upd = savedBillsList.map(b =>
-                        b.id === editingBillId
-                          ? { ...b, ...billData, editadoEn: new Date().toISOString() }
-                          : b
+                        b.id === editingBillId ? editedBill : b
                       );
                       setSavedBillsList(upd);
                       _persistBillsSafe(upd);
+                      // FIX 2026-08-19: auto-publicar al portal de empresa (antes solo
+                      // llegaba ahí con el botón manual "Enviar TODO a Empresa").
+                      _publicarCuentaAlPortalEmpresa(editedBill).catch((e) => console.warn("[cuenta] publicación portal:", e?.message));
                       setEditingBillId(null);
                       showAlert("✅ Cuenta de cobro actualizada correctamente.");
                     } else {
@@ -39536,6 +39711,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
                       const upd = [...savedBillsList, nb];
                       setSavedBillsList(upd);
                       _persistBillsSafe(upd);
+                      // FIX 2026-08-19: auto-publicar al portal de empresa (antes solo
+                      // llegaba ahí con el botón manual "Enviar TODO a Empresa").
+                      _publicarCuentaAlPortalEmpresa(nb).catch((e) => console.warn("[cuenta] publicación portal:", e?.message));
                       if (volverAEnvioIntegral) {
                         showAlert("✅ Cuenta de cobro guardada.\n\nVolviendo al panel de envío integral...");
                         setTimeout(() => {
