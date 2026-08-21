@@ -135,6 +135,21 @@ async function _dualWriteRelational(env, key, merged) {
 // instante, sin perder nada — nunca se dejó de escribir ahí.
 // Devuelve {value, ts} con la MISMA forma que el camino viejo, o null si la
 // clave no es de una colección piloto (deja seguir el flujo normal).
+// FIX 2026-08-21: una sola fila con `data` mal formado (JSON corrupto)
+// tumbaba con 500 la lectura de TODA la colección — probado en vivo con una
+// fila de prueba insertada a mano cuyo escapado se corrompió al pasar por
+// PowerShell. Con almacenamiento por fila, no hay motivo para que un
+// registro dañado bloquee a los demás: se descarta esa fila puntual (se
+// loguea) y se sirve el resto. Ninguna fila real llegó a estar corrupta —
+// esto es defensa en profundidad, no una recuperación de datos perdidos.
+function _parseDataRows(results, keyLabel) {
+  const out = [];
+  for (const r of results) {
+    try { out.push(JSON.parse(r.data)); }
+    catch (e) { console.warn(`[relational-read] fila corrupta descartada en ${keyLabel}:`, e?.message); }
+  }
+  return out;
+}
 async function _readRelationalIfPiloto(env, key) {
   const mCaja = /^siso_caja_movs_(.+)$/.exec(key);
   if (mCaja) {
@@ -142,7 +157,7 @@ async function _readRelationalIfPiloto(env, key) {
       "SELECT data, updated_at FROM caja_movimientos WHERE suf = ? AND deleted = 0 ORDER BY fecha, id"
     ).bind(mCaja[1]).all();
     const results = rows.results || [];
-    const value = results.map(r => JSON.parse(r.data));
+    const value = _parseDataRows(results, key);
     const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
     return { value, ts };
   }
@@ -151,7 +166,7 @@ async function _readRelationalIfPiloto(env, key) {
       "SELECT data, updated_at FROM bills WHERE deleted = 0 ORDER BY date, id"
     ).all();
     const results = rows.results || [];
-    const value = results.map(r => JSON.parse(r.data));
+    const value = _parseDataRows(results, key);
     const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
     return { value, ts };
   }
@@ -282,7 +297,13 @@ export default {
         // FASE 4 piloto: bills/caja_movimientos se leen desde la tabla
         // relacional. Ver _readRelationalIfPiloto — el blob de abajo sigue
         // existiendo y sincronizado, es la red de reversión.
-        const relational = await _readRelationalIfPiloto(env, key);
+        // FIX 2026-08-21: si la lectura relacional falla por cualquier
+        // motivo no previsto, cae automáticamente al blob en vez de
+        // devolver un error — la reversión ya no depende de que alguien
+        // reaccione a tiempo, es automática en cada request.
+        let relational = null;
+        try { relational = await _readRelationalIfPiloto(env, key); }
+        catch (e) { console.warn(`[relational-read] fallo completo en ${key}, cayendo al blob:`, e?.message); }
         if (relational) {
           const respHeaders = { ...headers, "ETag": relational.ts ? `"${relational.ts}"` : '""', "X-Siso-Ts": relational.ts || "" };
           return new Response(JSON.stringify([{ key, value: relational.value, ts: relational.ts }]), { headers: respHeaders });
