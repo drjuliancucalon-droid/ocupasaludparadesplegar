@@ -19134,6 +19134,7 @@ function AppInner() {
       );
       try { localStorage.setItem("siso_caja_movs", JSON.stringify(updated)); } catch {}
       _sbSet(`siso_caja_movs_${currentUser?.user || "shared"}`, updated);
+      _persistCajaSafe(updated); // FASE 1 — primera vez que caja escribe a D1
       return updated;
     });
   };
@@ -19146,6 +19147,7 @@ function AppInner() {
       );
       try { localStorage.setItem("siso_caja_movs", JSON.stringify(updated)); } catch {}
       _sbSet(`siso_caja_movs_${currentUser?.user || "shared"}`, updated);
+      _persistCajaSafe(updated); // FASE 1 — primera vez que caja escribe a D1
       return updated;
     });
   };
@@ -20245,6 +20247,7 @@ function AppInner() {
           : currentUser?.user || "shared";
         localStorage.setItem(`siso_caja_${suf}`, JSON.stringify(movs));
         _sbSet(`siso_caja_movs_${suf}`, movs);
+        _persistCajaSafe(movs); // FASE 1 — primera vez que caja escribe a D1
       } catch {}
     }, 800);
   }, [currentUser]);
@@ -25013,6 +25016,25 @@ const handleLogin = (u, p) => {
     Promise.all([_sbSet(k1, upd), _sbSet(k2, upd)])
       .then(([a, b]) => { _traza.sb = { [k1]: !!a, [k2]: !!b }; console.info(`[cuentas] Supabase ${k1}=${a ? "OK" : "FALLÓ"} ${k2}=${b ? "OK" : "FALLÓ"}`); _dejarTraza(); })
       .catch((e) => { _traza.sb = { error: e?.message || "excepción" }; console.warn("[cuentas] Supabase excepción:", e?.message); _dejarTraza(); });
+  };
+  // FASE 1 (2026-08-21): caja de movimientos NUNCA escribía a D1 — solo
+  // localStorage + Supabase (hallazgo de la auditoría de almacenamiento).
+  // Mismo patrón seguro que _persistBillsSafe: merge por id, badge "sin
+  // respaldo" si falla. El Worker además espeja cada movimiento a la tabla
+  // relacional `caja_movimientos` (escritura doble, ver siso-worker/index.js
+  // _dualWriteRelational) — copia en sombra, la fuente autoritativa sigue
+  // siendo este blob durante esta fase.
+  const _persistCajaSafe = (upd) => {
+    const key = `siso_caja_movs_${currentUser?.user || "shared"}`;
+    try { _ls.setItem("siso_caja_movs", JSON.stringify(upd)); } catch (e) { console.warn("[caja] localStorage", e?.message); }
+    if (_WORKER_TOKEN) {
+      _writeArrayMergeD1(key, upd, "id")
+        .then((ok) => { console.info(`[caja] D1 ${key}=${ok ? "OK" : "FALLÓ"} · ${(upd || []).length} movimiento(s)`); _markUnsyncedHC(!ok, "caja"); })
+        .catch((e) => { console.warn("[caja] D1 excepción:", e?.message); _markUnsyncedHC(true, "caja"); });
+    } else {
+      _markUnsyncedHC(true, "caja");
+    }
+    _sbSet(key, upd).catch((e) => console.warn("[caja] Supabase excepción:", e?.message));
   };
   // AUDITORÍA 2026-07-09: persistencia SEGURA de propuestas económicas
   // (siso_saved_reports). Antes se escribían con _sync → _workerSet directo
@@ -59051,6 +59073,7 @@ ${
         : currentUser?.user || "shared";
       localStorage.setItem(`siso_caja_${suf}`, JSON.stringify(movs));
       _sbSet(`siso_caja_movs_${suf}`, movs); // Bloque 3: sync Supabase
+      _persistCajaSafe(movs); // FASE 1 — primera vez que caja escribe a D1
     } catch {}
   };
   // ── B-F2-01/02: Generar comprobante ──────────────────────────────────

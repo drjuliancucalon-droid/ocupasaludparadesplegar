@@ -64,6 +64,69 @@ async function decompressValue(stored) {
   }
 }
 
+// ── FASE 1 (2026-08-21) — ESCRITURA DOBLE hacia tablas relacionales piloto ──
+// Migración gradual de siso_store (blob JSON) a tablas reales, colección por
+// colección. El blob JSON sigue siendo la fuente AUTORITATIVA en esta fase —
+// esto es una copia en sombra para verificar antes de cambiar la lectura.
+// No bloqueante para el flujo principal: si falla, el blob ya se escribió
+// igual (try/catch propio, nunca lanza). Ver docs/COORDINACION-REFACTOR-
+// ESQUEMA-D1-2026-08-21.md para el plan completo y el acuerdo con el refactor.
+async function _dualWriteBills(env, items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const stmt = env.DB.prepare(
+      `INSERT INTO bills (id, company_id, client_nit, date, pagada, deleted, data, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         company_id=excluded.company_id, client_nit=excluded.client_nit, date=excluded.date,
+         pagada=excluded.pagada, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+    );
+    const batch = [];
+    for (const it of items) {
+      if (!it || it.id == null) continue;
+      batch.push(stmt.bind(
+        String(it.id), it.companyId ?? null, it.clientNit ?? null, it.date ?? null,
+        it.pagada ? 1 : 0, it._deleted ? 1 : 0, JSON.stringify(it)
+      ));
+    }
+    for (let i = 0; i < batch.length; i += 50) await env.DB.batch(batch.slice(i, i + 50));
+  } catch (e) {
+    console.warn("[dual-write] bills:", e?.message);
+  }
+}
+async function _dualWriteCaja(env, suf, items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const stmt = env.DB.prepare(
+      `INSERT INTO caja_movimientos (id, suf, fecha, estado, deleted, data, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         suf=excluded.suf, fecha=excluded.fecha, estado=excluded.estado,
+         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+    );
+    const batch = [];
+    for (const it of items) {
+      if (!it || it.id == null) continue;
+      batch.push(stmt.bind(
+        String(it.id), suf, it.fecha ?? null, it.estado ?? null,
+        it._deleted ? 1 : 0, JSON.stringify(it)
+      ));
+    }
+    for (let i = 0; i < batch.length; i += 50) await env.DB.batch(batch.slice(i, i + 50));
+  } catch (e) {
+    console.warn("[dual-write] caja:", e?.message);
+  }
+}
+// Despacha según el patrón de la clave; no-op si no coincide con ninguna
+// colección piloto. `merged` es siempre el arreglo YA fusionado (post
+// _mergeProtegido), igual que lo que se termina escribiendo en siso_store.
+async function _dualWriteRelational(env, key, merged) {
+  if (!Array.isArray(merged)) return;
+  const mCaja = /^siso_caja_movs_(.+)$/.exec(key);
+  if (mCaja) { await _dualWriteCaja(env, mCaja[1], merged); return; }
+  if (/^siso_saved_bills(_|$)/.test(key)) { await _dualWriteBills(env, merged); return; }
+}
+
 // ── CLAVES PROTEGIDAS (fusión por id, nunca reemplazo total) ───────────────
 // FIX 2026-07-15: siso_encuestas quedaba FUERA de esta lista y además el
 // candado solo existía en /store/chunked — pero siso_encuestas es pequeña y
@@ -286,6 +349,7 @@ export default {
           // borraba encuestas/registros creados por otra sesión.
           const comp = await Promise.all(chunk.map(async ({ key, value }) => {
             const merged = await _mergeProtegido(env, key, value);
+            await _dualWriteRelational(env, key, merged);
             return { key, cv: await compressValue(JSON.stringify(merged)) };
           }));
           const batch = comp.map(({ key, cv }) => stmt.bind(key, cv));
@@ -320,6 +384,7 @@ export default {
         // puede volver a encoger estas listas. Ver _mergeProtegido (module
         // scope) — misma función que usa POST /store.
         const toStore = await _mergeProtegido(env, key, value);
+        await _dualWriteRelational(env, key, toStore); // FASE 1 — ver POST /store
         const payload = JSON.stringify(toStore);
         // Hash idéntico al _hash64 del monolito (h1 base31 + h2 base127*31)
         let h1 = 0, h2 = 0;
