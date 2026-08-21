@@ -127,6 +127,37 @@ async function _dualWriteRelational(env, key, merged) {
   if (/^siso_saved_bills(_|$)/.test(key)) { await _dualWriteBills(env, merged); return; }
 }
 
+// FASE 4 (2026-08-21) — LECTURA desde la tabla relacional para estas mismas
+// dos colecciones piloto. El blob JSON en siso_store sigue existiendo y
+// sigue recibiendo cada escritura (ver _dualWriteRelational arriba) como red
+// de reversión: si algo aquí no cuadra, basta con quitar este bloque (o
+// devolver null antes de tiempo) para que la lectura vuelva a siso_store al
+// instante, sin perder nada — nunca se dejó de escribir ahí.
+// Devuelve {value, ts} con la MISMA forma que el camino viejo, o null si la
+// clave no es de una colección piloto (deja seguir el flujo normal).
+async function _readRelationalIfPiloto(env, key) {
+  const mCaja = /^siso_caja_movs_(.+)$/.exec(key);
+  if (mCaja) {
+    const rows = await env.DB.prepare(
+      "SELECT data, updated_at FROM caja_movimientos WHERE suf = ? AND deleted = 0 ORDER BY fecha, id"
+    ).bind(mCaja[1]).all();
+    const results = rows.results || [];
+    const value = results.map(r => JSON.parse(r.data));
+    const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
+    return { value, ts };
+  }
+  if (/^siso_saved_bills(_|$)/.test(key)) {
+    const rows = await env.DB.prepare(
+      "SELECT data, updated_at FROM bills WHERE deleted = 0 ORDER BY date, id"
+    ).all();
+    const results = rows.results || [];
+    const value = results.map(r => JSON.parse(r.data));
+    const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
+    return { value, ts };
+  }
+  return null;
+}
+
 // ── CLAVES PROTEGIDAS (fusión por id, nunca reemplazo total) ───────────────
 // FIX 2026-07-15: siso_encuestas quedaba FUERA de esta lista y además el
 // candado solo existía en /store/chunked — pero siso_encuestas es pequeña y
@@ -248,6 +279,14 @@ export default {
       // Devuelve también `ts` (updated_at) para soporte de If-Match en POST
       if (request.method === "GET" && path.startsWith("/store/") && !path.startsWith("/store/prefix/")) {
         const key = decodeURIComponent(path.slice(7));
+        // FASE 4 piloto: bills/caja_movimientos se leen desde la tabla
+        // relacional. Ver _readRelationalIfPiloto — el blob de abajo sigue
+        // existiendo y sincronizado, es la red de reversión.
+        const relational = await _readRelationalIfPiloto(env, key);
+        if (relational) {
+          const respHeaders = { ...headers, "ETag": relational.ts ? `"${relational.ts}"` : '""', "X-Siso-Ts": relational.ts || "" };
+          return new Response(JSON.stringify([{ key, value: relational.value, ts: relational.ts }]), { headers: respHeaders });
+        }
         const row = await env.DB.prepare("SELECT value, updated_at FROM siso_store WHERE key = ?").bind(key).first();
         if (!row) return new Response(JSON.stringify([]), { headers });
         const ts = row.updated_at;
