@@ -215,6 +215,30 @@ async function _readRelationalIfPiloto(env, key) {
     const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
     return { value, ts };
   }
+  if (/^siso_informes(_|$)/.test(key)) {
+    const rows = await env.DB.prepare(
+      "SELECT data, updated_at FROM informes WHERE deleted = 0 ORDER BY fecha, id"
+    ).all();
+    const results = rows.results || [];
+    const value = _parseDataRows(results, key);
+    const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
+    return { value, ts };
+  }
+  // siso_informe_stats_*: clave individual = un objeto, no un arreglo. Si la
+  // fila todavía no existe en la tabla, devolvemos null (deja caer al camino
+  // viejo) en vez de fabricar un value vacío — mismo criterio que ya usa el
+  // resto: nunca inventar una forma de respuesta distinta a la original.
+  if (/^siso_informe_stats_/.test(key)) {
+    const row = await env.DB.prepare(
+      "SELECT data, updated_at FROM informe_stats WHERE key = ?"
+    ).bind(key).first();
+    if (!row) return null;
+    try { return { value: JSON.parse(row.data), ts: row.updated_at }; }
+    catch (e) {
+      console.warn(`[relational-read] informe_stats corrupto en ${key}, cayendo al blob:`, e?.message);
+      return null;
+    }
+  }
   return null;
 }
 
