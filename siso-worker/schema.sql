@@ -43,3 +43,38 @@ CREATE TABLE IF NOT EXISTS caja_movimientos (
 );
 CREATE INDEX IF NOT EXISTS idx_caja_suf    ON caja_movimientos(suf);
 CREATE INDEX IF NOT EXISTS idx_caja_estado ON caja_movimientos(estado);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- FASE 0, segunda colección (2026-08-21) — informes sociodemográficos y
+-- cartas de custodia. Comparten tabla (diferenciados por `tipo`) porque hoy
+-- comparten el mismo arreglo `siso_informes` — mismo criterio, no separar
+-- lo que la app no separa. `informe_stats` es tabla NUEVA aparte porque el
+-- patrón de almacenamiento de los adjuntos de estadísticas/IA es distinto:
+-- una clave individual por reporte (siso_informe_stats_<empresa>_<ts>),
+-- no un arreglo. El visor del portal NO renderiza el informe sin poder
+-- resolver `stats_key` (guard `!informe.statsKey` en el cliente) — por eso
+-- ambas tablas se migran juntas, nunca una sin la otra.
+-- ═══════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS informes (
+  id         TEXT PRIMARY KEY,
+  tipo       TEXT NOT NULL DEFAULT 'informe',  -- 'informe' | 'custodia'
+  empresa_id TEXT,
+  fecha      TEXT,
+  stats_key  TEXT,
+  deleted    INTEGER DEFAULT 0,
+  data       TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_informes_empresa ON informes(empresa_id);
+CREATE INDEX IF NOT EXISTS idx_informes_tipo    ON informes(tipo);
+CREATE INDEX IF NOT EXISTS idx_informes_deleted ON informes(deleted);
+
+CREATE TABLE IF NOT EXISTS informe_stats (
+  key        TEXT PRIMARY KEY,  -- el statsKey completo (siso_informe_stats_<empresa>_<ts>)
+  empresa_id TEXT,
+  data       TEXT NOT NULL,     -- fullData: {stats, aiResult, pacientes}
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stats_empresa ON informe_stats(empresa_id);
