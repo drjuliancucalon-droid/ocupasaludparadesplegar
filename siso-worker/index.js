@@ -117,14 +117,59 @@ async function _dualWriteCaja(env, suf, items) {
     console.warn("[dual-write] caja:", e?.message);
   }
 }
+async function _dualWriteInformes(env, items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const stmt = env.DB.prepare(
+      `INSERT INTO informes (id, tipo, empresa_id, fecha, stats_key, deleted, data, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         tipo=excluded.tipo, empresa_id=excluded.empresa_id, fecha=excluded.fecha,
+         stats_key=excluded.stats_key, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+    );
+    const batch = [];
+    for (const it of items) {
+      if (!it || it.id == null) continue;
+      batch.push(stmt.bind(
+        String(it.id), it.tipo || "informe", it.empresaId ?? null, it.fecha ?? null,
+        it.statsKey ?? null, it._deleted ? 1 : 0, JSON.stringify(it)
+      ));
+    }
+    for (let i = 0; i < batch.length; i += 50) await env.DB.batch(batch.slice(i, i + 50));
+  } catch (e) {
+    console.warn("[dual-write] informes:", e?.message);
+  }
+}
+// A diferencia de bills/caja/informes (un arreglo por clave), cada
+// siso_informe_stats_<empresa>_<ts> es UNA clave = UN objeto individual
+// (el adjunto de stats/IA de un solo reporte). Por eso no pasa por
+// _mergeProtegido (esa clave no está en _PROTECTED — no hay nada que
+// fusionar, cada clave es su propio reporte) y el dual-write es un upsert
+// directo de fila única, no un batch por arreglo.
+async function _dualWriteInformeStats(env, key, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  try {
+    const m = /^siso_informe_stats_([^_]+)_/.exec(key);
+    const empresaId = m ? m[1] : null;
+    await env.DB.prepare(
+      `INSERT INTO informe_stats (key, empresa_id, data, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(key) DO UPDATE SET empresa_id=excluded.empresa_id, data=excluded.data, updated_at=excluded.updated_at`
+    ).bind(key, empresaId, JSON.stringify(value)).run();
+  } catch (e) {
+    console.warn("[dual-write] informe_stats:", e?.message);
+  }
+}
 // Despacha según el patrón de la clave; no-op si no coincide con ninguna
-// colección piloto. `merged` es siempre el arreglo YA fusionado (post
+// colección piloto. `merged` es siempre el arreglo/objeto YA fusionado (post
 // _mergeProtegido), igual que lo que se termina escribiendo en siso_store.
 async function _dualWriteRelational(env, key, merged) {
+  if (/^siso_informe_stats_/.test(key)) { await _dualWriteInformeStats(env, key, merged); return; }
   if (!Array.isArray(merged)) return;
   const mCaja = /^siso_caja_movs_(.+)$/.exec(key);
   if (mCaja) { await _dualWriteCaja(env, mCaja[1], merged); return; }
   if (/^siso_saved_bills(_|$)/.test(key)) { await _dualWriteBills(env, merged); return; }
+  if (/^siso_informes(_|$)/.test(key)) { await _dualWriteInformes(env, merged); return; }
 }
 
 // FASE 4 (2026-08-21) — LECTURA desde la tabla relacional para estas mismas
