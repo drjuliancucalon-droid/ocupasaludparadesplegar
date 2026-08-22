@@ -160,6 +160,51 @@ async function _dualWriteInformeStats(env, key, value) {
     console.warn("[dual-write] informe_stats:", e?.message);
   }
 }
+async function _dualWriteEmpresas(env, items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const stmt = env.DB.prepare(
+      `INSERT INTO empresas (id, nit, nombre, deleted, data, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         nit=excluded.nit, nombre=excluded.nombre, deleted=excluded.deleted,
+         data=excluded.data, updated_at=excluded.updated_at`
+    );
+    const batch = [];
+    for (const it of items) {
+      if (!it || it.id == null) continue;
+      batch.push(stmt.bind(
+        String(it.id), it.nit ?? null, it.nombre ?? null, it._deleted ? 1 : 0, JSON.stringify(it)
+      ));
+    }
+    for (let i = 0; i < batch.length; i += 50) await env.DB.batch(batch.slice(i, i + 50));
+  } catch (e) {
+    console.warn("[dual-write] empresas:", e?.message);
+  }
+}
+async function _dualWriteEncuestas(env, items) {
+  if (!Array.isArray(items) || !items.length) return;
+  try {
+    const stmt = env.DB.prepare(
+      `INSERT INTO encuestas (id, empresa_id, token, estado, deleted, data, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(id) DO UPDATE SET
+         empresa_id=excluded.empresa_id, token=excluded.token, estado=excluded.estado,
+         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+    );
+    const batch = [];
+    for (const it of items) {
+      if (!it || it.id == null) continue;
+      batch.push(stmt.bind(
+        String(it.id), it.empresaId ?? null, it.token ?? null, it.estado ?? null,
+        it._deleted ? 1 : 0, JSON.stringify(it)
+      ));
+    }
+    for (let i = 0; i < batch.length; i += 50) await env.DB.batch(batch.slice(i, i + 50));
+  } catch (e) {
+    console.warn("[dual-write] encuestas:", e?.message);
+  }
+}
 // Despacha según el patrón de la clave; no-op si no coincide con ninguna
 // colección piloto. `merged` es siempre el arreglo/objeto YA fusionado (post
 // _mergeProtegido), igual que lo que se termina escribiendo en siso_store.
@@ -170,6 +215,8 @@ async function _dualWriteRelational(env, key, merged) {
   if (mCaja) { await _dualWriteCaja(env, mCaja[1], merged); return; }
   if (/^siso_saved_bills(_|$)/.test(key)) { await _dualWriteBills(env, merged); return; }
   if (/^siso_informes(_|$)/.test(key)) { await _dualWriteInformes(env, merged); return; }
+  if (/^siso_companies(_|$)/.test(key)) { await _dualWriteEmpresas(env, merged); return; }
+  if (/^siso_encuestas(_|$)/.test(key)) { await _dualWriteEncuestas(env, merged); return; }
 }
 
 // FASE 4 (2026-08-21) — LECTURA desde la tabla relacional para estas mismas
@@ -224,6 +271,10 @@ async function _readRelationalIfPiloto(env, key) {
     const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
     return { value, ts };
   }
+  // NOTA: empresas/encuestas todavía NO tienen su bloque de lectura aquí a
+  // propósito — se agrega DESPUÉS de confirmar que el backfill (Fase 2)
+  // llenó las tablas. Activarlo antes mostraría listas vacías en el hueco
+  // entre el deploy y el backfill (las tablas empiezan vacías).
   // siso_informe_stats_*: clave individual = un objeto, no un arreglo. Si la
   // fila todavía no existe en la tabla, devolvemos null (deja caer al camino
   // viejo) en vez de fabricar un value vacío — mismo criterio que ya usa el

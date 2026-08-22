@@ -78,3 +78,32 @@ CREATE TABLE IF NOT EXISTS informe_stats (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_stats_empresa ON informe_stats(empresa_id);
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Tercera y cuarta colección (2026-08-22) — empresas y encuestas.
+-- ═══════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS empresas (
+  id         TEXT PRIMARY KEY,
+  nit        TEXT,
+  nombre     TEXT,
+  deleted    INTEGER DEFAULT 0,
+  data       TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_empresas_nit ON empresas(nit);
+CREATE INDEX IF NOT EXISTS idx_empresas_deleted ON empresas(deleted);
+
+CREATE TABLE IF NOT EXISTS encuestas (
+  id         TEXT PRIMARY KEY,
+  empresa_id TEXT,
+  token      TEXT,
+  estado     TEXT,
+  deleted    INTEGER DEFAULT 0,
+  data       TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_encuestas_empresa ON encuestas(empresa_id);
+CREATE INDEX IF NOT EXISTS idx_encuestas_token   ON encuestas(token);
+CREATE INDEX IF NOT EXISTS idx_encuestas_estado  ON encuestas(estado);
