@@ -271,10 +271,24 @@ async function _readRelationalIfPiloto(env, key) {
     const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
     return { value, ts };
   }
-  // NOTA: empresas/encuestas todavía NO tienen su bloque de lectura aquí a
-  // propósito — se agrega DESPUÉS de confirmar que el backfill (Fase 2)
-  // llenó las tablas. Activarlo antes mostraría listas vacías en el hueco
-  // entre el deploy y el backfill (las tablas empiezan vacías).
+  if (/^siso_companies(_|$)/.test(key)) {
+    const rows = await env.DB.prepare(
+      "SELECT data, updated_at FROM empresas WHERE deleted = 0 ORDER BY nombre, id"
+    ).all();
+    const results = rows.results || [];
+    const value = _parseDataRows(results, key);
+    const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
+    return { value, ts };
+  }
+  if (/^siso_encuestas(_|$)/.test(key)) {
+    const rows = await env.DB.prepare(
+      "SELECT data, updated_at FROM encuestas WHERE deleted = 0 ORDER BY id"
+    ).all();
+    const results = rows.results || [];
+    const value = _parseDataRows(results, key);
+    const ts = results.reduce((m, r) => (r.updated_at > m ? r.updated_at : m), "");
+    return { value, ts };
+  }
   // siso_informe_stats_*: clave individual = un objeto, no un arreglo. Si la
   // fila todavía no existe en la tabla, devolvemos null (deja caer al camino
   // viejo) en vez de fabricar un value vacío — mismo criterio que ya usa el
