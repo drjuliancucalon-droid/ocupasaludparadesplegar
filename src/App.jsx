@@ -22882,6 +22882,25 @@ function AppInner() {
     const t = (d.tipoExamen || "").toUpperCase();
     return t.includes("SEGUIMIENTO") || t.includes("POST") || t.includes("INCAPACIDAD") || t.includes("REINTEGRO");
   };
+  const _esEgreso = (d) => {
+    const t = (d.tipoExamen || "").toUpperCase();
+    return t.includes("EGRESO") || t.includes("RETIRO");
+  };
+  // ── Secciones (B) y (F) de Recomendaciones — condicionadas al tipo ──────
+  // FIX 2026-08-27: caso real de prueba — en un egreso la IA recomendó
+  // "rotar tareas cada 2 horas" y "capacitar al personal cada 6 meses": el
+  // trabajador YA NO OCUPARÁ el puesto, esas instrucciones no tienen
+  // destinatario. La redacción fija de (B)/(F) nunca condicionaba su
+  // contenido al tipo de examen — solo había una nota aparte, que no bastó.
+  // Ahora la sección misma cambia de propósito para egreso/retiro.
+  const _seccionB_Recomendaciones = (d) =>
+    _esEgreso(d)
+      ? "(B) CUIDADOS A MANTENER TRAS EL RETIRO — El trabajador YA NO OCUPARÁ este puesto: NO recomiendes ajustes de puesto de trabajo, rotación de tareas, herramientas ni equipos laborales (no tienen destinatario). En su lugar, indica cuidados personales que el trabajador debe mantener por su cuenta (ejercicios, autocuidado, signos de alarma a vigilar) derivados de los hallazgos de ESTA HC."
+      : "(B) RECOMENDACIONES ERGONÓMICAS Y PREVENTIVAS — Específicas para el CARGO y los RIESGOS identificados en ESTA HC. No genéricas.";
+  const _seccionF_Recomendaciones = (d) =>
+    _esEgreso(d)
+      ? "(F) DOCUMENTACIÓN Y REPORTE — El trabajador se está retirando: NO recomiendes capacitaciones futuras, adaptaciones de puesto ni equipos de trabajo (ya no aplican, no hay a quién dirigirlas). En su lugar, indica solo lo que corresponda: necesidad de reporte a ARL por presunta enfermedad laboral, indicación de calificación de origen (Decreto 1477/2014), o documentación de la condición encontrada para el expediente de retiro. Si no aplica ninguna, dilo explícitamente."
+      : "(F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.";
   // ── HISTORIAL CLÍNICO PREVIO del mismo trabajador (por cédula) ──────────
   // FIX 2026-08-27: ningún prompt de IA leía consultas anteriores del mismo
   // paciente — el bloque de Seguimiento ya le pedía a la IA "comparación con
@@ -23348,7 +23367,7 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 4. SEGMENTO ANATÓMICO: Identifica el segmento afectado (Miembro Superior D/I, Columna Lumbar, Columna Cervical, Miembros Inferiores, Cardiovascular, Respiratorio, General).
 5. TIPO: TEMPORAL (con duración específica) / PERMANENTE / PREVENTIVA.
 6. BASE NORMATIVA: Citar GTC-45:2012, GATISO-DME, GATISO-TME, Res. 1843/2025, Res. 2404/2019 según corresponda.
-7. Si el examen es egreso, post-incapacidad o reintegro (Res. 1843/2025 Art. 13): incluir restricciones de reintegro progresivo. Si hay HISTORIAL CLÍNICO PREVIO arriba con restricciones vigentes, cada una de esas restricciones DEBE aparecer como su propio ítem en el arreglo con el campo "accion" indicando MANTENER (sigue igual), AJUSTAR (cambia el límite/duración — indica el valor nuevo), o LEVANTAR (ya no aplica, hallazgos actuales la resolvieron) — nunca las omitas en silencio ni las agrupes en una sola frase.
+7. Si el examen es POST-INCAPACIDAD o REINTEGRO (el trabajador SIGUE o VUELVE al cargo): incluir restricciones de reintegro progresivo (Res. 1843/2025 Art. 13). Si el examen es EGRESO/RETIRO puro (el trabajador SE VA, no hay reintegro): NO generes restricciones de reintegro progresivo ni instrucciones operativas dirigidas a un puesto que dejará de ocupar — en su lugar, cada restricción debe documentar el hallazgo/secuela como registro de salida, relevante para determinar origen laboral o común (Decreto 1477/2014) y para seguimiento médico post-retiro por cuenta del trabajador, no como límite que el empleador deba aplicar. Si hay HISTORIAL CLÍNICO PREVIO arriba con restricciones vigentes, cada una de esas restricciones DEBE aparecer como su propio ítem en el arreglo con el campo "accion" indicando MANTENER (sigue igual), AJUSTAR (cambia el límite/duración — indica el valor nuevo), o LEVANTAR (ya no aplica, hallazgos actuales la resolvieron) — nunca las omitas en silencio ni las agrupes en una sola frase.
 8. Si NO hay ninguna restricción vigente ni nueva que aplique (ni siquiera para levantar): devolver array vacío con "sinRestricciones": true y "justificacionSinRestricciones" breve (máximo 3 líneas, sin narrar el historial ni analizar — solo la razón clínica directa).
 9. ⚠️ PROHIBICIÓN LEGAL EXPRESA (Res. 1843/2025 Art. 21 — confidencialidad del diagnóstico): En el campo "texto" y "hallazgoQueJustifica" NO incluyas nombres de diagnósticos clínicos (enfermedades, síndromes, patologías), NO menciones medicamentos, NO describas tratamientos. Solo describe la LIMITACIÓN FUNCIONAL LABORAL en términos operativos: qué actividad está limitada, en qué medida y por cuánto tiempo. Ejemplo correcto: "Evitar levantamiento de cargas superiores a 10 kg" — NO: "Por lumbalgia crónica L4-L5 no levantar pesos".
 10. ⚠️ PROHIBIDO GENERAR ANÁLISIS: tu única salida es el arreglo de restricciones (o "sinRestricciones"). NO generes secciones como "Estado Clínico Actual", "Concepto de Aptitud", "Correlación Fisiopatológica", "Recomendaciones y Seguimiento" ni ningún párrafo narrativo — eso pertenece a otros módulos (Análisis, Recomendaciones), no a este. El HISTORIAL CLÍNICO PREVIO se usa SOLO para decidir el campo "accion" y el contenido de cada restricción — nunca narres la comparación en el texto (prohibido escribir frases como "según la consulta previa del..." o "se evidencia mejoría respecto a..."). Cada campo "texto" es una instrucción operativa de una sola frase, no un párrafo de análisis.
@@ -23464,11 +23483,11 @@ CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 INSTRUCCIÓN para "recomendacionesTexto": Genera MÍNIMO 14 recomendaciones numeradas como texto plano (con saltos de línea \n, NO como array). Organiza en las siguientes secciones (indica la sección antes del grupo):
 
 (A) RECOMENDACIONES MÉDICAS Y DE ESTILO DE VIDA — Derivadas de los hallazgos clínicos específicos (TA, IMC, diagnósticos, antecedentes). Cada una debe citar el hallazgo que la genera.
-(B) RECOMENDACIONES ERGONÓMICAS Y PREVENTIVAS — Específicas para el CARGO y los RIESGOS identificados en ESTA HC. No genéricas.
+${_seccionB_Recomendaciones(data)}
 (C) EXÁMENES COMPLEMENTARIOS SUGERIDOS — Los que se justifican por los hallazgos de ESTA evaluación (laboratorios, imágenes, audiometría, espirometría, etc.).
 (D) DERIVACIONES A ESPECIALISTAS — Solo si los hallazgos de ESTA HC lo justifican. Especificar especialidad + motivo clínico concreto.
-(E) VIGILANCIA EPIDEMIOLÓGICA Y SEGUIMIENTO — SVE que corresponden según hallazgos y riesgos (GATISO-DME, SVE Osteomuscular, Psicosocial, Visual, Auditivo, Respiratorio, Cardiovascular, etc.).
-(F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
+(E) VIGILANCIA EPIDEMIOLÓGICA Y SEGUIMIENTO — SVE que corresponden según hallazgos y riesgos (GATISO-DME, SVE Osteomuscular, Psicosocial, Visual, Auditivo, Respiratorio, Cardiovascular, etc.)${_esEgreso(data) ? " — si aplica indicar seguimiento POST-RETIRO, no vigilancia epidemiológica activa de un puesto que ya no ocupa" : ""}.
+${_seccionF_Recomendaciones(data)}
 
 Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas. Si los hallazgos de ESTA historia son escasos, NO reduzcas la cantidad ni la profundidad por eso — profundiza igual sobre lo disponible, conectando cada recomendación explícitamente al hallazgo/riesgo/antecedente concreto de este trabajador, aunque sean pocos. Nunca generes relleno genérico para completar el mínimo.
 ⚠️ PROHIBIDO: no agregues secciones adicionales de análisis (nada de "Estado Clínico Actual", "Correlación Fisiopatológica", "Concepto de Aptitud narrado", etc.) — solo las secciones (A)-(F) de arriba, cada línea una recomendación puntual, nunca un párrafo. Si usas el HISTORIAL CLÍNICO PREVIO, NO narres la comparación como texto (prohibido "según la consulta previa del..." o "se evidencia mejoría respecto a...") — úsalo solo para decidir si cada recomendación continúa, se ajusta o se retira, y refleja esa decisión en la recomendación misma, en el mismo formato de una línea que las demás.
