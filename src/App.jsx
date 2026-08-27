@@ -22853,6 +22853,63 @@ function AppInner() {
     return "";
   };
 
+  // ── CONTEXTO POR TIPO DE EXAMEN — compartido por los 3 prompts de IA ────
+  // FIX 2026-08-27: antes vivía solo dentro del prompt de Análisis clínico
+  // completo (analizarConIA) — Restricciones y Recomendaciones recibían
+  // "Tipo examen: X" como dato crudo, sin ninguna instrucción sobre qué
+  // implica. Se extrae aquí (mismo patrón que _contextoEnfasisHC, ya
+  // compartida) para que los tres respondan de forma coherente al tipo.
+  const _contextoTipoHC = (d) => {
+    const t = (d.tipoExamen || "").toUpperCase();
+    if (t.includes("INGRESO"))
+      return "EXAMEN DE INGRESO: Evalúa la aptitud INICIAL para el cargo. Las recomendaciones/restricciones deben incluir: (A) Medidas preventivas desde el inicio de la relación laboral, (B) Identificación de factores de riesgo preexistentes vs laborales, (C) Línea de base para seguimiento futuro, (D) Programa de inducción en SST, (E) Exámenes paraclínicos de ingreso recomendados según riesgos.";
+    if (t.includes("PERIÓDICO") || t.includes("PERIODICO"))
+      return "EXAMEN PERIÓDICO: Evalúa cambios en el estado de salud respecto al examen anterior. Las recomendaciones/restricciones deben incluir: (A) Comparación con hallazgos previos y tendencias (ver HISTORIAL CLÍNICO PREVIO más abajo si está disponible), (B) Seguimiento de patologías crónicas ya identificadas, (C) Adherencia a PVE (Programas de Vigilancia Epidemiológica) activos, (D) Refuerzo de medidas de control de riesgos laborales, (E) Indicadores de salud ocupacional: ausentismo, accidentes recientes.";
+    if (t.includes("EGRESO") || t.includes("RETIRO"))
+      return "EXAMEN DE EGRESO: Evalúa el estado de salud AL FINALIZAR el vínculo laboral. Las recomendaciones/restricciones deben incluir: (A) Detección de enfermedades o secuelas de origen laboral (Decreto 1477/2014), (B) Determinación de origen laboral o común de hallazgos, (C) Indicar si el trabajador requiere seguimiento médico post-retiro, (D) Documentación de condiciones para eventual reporte a ARL, (E) Concepto sobre relación de causalidad con el cargo/empresa.";
+    if (t.includes("POST") || t.includes("INCAPACIDAD") || t.includes("REINTEGRO"))
+      return "EXAMEN POST-INCAPACIDAD / REINTEGRO LABORAL — CASO COMPLEJO, REQUIERE MÁXIMO DETALLE: Evalúa aptitud para retornar al trabajo tras incapacidad. Este tipo de consulta exige mucha mayor profundidad que un examen rutinario: analiza a fondo CADA hallazgo, su relación con la incapacidad que originó el reintegro, y la evolución documentada en el HISTORIAL CLÍNICO PREVIO (si está disponible más abajo) — no generes un concepto genérico. Las recomendaciones/restricciones deben incluir: (A) Condiciones específicas para el reintegro (gradual, modificado, pleno) sustentadas en los hallazgos ACTUALES comparados con los previos, (B) Restricciones temporales o permanentes con plazos y seguimiento cuantificado, (C) Adaptaciones del puesto de trabajo necesarias, específicas y no genéricas, (D) Plan de rehabilitación laboral si aplica, con hitos verificables, (E) Criterios de seguimiento médico post-reintegro con periodicidad exacta, (F) Articular con ARL para plan de reincorporación. Si la información es escasa, profundiza igual sobre lo disponible — no entregues un resultado corto por falta de datos: infiere razonablemente y documenta qué información adicional sería necesaria.";
+    if (t.includes("SEGUIMIENTO"))
+      return "EXAMEN DE SEGUIMIENTO — CASO COMPLEJO, REQUIERE MÁXIMO DETALLE: Evalúa la evolución de condiciones ya identificadas. Este tipo de consulta exige mucha mayor profundidad que un examen rutinario: la comparación explícita contra el HISTORIAL CLÍNICO PREVIO (si está disponible más abajo) es el eje central del análisis, no un dato accesorio. Las recomendaciones/restricciones deben incluir: (A) Respuesta al tratamiento o intervención previa, comparando explícitamente hallazgo por hallazgo contra la consulta anterior, (B) Actualización del concepto de aptitud si hay cambios clínicos, justificando el cambio o la continuidad, (C) Ajuste (mantener, ampliar o levantar) de restricciones según evolución documentada, (D) Próxima cita de seguimiento con plazo exacto, (E) Indicadores de mejora o deterioro documentados de forma cuantificable. Si la información previa es escasa, profundiza igual sobre lo disponible — no entregues un resultado corto por falta de datos: infiere razonablemente y documenta qué información adicional sería necesaria.";
+    // Default genérico
+    return "Evalúa la aptitud del trabajador según los hallazgos clínicos actuales. Las recomendaciones/restricciones deben ser específicas para el cargo, la empresa y los riesgos identificados.";
+  };
+  // Seguimiento y Post-incapacidad/Reintegro se tratan como casos complejos:
+  // suben automáticamente al nivel de profundidad "2" desde el primer
+  // intento (sin que el médico tenga que reintentar manualmente) — ver uso
+  // junto a _bloqueProfundidad en cada uno de los 3 generadores de IA.
+  const _esTipoComplejo = (d) => {
+    const t = (d.tipoExamen || "").toUpperCase();
+    return t.includes("SEGUIMIENTO") || t.includes("POST") || t.includes("INCAPACIDAD") || t.includes("REINTEGRO");
+  };
+  // ── HISTORIAL CLÍNICO PREVIO del mismo trabajador (por cédula) ──────────
+  // FIX 2026-08-27: ningún prompt de IA leía consultas anteriores del mismo
+  // paciente — el bloque de Seguimiento ya le pedía a la IA "comparación con
+  // hallazgos previos" sin dárselos nunca. Busca en patientsList otras
+  // historias CERRADAS de la misma cédula (excluyendo la actual), más
+  // recientes primero, y arma un resumen compacto por consulta.
+  const _historialPrevioHC = (d, max = 4) => {
+    const ced = (d.docNumero || "").replace(/\s/g, "");
+    if (!ced) return "";
+    const previas = (patientsList || [])
+      .filter(p => p.id !== d.id && (p.docNumero || "").replace(/\s/g, "") === ced && p.estadoHistoria === "Cerrada")
+      .sort((a, b) => (b.fechaExamen || "").localeCompare(a.fechaExamen || ""))
+      .slice(0, max);
+    if (previas.length === 0) return "";
+    const items = previas.map((p, i) => {
+      const hallazgosP = Object.entries(p.examenFisicoSistemas || {})
+        .filter(([, v]) => v?.estado === "Anormal")
+        .map(([k, v]) => `${k}: ${v.hallazgo}`)
+        .join("; ") || "Sin hallazgos patológicos";
+      const dxP = [p.diagnosticoPrincipal, p.diagnosticoSecundario1, p.diagnosticoSecundario2].filter(Boolean).join(" | ") || "N/R";
+      return `[${i + 1}] ${p.fechaExamen || "fecha N/R"} — Tipo: ${p.tipoExamen || "N/R"} | Motivo: ${(p.motivoConsulta || "N/R").slice(0, 150)}
+    Hallazgos: ${hallazgosP}
+    Dx: ${dxP} | Concepto de aptitud: ${p.conceptoAptitud || "N/R"}
+    Restricciones vigentes entonces: ${(p.analisisRestricciones || p.restricciones || "Ninguna registrada").slice(0, 300)}`;
+    }).join("\n");
+    return `═══ HISTORIAL CLÍNICO PREVIO DE ESTE TRABAJADOR (${previas.length} consulta(s) cerrada(s) anterior(es), más reciente primero) ═══\n${items}\n═══ FIN HISTORIAL PREVIO ═══`;
+  };
+
   // ── ESCALADO DE PROFUNDIDAD POR RE-INTENTO (2026-07-13) ─────────────────
   // Cada vez que el médico vuelve a presionar el mismo botón de IA para la
   // MISMA historia, está pidiendo un resultado mejor: el caso lo amerita.
@@ -22956,8 +23013,14 @@ function AppInner() {
     }
     _aiRunningRef.current = true;
     setIsGenerating(true);
-    const _nivelIA = _bumpAiRetry("analisis");
-    setAiProviderStatus(_nivelIA > 1 ? `⏳ Generando versión más profunda (intento ${_nivelIA})...` : "⏳ Iniciando análisis...");
+    const _nivelBaseAn = _bumpAiRetry("analisis");
+    // FIX 2026-08-27: Seguimiento y Post-incapacidad/Reintegro son casos
+    // complejos que requieren máximo detalle desde el primer intento — no
+    // esperar a que el médico tenga que reintentar manualmente para exigirle
+    // más profundidad a la IA (ver _esTipoComplejo).
+    const _esComplejoAn = _esTipoComplejo(data);
+    const _nivelIA = _esComplejoAn ? _nivelBaseAn + 1 : _nivelBaseAn;
+    setAiProviderStatus(_nivelBaseAn > 1 ? `⏳ Generando versión más profunda (intento ${_nivelBaseAn})...` : (_esComplejoAn ? "⏳ Iniciando análisis (caso complejo — máximo detalle)..." : "⏳ Iniciando análisis..."));
     const _profBlock = _bloqueProfundidad(_nivelIA, data.analisisIA);
     // FIX 2026-07-29: "consolidación al reintentar" — pedido del médico para
     // que el Análisis de Caso Clínico sea coherente con Restricciones y
@@ -22990,29 +23053,9 @@ function AppInner() {
         .filter(([, v]) => v)
         .map(([k]) => k)
         .join(", ") || "No reportados";
-    // ── Contexto clínico adaptado al TIPO DE EXAMEN ──────────────────────────
-    const _tipoExamen = (data.tipoExamen || "").toUpperCase();
-    const _contextoTipo = (() => {
-      if (_tipoExamen.includes("INGRESO"))
-        return "EXAMEN DE INGRESO: Evalúa la aptitud INICIAL para el cargo. Las recomendaciones deben incluir: (A) Medidas preventivas desde el inicio de la relación laboral, (B) Identificación de factores de riesgo preexistentes vs laborales, (C) Línea de base para seguimiento futuro, (D) Programa de inducción en SST, (E) Exámenes paraclínicos de ingreso recomendados según riesgos.";
-      if (
-        _tipoExamen.includes("PERIÓDICO") ||
-        _tipoExamen.includes("PERIODICO")
-      )
-        return "EXAMEN PERIÓDICO: Evalúa cambios en el estado de salud respecto al examen anterior. Las recomendaciones deben incluir: (A) Comparación con hallazgos previos y tendencias, (B) Seguimiento de patologías crónicas ya identificadas, (C) Adherencia a PVE (Programas de Vigilancia Epidemiológica) activos, (D) Refuerzo de medidas de control de riesgos laborales, (E) Indicadores de salud ocupacional: ausentismo, accidentes recientes.";
-      if (_tipoExamen.includes("EGRESO") || _tipoExamen.includes("RETIRO"))
-        return "EXAMEN DE EGRESO: Evalúa el estado de salud AL FINALIZAR el vínculo laboral. Las recomendaciones deben incluir: (A) Detección de enfermedades o secuelas de origen laboral (Decreto 1477/2014), (B) Determinación de origen laboral o común de hallazgos, (C) Indicar si el trabajador requiere seguimiento médico post-retiro, (D) Documentación de condiciones para eventual reporte a ARL, (E) Concepto sobre relación de causalidad con el cargo/empresa.";
-      if (
-        _tipoExamen.includes("POST") ||
-        _tipoExamen.includes("INCAPACIDAD") ||
-        _tipoExamen.includes("REINTEGRO")
-      )
-        return "EXAMEN POST-INCAPACIDAD / REINTEGRO LABORAL: Evalúa aptitud para retornar al trabajo tras incapacidad. Las recomendaciones deben incluir: (A) Condiciones específicas para el reintegro (gradual, modificado, pleno), (B) Restricciones temporales o permanentes con plazos y seguimiento, (C) Adaptaciones del puesto de trabajo necesarias, (D) Plan de rehabilitación laboral si aplica, (E) Criterios de seguimiento médico post-reintegro, (F) Articular con ARL para plan de reincorporación.";
-      if (_tipoExamen.includes("SEGUIMIENTO"))
-        return "EXAMEN DE SEGUIMIENTO: Evalúa la evolución de condiciones ya identificadas. Las recomendaciones deben incluir: (A) Respuesta al tratamiento o intervención previa, (B) Actualización del concepto de aptitud si hay cambios clínicos, (C) Ajuste de restricciones según evolución, (D) Próxima cita de seguimiento, (E) Indicadores de mejora o deterioro documentados.";
-      // Default genérico
-      return "Evalúa la aptitud del trabajador según los hallazgos clínicos actuales. Las recomendaciones deben ser específicas para el cargo, la empresa y los riesgos identificados.";
-    })();
+    // ── Contexto clínico adaptado al TIPO DE EXAMEN (función compartida) ────
+    const _contextoTipo = _contextoTipoHC(data);
+    const _historialPrevio = _historialPrevioHC(data);
 
     const ctx = buildFullContextHC(data);
     const prompt = `Eres médico especialista en Medicina del Trabajo con más de 15 años de experiencia en evaluaciones ocupacionales en Colombia (ingresos, egresos, periódicos, reintegros, post-incapacidad). Analiza con criterio clínico-ocupacional experto la siguiente historia clínica COMPLETA y genera el concepto médico ocupacional conforme a Res. 1843/2025 (norma vigente - deroga Res. 2346/2007). Devuelve ÚNICAMENTE JSON.
@@ -23046,9 +23089,9 @@ ${ctx.examenEspecial ? `═══ EXAMEN ESPECIAL ═══\n${ctx.examenEspecia
 ${ctx.paraclinicosFull}
 ═══ RESULTADOS DE EXÁMENES PARACLÍNICOS (subidos/analizados) ═══
 ${ctx.resultadosParacl}
-CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
+${_historialPrevio ? `${_historialPrevio}\n` : ""}CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}` : ""}
-CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba.
+CRITERIOS OBLIGATORIOS: 1) El concepto de aptitud debe citar el artículo de la Res. 1843/2025 correspondiente (norma vigente desde 29 abril 2025 - Res. 2346/2007 derogada). 2) Si es egreso o post-incapacidad, incluir análisis de reintegro laboral. 3) Las restricciones deben ser operativas, cuantificables y con base normativa (GTC-45, GATISO). 4) Las recomendaciones deben ser específicas para el cargo y los riesgos, no genéricas, y deben responder al contexto del tipo de examen indicado arriba. 5) Si hay HISTORIAL CLÍNICO PREVIO disponible arriba, tu análisis DEBE compararse explícitamente contra él (evolución, cambios, continuidad) — especialmente si el tipo de examen es Seguimiento o Post-incapacidad/Reintegro.
 JSON REQUERIDO (sin markdown, sin texto adicional):
 {"diagnosticoPrincipal":"Z10.0 - EXAMEN MÉDICO OCUPACIONAL","diagnosticoSecundario1":"CIE-10 - Hallazgo clínico identificado o cadena vacía","diagnosticoSecundario2":"CIE-10 - Segundo hallazgo o cadena vacía","conceptoAptitud":"Concepto de aptitud laboral (APTO/APTO CON RESTRICCIONES/NO APTO) con justificación cargo-hallazgos. NO mencionar diagnósticos específicos, medicamentos, ni tratamientos. Solo aptitud y condiciones laborales. Conforme Res. 1843/2025 Art. 20","vigencia":"X meses con justificación clínica","derivaciones":[{"especialidad":"Especialidad médica (ej: Ortopedia, Neurología, Psiquiatría, Oftalmología, Cardiología...)","motivo":"Motivo clínico concreto sustentado en hallazgos objetivos de la HC","urgencia":"Urgente/Prioritaria/Electiva","objetivo":"Objetivo específico de la interconsulta"}],"examenesSugeridos":["Examen paraclínico 1"],"interconsultaResumen":"Resumen clínico para interconsulta o cadena vacía","incapacidadSugerida":{"aplica":false,"dias":0,"motivo":"","diagnosticoCIE":""},"analisisClinico":"Análisis clínico estructurado con lenguaje técnico-formal. ESTRUCTURA OBLIGATORIA: [1. INTERPRETACIÓN DE HALLAZGOS] Descripción técnica de todos los hallazgos al examen físico y paraclínicos, correlación fisiopatológica con antecedentes. [2. CORRELACIÓN CARGO-RIESGOS OCUPACIONALES] Relación entre los hallazgos y los riesgos específicos del cargo, exposición laboral y condiciones de trabajo según GTC-45 y GATISO. [3. JUSTIFICACIÓN CLÍNICA DEL CONCEPTO DE APTITUD] Argumentación clínica detallada del PORQUÉ se emite el concepto, sustentada en hallazgos objetivos, normativa (Res. 1843/2025, Dec. 1072/2015, GTC-45, GATISO) y evidencia médica. [4. DERIVACIONES A ESPECIALIDADES SUGERIDAS] Lista numerada de cada especialidad a la cual se sugiere derivar, con: a) especialidad, b) motivo clínico específico sustentado en hallazgos, c) urgencia, d) objetivo de la interconsulta. Si no aplica, argumentar clínicamente. [5. NORMATIVA APLICABLE] Referencias específicas a normativa colombiana relevante para el caso. Mínimo 300 palabras totales.","conductaSeguir":"Conducta a seguir y determinaciones médico-administrativas. ESTRUCTURA OBLIGATORIA: [1. CONDUCTA INMEDIATA] Acciones médicas y administrativas a ejecutar en esta consulta o en las próximas 48-72 horas (exámenes a ordenar, especialistas a remitir, notificaciones a ARL/EPS, etc.). [2. PLAN DE SEGUIMIENTO] Próximos controles, plazos, criterios de reevaluación del concepto de aptitud, indicadores de mejoría o deterioro a vigilar. [3. PRONÓSTICO MÉDICO-LABORAL] Pronóstico funcional y laboral a corto/mediano plazo considerando cargo, hallazgos, antecedentes y riesgos. Probabilidad de reintegro pleno, con restricciones o necesidad de reubicación. [4. DETERMINACIONES ADMINISTRATIVAS Y LEGALES] Solo si aplican: a) Necesidad de reporte a ARL (presunta enfermedad laboral, accidente de trabajo, riesgo inminente), b) Indicación de calificación de origen (Res. 1843/2025 Art. 28, Dec. 1477/2014 Tabla de Enfermedades Laborales), c) Concepto de reubicación laboral o reconversión de mano de obra (Res. 1843/2025 Art. 22), d) Restricciones con impacto contractual (períodos de prueba, cargos de riesgo crítico), e) Notificación a medicina legal si hay hallazgos de lesión de causa externa. Si no aplica ninguna determinación legal, indicar explícitamente 'Sin determinaciones administrativas especiales para este caso'.","sveRecomendado":["SVE Osteomuscular si aplica según GATISO-DME Res. 2844/2007","SVE Psicosocial si aplica según Res. 2764/2022","SVE Visual / SVE Respiratorio / SVE Neurológico / SVE Dermatológico según hallazgos"]}${_profBlock}${_consolidacionBlock}`;
     // FIX 2026-07-29: variante liviana para proveedor de respaldo (no Gemini).
@@ -23239,8 +23282,15 @@ JSON REQUERIDO (sin markdown, sin texto adicional):
   // ── GENERACIÓN IA SOLO RESTRICCIONES ─────────────────────────────────────
   const generateAIRestricciones = async () => {
     setIsGeneratingRestr(true);
-    const _nivelRestr = _bumpAiRetry("restricciones");
+    const _nivelBaseRestr = _bumpAiRetry("restricciones");
+    // FIX 2026-08-27: Seguimiento y Post-incapacidad/Reintegro suben
+    // automáticamente al nivel de profundidad "2" desde el primer intento —
+    // ver _esTipoComplejo.
+    const _esComplejoRestr = _esTipoComplejo(data);
+    const _nivelRestr = _esComplejoRestr ? _nivelBaseRestr + 1 : _nivelBaseRestr;
     const _profBlockRestr = _bloqueProfundidad(_nivelRestr, data.analisisRestricciones);
+    const _contextoTipo = _contextoTipoHC(data);
+    const _historialPrevio = _historialPrevioHC(data);
     const ctx = buildFullContextHC(data);
     const hallazgosAnorm =
       Object.entries(data.examenFisicoSistemas || {})
@@ -23289,7 +23339,8 @@ Diagnósticos activos (CIE-10): ${dxActivos}
 Concepto de aptitud previo: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA: ${data.analisisIA ? data.analisisIA.substring(0, 400) + "..." : "No disponible"}
 ══════════════════════════════════════════════════════════
-
+${_historialPrevio ? `\n${_historialPrevio}\n` : ""}
+CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfasisHC(data)}\n\n` : ""}INSTRUCCIONES OBLIGATORIAS:
 1. PERSONALIZACIÓN: Cada restricción DEBE derivar directamente de un hallazgo clínico específico encontrado en ESTA historia clínica. Cita el hallazgo que justifica cada restricción.
 2. Si no hay hallazgos patológicos relevantes para una restricción, NO la incluyas. No generes restricciones genéricas sin sustento clínico.
@@ -23297,7 +23348,7 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 4. SEGMENTO ANATÓMICO: Identifica el segmento afectado (Miembro Superior D/I, Columna Lumbar, Columna Cervical, Miembros Inferiores, Cardiovascular, Respiratorio, General).
 5. TIPO: TEMPORAL (con duración específica) / PERMANENTE / PREVENTIVA.
 6. BASE NORMATIVA: Citar GTC-45:2012, GATISO-DME, GATISO-TME, Res. 1843/2025, Res. 2404/2019 según corresponda.
-7. Si el examen es egreso, post-incapacidad o reintegro (Res. 1843/2025 Art. 13): incluir restricciones de reintegro progresivo.
+7. Si el examen es egreso, post-incapacidad o reintegro (Res. 1843/2025 Art. 13): incluir restricciones de reintegro progresivo. Si hay HISTORIAL CLÍNICO PREVIO arriba, ajusta cada restricción (mantener/ampliar/levantar) explícitamente contra lo que estaba vigente antes — no repitas restricciones ya superadas ni ignores las que siguen aplicando.
 8. Si NO hay hallazgos patológicos que justifiquen restricciones: devolver array vacío con "sinRestricciones": true y justificación.
 9. ⚠️ PROHIBICIÓN LEGAL EXPRESA (Res. 1843/2025 Art. 21 — confidencialidad del diagnóstico): En el campo "texto" y "hallazgoQueJustifica" NO incluyas nombres de diagnósticos clínicos (enfermedades, síndromes, patologías), NO menciones medicamentos, NO describas tratamientos. Solo describe la LIMITACIÓN FUNCIONAL LABORAL en términos operativos: qué actividad está limitada, en qué medida y por cuánto tiempo. Ejemplo correcto: "Evitar levantamiento de cargas superiores a 10 kg" — NO: "Por lumbalgia crónica L4-L5 no levantar pesos".
 
@@ -23334,8 +23385,15 @@ JSON REQUERIDO (sin markdown):
   // ── GENERACIÓN IA SOLO RECOMENDACIONES ───────────────────────────────────
   const generateAIRecomendaciones = async () => {
     setIsGeneratingReco(true);
-    const _nivelReco = _bumpAiRetry("recomendaciones");
+    const _nivelBaseReco = _bumpAiRetry("recomendaciones");
+    // FIX 2026-08-27: Seguimiento y Post-incapacidad/Reintegro suben
+    // automáticamente al nivel de profundidad "2" desde el primer intento —
+    // ver _esTipoComplejo.
+    const _esComplejoReco = _esTipoComplejo(data);
+    const _nivelReco = _esComplejoReco ? _nivelBaseReco + 1 : _nivelBaseReco;
     const _profBlockReco = _bloqueProfundidadReco(_nivelReco, data.recomendaciones || data.recomendacionesOcupacionales);
+    const _contextoTipo = _contextoTipoHC(data);
+    const _historialPrevio = _historialPrevioHC(data);
     const ctx = buildFullContextHC(data);
     const hallazgosReco =
       Object.entries(data.examenFisicoSistemas || {})
@@ -23375,6 +23433,8 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 Concepto de aptitud: ${data.conceptoAptitud || "Pendiente"}
 Análisis clínico IA previo: ${data.analisisIA ? data.analisisIA.substring(0, 500) + "..." : "No disponible"}
 ══════════════════════════════════════════════════════════
+${_historialPrevio ? `\n${_historialPrevio}\n` : ""}
+CONTEXTO ESPECÍFICO DEL TIPO DE EXAMEN: ${_contextoTipo}
 
 ⚠️ PROHIBICIÓN LEGAL EXPRESA para el campo "recomendacionesTexto" (Res. 1843/2025 Art. 21 — confidencialidad diagnóstica): NO incluyas nombres de diagnósticos clínicos, nombres de enfermedades, síndromes ni patologías. NO menciones medicamentos específicos, dosis ni tratamientos farmacológicos EN ESTE CAMPO. Las recomendaciones de texto son de medicina preventiva, ergonomía, vigilancia epidemiológica y conducta laboral — NO de tratamiento médico. Ejemplo correcto: "Realizar pausas activas de 10 minutos cada 2 horas por el cargo de trabajo con exposición biomecánica" — NO: "Por hernia discal L4-L5 no flexionar columna y tomar ibuprofeno". Esta prohibición NO aplica a los campos "examenesSugeridos", "derivaciones" y "medicamentosSugeridos" de más abajo — esos SÍ son parte del expediente clínico privado del paciente (no se muestran a la empresa) y deben nombrar con precisión clínica lo que corresponda.
 
@@ -23387,7 +23447,8 @@ INSTRUCCIÓN para "recomendacionesTexto": Genera MÍNIMO 14 recomendaciones nume
 (E) VIGILANCIA EPIDEMIOLÓGICA Y SEGUIMIENTO — SVE que corresponden según hallazgos y riesgos (GATISO-DME, SVE Osteomuscular, Psicosocial, Visual, Auditivo, Respiratorio, Cardiovascular, etc.).
 (F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
 
-Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas.
+Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas. Si los hallazgos de ESTA historia son escasos, NO reduzcas la cantidad ni la profundidad por eso — profundiza igual sobre lo disponible, conectando cada recomendación explícitamente al hallazgo/riesgo/antecedente concreto de este trabajador, aunque sean pocos. Nunca generes relleno genérico para completar el mínimo.
+${_esComplejoReco ? "Este es un examen de Seguimiento o Post-incapacidad/Reintegro — requiere el mayor nivel de detalle posible: si hay HISTORIAL CLÍNICO PREVIO arriba, cada recomendación relevante debe indicar explícitamente si continúa, se ajusta o se retira respecto a la consulta anterior." : ""}
 
 ADEMÁS del texto, para que el expediente clínico quede completo, devuelve TAMBIÉN — solo si los hallazgos de ESTA historia realmente lo justifican, deja el array vacío si no aplica — las mismas derivaciones, exámenes y medicamentos que hayas mencionado en las secciones (C)/(D) arriba, ahora en formato estructurado:
 
