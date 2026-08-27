@@ -23348,12 +23348,14 @@ ${_contextoEnfasisHC(data) ? `CONTEXTO ESPECÍFICO DEL ÉNFASIS: ${_contextoEnfa
 4. SEGMENTO ANATÓMICO: Identifica el segmento afectado (Miembro Superior D/I, Columna Lumbar, Columna Cervical, Miembros Inferiores, Cardiovascular, Respiratorio, General).
 5. TIPO: TEMPORAL (con duración específica) / PERMANENTE / PREVENTIVA.
 6. BASE NORMATIVA: Citar GTC-45:2012, GATISO-DME, GATISO-TME, Res. 1843/2025, Res. 2404/2019 según corresponda.
-7. Si el examen es egreso, post-incapacidad o reintegro (Res. 1843/2025 Art. 13): incluir restricciones de reintegro progresivo. Si hay HISTORIAL CLÍNICO PREVIO arriba, ajusta cada restricción (mantener/ampliar/levantar) explícitamente contra lo que estaba vigente antes — no repitas restricciones ya superadas ni ignores las que siguen aplicando.
-8. Si NO hay hallazgos patológicos que justifiquen restricciones: devolver array vacío con "sinRestricciones": true y justificación.
+7. Si el examen es egreso, post-incapacidad o reintegro (Res. 1843/2025 Art. 13): incluir restricciones de reintegro progresivo. Si hay HISTORIAL CLÍNICO PREVIO arriba con restricciones vigentes, cada una de esas restricciones DEBE aparecer como su propio ítem en el arreglo con el campo "accion" indicando MANTENER (sigue igual), AJUSTAR (cambia el límite/duración — indica el valor nuevo), o LEVANTAR (ya no aplica, hallazgos actuales la resolvieron) — nunca las omitas en silencio ni las agrupes en una sola frase.
+8. Si NO hay ninguna restricción vigente ni nueva que aplique (ni siquiera para levantar): devolver array vacío con "sinRestricciones": true y "justificacionSinRestricciones" breve (máximo 3 líneas, sin narrar el historial ni analizar — solo la razón clínica directa).
 9. ⚠️ PROHIBICIÓN LEGAL EXPRESA (Res. 1843/2025 Art. 21 — confidencialidad del diagnóstico): En el campo "texto" y "hallazgoQueJustifica" NO incluyas nombres de diagnósticos clínicos (enfermedades, síndromes, patologías), NO menciones medicamentos, NO describas tratamientos. Solo describe la LIMITACIÓN FUNCIONAL LABORAL en términos operativos: qué actividad está limitada, en qué medida y por cuánto tiempo. Ejemplo correcto: "Evitar levantamiento de cargas superiores a 10 kg" — NO: "Por lumbalgia crónica L4-L5 no levantar pesos".
+10. ⚠️ PROHIBIDO GENERAR ANÁLISIS: tu única salida es el arreglo de restricciones (o "sinRestricciones"). NO generes secciones como "Estado Clínico Actual", "Concepto de Aptitud", "Correlación Fisiopatológica", "Recomendaciones y Seguimiento" ni ningún párrafo narrativo — eso pertenece a otros módulos (Análisis, Recomendaciones), no a este. El HISTORIAL CLÍNICO PREVIO se usa SOLO para decidir el campo "accion" y el contenido de cada restricción — nunca narres la comparación en el texto (prohibido escribir frases como "según la consulta previa del..." o "se evidencia mejoría respecto a..."). Cada campo "texto" es una instrucción operativa de una sola frase, no un párrafo de análisis.
+11. CASO COMPLEJO (Seguimiento / Post-incapacidad / Reintegro) CON restricciones que sí aplican: sé exhaustivo — cubre TODAS las restricciones relevantes que se deriven de los hallazgos y del perfil del cargo (no solo la más obvia), siempre bajo las reglas 1-10: cada una como su propio ítem corto, cuantificado y sustentado, nunca como texto narrativo adicional.
 
 JSON REQUERIDO (sin markdown):
-{"sinRestricciones":false,"justificacionSinRestricciones":"","restricciones":[{"numero":1,"segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción","texto":"Restricción operativa y cuantificable: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO. Sin diagnósticos, sin medicamentos, sin tratamientos.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}${_profBlockRestr}`;
+{"sinRestricciones":false,"justificacionSinRestricciones":"Máximo 3 líneas si sinRestricciones=true. Sin narrar historial ni análisis.","restricciones":[{"numero":1,"accion":"NUEVA|MANTENER|AJUSTAR|LEVANTAR","segmento":"Segmento anatómico específico","tipo":"TEMPORAL|PERMANENTE|PREVENTIVA","duracion":"X semanas / Permanente / N/A","hallazgoQueJustifica":"Hallazgo funcional observado (NO diagnóstico, NO enfermedad) que sustenta la restricción o su levantamiento","texto":"Restricción operativa y cuantificable en UNA frase: describe QUÉ actividad está limitada, EN QUÉ MEDIDA y POR CUÁNTO TIEMPO — o, si accion=LEVANTAR, qué restricción deja de aplicar. Sin diagnósticos, sin medicamentos, sin tratamientos, sin narrar comparaciones.","normativa":"GTC-45:2012 / GATISO-DME / GATISO-TME / Res. 1843/2025 / Res. 2404/2019"}]}${_profBlockRestr}`;
     // FIX 2026-07-29: variante liviana para proveedor de respaldo (no Gemini).
     const promptRestrLigero = _nivelRestr > 1
       ? prompt.slice(0, prompt.length - _profBlockRestr.length) + _bloqueProfundidad(_nivelRestr, data.analisisRestricciones, true)
@@ -23363,14 +23365,35 @@ JSON REQUERIDO (sin markdown):
       const parsed = parseAIJSON(text);
       let lista;
       if (parsed.sinRestricciones) {
-        lista = `Sin restricciones médico-laborales activas.\n${parsed.justificacionSinRestricciones || "Trabajador apto sin restricciones según hallazgos clínicos evaluados."}`;
+        // FIX 2026-08-27: defensivo — tope de 4 líneas aunque el modelo se
+        // exceda pese a la instrucción. Nunca debe volver a colarse un
+        // ensayo completo (análisis, historial narrado) en este campo.
+        const _justifCorta = (parsed.justificacionSinRestricciones || "Trabajador apto sin restricciones según hallazgos clínicos evaluados.")
+          .split("\n").slice(0, 4).join("\n");
+        lista = `Sin restricciones médico-laborales activas.\n${_justifCorta}`;
       } else {
-        lista = (parsed.restricciones || [])
-          .map(
-            (r) =>
-              `${r.numero || ""}. [${(r.tipo || "TEMPORAL").toUpperCase()}${r.duracion && r.duracion !== "N/A" ? " — " + r.duracion : ""}] (${r.segmento || "General"})\n   ${r.texto || r.descripcion}\n   ↳ Justificación clínica: ${r.hallazgoQueJustifica || "Ver hallazgos HC"}\n   ↳ Normativa: ${r.normativa || "Res. 1843/2025"}`
-          )
-          .join("\n\n");
+        // FIX 2026-08-27: organizado por TIPO de restricción (pedido
+        // explícito del médico), y cada ítem muestra su "accion" (NUEVA /
+        // SE MANTIENE / SE AJUSTA / SE LEVANTA) cuando hay historial previo
+        // — nunca como párrafo narrativo, siempre como ítem corto y delimitado.
+        const _accionLabel = { NUEVA: "🆕 NUEVA", MANTENER: "↔️ SE MANTIENE", AJUSTAR: "⚙️ SE AJUSTA", LEVANTAR: "✅ SE LEVANTA" };
+        const _porTipo = new Map();
+        for (const r of (parsed.restricciones || [])) {
+          const tipo = (r.tipo || "TEMPORAL").toUpperCase();
+          if (!_porTipo.has(tipo)) _porTipo.set(tipo, []);
+          _porTipo.get(tipo).push(r);
+        }
+        const _ordenTipos = ["TEMPORAL", "PERMANENTE", "PREVENTIVA"];
+        const _tiposOrdenados = [..._porTipo.keys()].sort((a, b) => {
+          const ia = _ordenTipos.indexOf(a), ib = _ordenTipos.indexOf(b);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+        lista = _tiposOrdenados.map((tipo) => {
+          const bloque = _porTipo.get(tipo).map((r) =>
+            `${r.numero || ""}. [${_accionLabel[(r.accion || "").toUpperCase()] || "🆕 NUEVA"}] (${r.segmento || "General"}${r.duracion && r.duracion !== "N/A" ? " — " + r.duracion : ""})\n   ${r.texto || r.descripcion}\n   ↳ Justificación clínica: ${r.hallazgoQueJustifica || "Ver hallazgos HC"}\n   ↳ Normativa: ${r.normativa || "Res. 1843/2025"}`
+          ).join("\n\n");
+          return `═══ RESTRICCIONES ${tipo} ═══\n${bloque}`;
+        }).join("\n\n");
       }
       setData((prev) => ({ ...prev, analisisRestricciones: lista }));
       showAlert(
@@ -23448,7 +23471,8 @@ INSTRUCCIÓN para "recomendacionesTexto": Genera MÍNIMO 14 recomendaciones nume
 (F) RECOMENDACIONES AL EMPLEADOR — Conforme Res. 1843/2025, Dec. 1072/2015, Res. 0312/2019. Específicas para este cargo y hallazgos.
 
 Lenguaje técnico-médico-ocupacional, formal, directo y puntual. Cada recomendación en máximo 2 líneas. Si los hallazgos de ESTA historia son escasos, NO reduzcas la cantidad ni la profundidad por eso — profundiza igual sobre lo disponible, conectando cada recomendación explícitamente al hallazgo/riesgo/antecedente concreto de este trabajador, aunque sean pocos. Nunca generes relleno genérico para completar el mínimo.
-${_esComplejoReco ? "Este es un examen de Seguimiento o Post-incapacidad/Reintegro — requiere el mayor nivel de detalle posible: si hay HISTORIAL CLÍNICO PREVIO arriba, cada recomendación relevante debe indicar explícitamente si continúa, se ajusta o se retira respecto a la consulta anterior." : ""}
+⚠️ PROHIBIDO: no agregues secciones adicionales de análisis (nada de "Estado Clínico Actual", "Correlación Fisiopatológica", "Concepto de Aptitud narrado", etc.) — solo las secciones (A)-(F) de arriba, cada línea una recomendación puntual, nunca un párrafo. Si usas el HISTORIAL CLÍNICO PREVIO, NO narres la comparación como texto (prohibido "según la consulta previa del..." o "se evidencia mejoría respecto a...") — úsalo solo para decidir si cada recomendación continúa, se ajusta o se retira, y refleja esa decisión en la recomendación misma, en el mismo formato de una línea que las demás.
+${_esComplejoReco ? "Este es un examen de Seguimiento o Post-incapacidad/Reintegro — caso complejo, requiere el mayor nivel de detalle posible dentro de las secciones (A)-(F): cubre TODAS las recomendaciones relevantes según cargo y riesgos, no solo las más obvias, siempre en el mismo formato de una línea por ítem." : ""}
 
 ADEMÁS del texto, para que el expediente clínico quede completo, devuelve TAMBIÉN — solo si los hallazgos de ESTA historia realmente lo justifican, deja el array vacío si no aplica — las mismas derivaciones, exámenes y medicamentos que hayas mencionado en las secciones (C)/(D) arriba, ahora en formato estructurado:
 
