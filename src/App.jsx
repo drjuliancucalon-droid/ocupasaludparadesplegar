@@ -21740,30 +21740,58 @@ function AppInner() {
               ? _allPatsRaw.filter(p => p.estadoHistoria === "Cerrada" || p.historiaFirmada || p.codigoVerificacion)
               : [];
             if (_cerradas.length === 0) return;
+            // FIX 2026-08-27: localStorage tiene la firma recortada para TODOS
+            // los pacientes por diseño (_stripFirmaLS, ahorro de espacio) — no
+            // es señal de que la firma no exista. La copia COMPLETA vive en
+            // IndexedDB. Antes este bloque descartaba de una vez cualquier
+            // paciente sin firma en localStorage; ahora, antes de descartar,
+            // intenta la copia completa de IndexedDB. Caso real que lo motivó:
+            // NEOTECH ENGINEERING SAS, 5 trabajadores cerrados por lote (import
+            // de encuesta) el 18 de agosto, firmados y cerrados de verdad
+            // (confirmado visualmente por el médico) pero nunca publicados
+            // individualmente porque ese cierre no pasó por handleSavePatient.
+            let _idbPatsPorCedula = null;
+            try {
+              const _idbPats = await _idbGet(_patKey(_loginUid));
+              if (Array.isArray(_idbPats)) {
+                _idbPatsPorCedula = new Map();
+                for (const ip of _idbPats) {
+                  const c = (ip.docNumero || "").replace(/\s/g, "");
+                  if (c) _idbPatsPorCedula.set(c, ip);
+                }
+              }
+            } catch {}
             const _portalRows = [];
             const _hcRows = [];
             for (const p of _cerradas) {
               const ced = (p.docNumero || "").replace(/\s/g, "");
               const code = (p.codigoVerificacion || p.firmaDigital?.codigoQR || "").trim().toUpperCase();
-              const docData = p._doctorData || {};
+              let _fuente = p;
+              let _firmaLocal = p._firma || "";
+              let docData = p._doctorData || {};
               // FIX 2026-06-15: ANTI-DEGRADADO. No reescribir portal_doc/hc_completa
               // si el paciente local es "slim" (sin firma real o sin médico embebido).
               // Su versión en D1 ya es igual o mejor. Antes este auto-push pelaba
               // certificados ya publicados con firma + recomendaciones (ej. pacientes
               // importados de encuesta como AMEZQUITA) cada login.
-              const _firmaLocal = p._firma || "";
+              if ((!(_firmaLocal && _firmaLocal.length > 100) || !docData.nombre) && ced && _idbPatsPorCedula?.has(ced)) {
+                const ip = _idbPatsPorCedula.get(ced);
+                if (ip?._firma && ip._firma.length > 100 && ip?._doctorData?.nombre) {
+                  _fuente = ip; _firmaLocal = ip._firma; docData = ip._doctorData;
+                }
+              }
               if (!(_firmaLocal && _firmaLocal.length > 100) || !docData.nombre) continue;
               const portalVal = {
-                nombres: p.nombres, docTipo: p.docTipo, docNumero: p.docNumero,
-                empresaNombre: p.empresaNombre || "", empresaNit: p.empresaNit || "",
-                cargo: p.cargo, tipoExamen: p.tipoExamen,
-                fechaExamen: p.fechaExamen, conceptoAptitud: p.conceptoAptitud,
+                nombres: _fuente.nombres, docTipo: _fuente.docTipo, docNumero: _fuente.docNumero,
+                empresaNombre: _fuente.empresaNombre || "", empresaNit: _fuente.empresaNit || "",
+                cargo: _fuente.cargo, tipoExamen: _fuente.tipoExamen,
+                fechaExamen: _fuente.fechaExamen, conceptoAptitud: _fuente.conceptoAptitud,
                 codigoVerificacion: code, estadoHistoria: "Cerrada",
-                fechaCierre: p.fechaCierre || "",
-                _doctorData: docData, _firma: p._firma || "",
+                fechaCierre: _fuente.fechaCierre || "",
+                _doctorData: docData, _firma: _firmaLocal,
               };
               // Slim HC: strip raw study data + adj binarios pero conservar firma
-              const hcVal = { ..._slimPatient(p), _doctorData: docData, _firma: p._firma || "" };
+              const hcVal = { ..._slimPatient(_fuente), _doctorData: docData, _firma: _firmaLocal };
               if (ced) {
                 _portalRows.push({ key: "siso_portal_doc_" + ced, value: portalVal });
                 _hcRows.push({ key: "siso_hc_completa_" + ced, value: hcVal });
