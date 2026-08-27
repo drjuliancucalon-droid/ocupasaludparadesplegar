@@ -21778,6 +21778,47 @@ function AppInner() {
               const res = await _sbBulkSet(allRows);
               console.log(`[SISO] ✅ HCs cerradas → D1: ${res.ok} ok, ${res.fail} fail (${_cerradas.length} pacientes)`);
             }
+            // FIX 2026-08-27: además de republicar el documento individual,
+            // verificar que cada cédula esté en el ÍNDICE de su empresa
+            // (siso_portal_empresa_<nit>.documentos[]) — el conteo que ve la
+            // empresa en el portal ("38 trabajadores"). Causa raíz real
+            // encontrada en NEOTECH: un cierre por importación masiva deja
+            // el documento individual publicable, pero nunca toca el índice
+            // de empresa, así que el portal mostraba menos trabajadores de
+            // los realmente atendidos (verificado con el PDF real del
+            // médico: 42 atendidos en el período, solo 38 en el portal).
+            // Este paso corre cada 7 días para TODOS los pacientes cerrados
+            // del sistema — autocurativo, sin depender de identificar cada
+            // ruta futura que pueda dejar el mismo hueco.
+            try {
+              const _porEmpresa = new Map(); // nit canónico -> Set(cédulas)
+              for (const p of _cerradas) {
+                const ced = (p.docNumero || "").replace(/\s/g, "");
+                if (!ced || !p.empresaNit || !p.empresaId || p.empresaId === "particular") continue;
+                const nit = _nitPortal(p.empresaNit);
+                if (nit.length < 3) continue;
+                if (!_porEmpresa.has(nit)) _porEmpresa.set(nit, new Set());
+                _porEmpresa.get(nit).add(ced);
+              }
+              for (const [nit, cedulas] of _porEmpresa) {
+                try {
+                  const _peR = await _workerGetChecked(`siso_portal_empresa_${nit}`);
+                  if (_peR.failed) continue; // lectura falló — no arriesgar sobrescritura, reintenta en 7 días
+                  let pe = _peR.value || { nit, nombre: "", documentos: [] };
+                  pe.documentos = pe.documentos || [];
+                  let cambiado = false;
+                  for (const ced of cedulas) {
+                    if (!pe.documentos.includes(ced)) { pe.documentos.push(ced); cambiado = true; }
+                  }
+                  if (cambiado) {
+                    pe.updatedAt = new Date().toISOString();
+                    if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_${nit}`, pe); } catch {} }
+                    _sbSet(`siso_portal_empresa_${nit}`, pe).catch(() => {});
+                    console.log(`[SISO] ✅ índice portal empresa ${nit} reconciliado (+cédulas recuperadas)`);
+                  }
+                } catch (e) { console.warn(`[SISO] reconciliación índice portal ${nit} falló:`, e?.message); }
+              }
+            } catch (e) { console.warn("[SISO] reconciliación índices portal falló:", e?.message); }
             localStorage.setItem(_hcPushFlagKey, String(Date.now()));
           } catch (e) {
             console.warn("[SISO] Auto-push HCs D1 falló:", e.message);
