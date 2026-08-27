@@ -6938,10 +6938,16 @@ const AI_PROVIDERS = {
       // recurso de texto largo antes de caer a Groq/Cerebras/OpenRouter) y
       // gemini-3.5-flash-lite (generación lite más nueva vigente). Todos
       // confirmados en la documentación oficial en esta misma verificación.
+      // FIX 2026-08-27: gemini-2.5-pro empezó a fallar en producción con 404
+      // "no longer available to new users" — la documentación general todavía
+      // lo lista como vigente, pero el error de la API en vivo es más
+      // específico (restricción por cuenta/key, no reflejada en la doc
+      // general) y apunta directamente al reemplazo: gemini-3.1-pro-preview,
+      // confirmado vigente (tier Preview) contra la misma documentación.
       const _MODELOS_ALTA = [
         "gemini-2.5-flash",
         "gemini-3.5-flash",
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
       ];
       const _MODELOS_LITE = [
         "gemini-2.5-flash-lite",
