@@ -21867,32 +21867,85 @@ function AppInner() {
             // del sistema — autocurativo, sin depender de identificar cada
             // ruta futura que pueda dejar el mismo hueco.
             try {
-              const _porEmpresa = new Map(); // nit canónico -> Set(cédulas)
+              const _porEmpresa = new Map(); // nit canónico -> [pacientes]
               for (const p of _cerradas) {
                 const ced = (p.docNumero || "").replace(/\s/g, "");
                 if (!ced || !p.empresaNit || !p.empresaId || p.empresaId === "particular") continue;
                 const nit = _nitPortal(p.empresaNit);
                 if (nit.length < 3) continue;
-                if (!_porEmpresa.has(nit)) _porEmpresa.set(nit, new Set());
-                _porEmpresa.get(nit).add(ced);
+                if (!_porEmpresa.has(nit)) _porEmpresa.set(nit, []);
+                _porEmpresa.get(nit).push(p);
               }
-              for (const [nit, cedulas] of _porEmpresa) {
+              for (const [nit, pacientesEmp] of _porEmpresa) {
+                // 1) Índice de cédulas (siso_portal_empresa_<nit>.documentos[])
                 try {
                   const _peR = await _workerGetChecked(`siso_portal_empresa_${nit}`);
-                  if (_peR.failed) continue; // lectura falló — no arriesgar sobrescritura, reintenta en 7 días
-                  let pe = _peR.value || { nit, nombre: "", documentos: [] };
-                  pe.documentos = pe.documentos || [];
-                  let cambiado = false;
-                  for (const ced of cedulas) {
-                    if (!pe.documentos.includes(ced)) { pe.documentos.push(ced); cambiado = true; }
-                  }
-                  if (cambiado) {
-                    pe.updatedAt = new Date().toISOString();
-                    if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_${nit}`, pe); } catch {} }
-                    _sbSet(`siso_portal_empresa_${nit}`, pe).catch(() => {});
-                    console.log(`[SISO] ✅ índice portal empresa ${nit} reconciliado (+cédulas recuperadas)`);
+                  if (!_peR.failed) {
+                    let pe = _peR.value || { nit, nombre: "", documentos: [] };
+                    pe.documentos = pe.documentos || [];
+                    let cambiado = false;
+                    for (const p of pacientesEmp) {
+                      const ced = (p.docNumero || "").replace(/\s/g, "");
+                      if (ced && !pe.documentos.includes(ced)) { pe.documentos.push(ced); cambiado = true; }
+                    }
+                    if (cambiado) {
+                      pe.updatedAt = new Date().toISOString();
+                      if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_${nit}`, pe); } catch {} }
+                      _sbSet(`siso_portal_empresa_${nit}`, pe).catch(() => {});
+                      console.log(`[SISO] ✅ índice portal empresa ${nit} reconciliado (+cédulas recuperadas)`);
+                    }
                   }
                 } catch (e) { console.warn(`[SISO] reconciliación índice portal ${nit} falló:`, e?.message); }
+
+                // 2) Agregado de atenciones (siso_portal_empresa_atenciones_<nit>.atenciones[])
+                // FIX 2026-08-27: la misma importación masiva que deja el índice
+                // incompleto TAMBIÉN deja este agregado incompleto — un trabajador
+                // con más de una evaluación (reevaluación en fecha distinta) solo
+                // tenía la más antigua ahí, la nueva nunca se agregaba. Se fusiona
+                // por codigoVerificacion (o cédula+fecha si falta), mismo criterio
+                // que ya usa la escritura normal (handleSavePatient sección 5b) —
+                // nunca reemplaza, solo agrega lo que falte.
+                try {
+                  const _paR = await _workerGetChecked(`siso_portal_empresa_atenciones_${nit}`);
+                  if (!_paR.failed) {
+                    let pa = _paR.value || { nit, nombre: "", atenciones: [], fechas: [] };
+                    pa.atenciones = pa.atenciones || [];
+                    const _existentes = new Set(pa.atenciones.map(a => {
+                      const dn = String(a?.docNumero || "").replace(/\s/g, "").trim();
+                      const f = (a?.fechaCierre || a?.fechaExamen || "").slice(0, 10);
+                      return a?.codigoVerificacion || (dn + "|" + f);
+                    }));
+                    let cambiadoAt = false;
+                    for (const p of pacientesEmp) {
+                      const ced = (p.docNumero || "").replace(/\s/g, "");
+                      const fecha = (p.fechaCierre || p.fechaExamen || "").slice(0, 10);
+                      const code = (p.codigoVerificacion || "").trim().toUpperCase();
+                      const claveP = code || (ced + "|" + fecha);
+                      if (_existentes.has(claveP)) continue;
+                      let _firmaAt = p._firma || "";
+                      let _docDataAt = p._doctorData || {};
+                      if ((!(_firmaAt && _firmaAt.length > 100) || !_docDataAt.nombre) && ced && _idbPatsPorCedula?.has(ced)) {
+                        const ip = _idbPatsPorCedula.get(ced);
+                        if (ip?._firma && ip._firma.length > 100 && ip?._doctorData?.nombre) { _firmaAt = ip._firma; _docDataAt = ip._doctorData; }
+                      }
+                      const { _firma: _f2, _doctorData: _d2, ...rest } = p;
+                      pa.atenciones.push({
+                        ...rest, fechaCierre: fecha || p.fechaExamen, estadoHistoria: "Cerrada", codigoVerificacion: code,
+                      });
+                      if (!pa._firma && _firmaAt) pa._firma = _firmaAt;
+                      if (!pa._doctorData?.nombre && _docDataAt?.nombre) pa._doctorData = _docDataAt;
+                      _existentes.add(claveP);
+                      cambiadoAt = true;
+                    }
+                    if (cambiadoAt) {
+                      pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0, 10)).filter(Boolean))].sort();
+                      pa.updatedAt = new Date().toISOString();
+                      if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_atenciones_${nit}`, pa); } catch {} }
+                      _sbSet(`siso_portal_empresa_atenciones_${nit}`, pa).catch(() => {});
+                      console.log(`[SISO] ✅ agregado de atenciones ${nit} reconciliado (+atenciones recuperadas)`);
+                    }
+                  }
+                } catch (e) { console.warn(`[SISO] reconciliación atenciones portal ${nit} falló:`, e?.message); }
               }
             } catch (e) { console.warn("[SISO] reconciliación índices portal falló:", e?.message); }
             localStorage.setItem(_hcPushFlagKey, String(Date.now()));
