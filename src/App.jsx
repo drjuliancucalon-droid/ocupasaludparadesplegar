@@ -22927,10 +22927,19 @@ function AppInner() {
         .map(([k, v]) => `${k}: ${v.hallazgo}`)
         .join("; ") || "Sin hallazgos patológicos";
       const dxP = [p.diagnosticoPrincipal, p.diagnosticoSecundario1, p.diagnosticoSecundario2].filter(Boolean).join(" | ") || "N/R";
+      // FIX 2026-08-27: el tope de 300 caracteres cortaba las restricciones
+      // de la consulta anterior a mitad de la primera — con el formato
+      // agrupado por tipo (varios ítems con justificación+normativa cada
+      // uno) 300 caracteres alcanzan para UNA sola restricción. El médico
+      // reportó que solo "salían 2" y "solo permanente": era exactamente
+      // esto, la IA nunca vio el resto porque estaba cortado antes de
+      // llegarle. Este campo es el que sostiene el seguimiento uno-a-uno
+      // (MANTENER/AJUSTAR/LEVANTAR) — no puede ir recortado.
       return `[${i + 1}] ${p.fechaExamen || "fecha N/R"} — Tipo: ${p.tipoExamen || "N/R"} | Motivo: ${(p.motivoConsulta || "N/R").slice(0, 150)}
     Hallazgos: ${hallazgosP}
     Dx: ${dxP} | Concepto de aptitud: ${p.conceptoAptitud || "N/R"}
-    Restricciones vigentes entonces: ${(p.analisisRestricciones || p.restricciones || "Ninguna registrada").slice(0, 300)}`;
+    Restricciones vigentes entonces (TEXTO COMPLETO — procesa cada una, ninguna debe quedar fuera):
+${(p.analisisRestricciones || p.restricciones || "Ninguna registrada").slice(0, 2500)}`;
     }).join("\n");
     return `═══ HISTORIAL CLÍNICO PREVIO DE ESTE TRABAJADOR (${previas.length} consulta(s) cerrada(s) anterior(es), más reciente primero) ═══\n${items}\n═══ FIN HISTORIAL PREVIO ═══`;
   };
