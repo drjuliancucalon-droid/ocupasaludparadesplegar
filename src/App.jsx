@@ -17192,6 +17192,7 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
   const [codigoPortal, setCodigoPortal] = React.useState(""); // código de acceso empresa
   const [empresaAtenciones, setEmpresaAtenciones] = React.useState(null); // {nit,nombre,fechas,atenciones[]}
   const [fechaFiltroEmpresa, setFechaFiltroEmpresa] = React.useState(""); // "" = todas las fechas
+  const [busquedaCertEmpresa, setBusquedaCertEmpresa] = React.useState(""); // buscador en vivo: cédula o nombre
   const [tabEmpresa, setTabEmpresa] = React.useState("certificados"); // certificados|documentos|estadisticas
   const tabPrincipal = tipoBusqueda === "empresa" ? "empresa" : "trabajador";
 
@@ -17953,7 +17954,16 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
             ? [...empresaAtenciones.fechas].sort()
             : [...new Set(resultadosEmpresa.map(p => p.fechaExamen || "").filter(Boolean))].sort();
           const multiDate = fechasDisponibles.length > 1;
-          const atencionesVisibles = fechaFiltroEmpresa ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa) : resultadosEmpresa;
+          const _porFecha = fechaFiltroEmpresa ? resultadosEmpresa.filter(p => p.fechaExamen === fechaFiltroEmpresa) : resultadosEmpresa;
+          // Buscador en vivo por cédula o nombre — insensible a mayúsculas y tildes
+          const _normalizarBusq = (s) => (s || "").toString().normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+          const _busqNorm = _normalizarBusq(busquedaCertEmpresa);
+          const atencionesVisibles = _busqNorm
+            ? _porFecha.filter(p =>
+                (p.docNumero || "").replace(/\s/g, "").includes(_busqNorm.replace(/\s/g, "")) ||
+                _normalizarBusq(p.nombres).includes(_busqNorm)
+              )
+            : _porFecha;
           const trabajadoresUnicos = new Set(resultadosEmpresa.map(p => p.docNumero)).size;
           const totalFav    = resultadosEmpresa.filter(p => colorAptitud(p.conceptoAptitud).dot === "🟢").length;
           const totalAmb    = resultadosEmpresa.filter(p => colorAptitud(p.conceptoAptitud).dot === "🟡").length;
@@ -18052,6 +18062,27 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                       </button>
                     </div>
                   </div>
+                  {/* Buscador en vivo: cédula o nombre */}
+                  <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+                      <input
+                        type="text"
+                        value={busquedaCertEmpresa}
+                        onChange={(e) => { setBusquedaCertEmpresa(e.target.value); setCertSeleccionados({}); }}
+                        placeholder="Buscar por cédula o nombre..."
+                        className="w-full pl-9 pr-9 py-2 text-xs rounded-xl border border-gray-200 focus:border-blue-400 focus:ring-2 focus:ring-blue-100 outline-none transition"
+                      />
+                      {busquedaCertEmpresa && (
+                        <button
+                          onClick={() => { setBusquedaCertEmpresa(""); setCertSeleccionados({}); }}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   {/* Filtro fechas */}
                   {multiDate && (
                     <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 flex-wrap">
@@ -18070,6 +18101,11 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                     </div>
                   )}
                   {/* Lista trabajadores */}
+                  {atencionesVisibles.length === 0 && busquedaCertEmpresa && (
+                    <div className="px-4 py-8 text-center text-gray-400 text-xs font-bold">
+                      🔍 No se encontraron trabajadores para "{busquedaCertEmpresa}"
+                    </div>
+                  )}
                   <div className="divide-y divide-gray-50 max-h-[520px] overflow-y-auto">
                     {atencionesVisibles.map((p, i) => {
                       const col = colorAptitud(p.conceptoAptitud);
