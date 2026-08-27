@@ -17421,7 +17421,19 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                 if (!_drR && rAt.data._doctorData) _drR = rAt.data._doctorData;
                 for (const a of rAt.data.atenciones) {
                   const dn = String(a?.docNumero || "").replace(/\s/g, "").trim();
-                  if (dn && !_atMap.has(dn)) _atMap.set(dn, a);
+                  if (!dn) continue;
+                  // FIX 2026-08-27: antes se deduplicaba SOLO por cédula (dn), así
+                  // que un trabajador con más de una atención (reevaluación en
+                  // fecha distinta) quedaba reducido a una sola en el portal —
+                  // ninguna atención se perdía en el almacenamiento (el escritor
+                  // ya fusiona por docNumero+fecha), pero esta lectura las
+                  // colapsaba igual. Ahora la clave de dedup es el código de
+                  // verificación (único por atención) o, si falta, cédula+fecha
+                  // — mismo criterio que ya usa la escritura — así que todas las
+                  // atenciones distintas del mismo trabajador se preservan.
+                  const _fechaAt = (a?.fechaCierre || a?.fechaExamen || "").slice(0, 10);
+                  const _key = a?.codigoVerificacion || (dn + "|" + _fechaAt);
+                  if (!_atMap.has(_key)) _atMap.set(_key, a);
                 }
               }
             }
