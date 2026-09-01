@@ -19492,44 +19492,64 @@ function AppInner() {
   useEffect(() => { setJustExamen(data.solicitudExamenesJust || ""); }, [data.solicitudExamenesJust]);
   const [printPreview, setPrintPreview] = useState(null); // 'prescripcion'|'examenes'|'incapacidad'|null
   const [selectedCompanyReport, setSelectedCompanyReport] = useState("");
+  // FIX 2026-09-01: función ÚNICA para listar los períodos publicados de una
+  // empresa (une variantes de NIT). Antes el badge "Emitido" y la descarga del
+  // ZIP tenían cada uno su propia copia de esta lógica, con criterios distintos
+  // (el badge exigía certificados Y algún otro doc; la descarga se conformaba
+  // con certificados O algún otro doc) — eso hacía que el ZIP a veces trajera
+  // un período distinto (uno parcial, recién empezando) al que el badge
+  // anunciaba. Con una sola fuente, badge y descarga siempre coinciden, y el
+  // selector de descarga puede mostrar TODOS los períodos, no solo el elegido
+  // automáticamente.
+  const _periodosEmpresa = useCallback(async (comp) => {
+    const nitClean = (comp?.nit || "").replace(/[^0-9]/g, "");
+    if (nitClean.length < 4) return [];
+    const variants = [nitClean];
+    for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv);
+    if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
+    const periodMap = new Map();
+    for (const nv of variants) {
+      let docs = null;
+      try { docs = await _readSmart(`siso_portal_empresa_docs_${nv}`); } catch {}
+      if (!docs || !Array.isArray(docs.periodos)) continue;
+      for (const per of docs.periodos) {
+        const k = per.periodo || "";
+        const prev = periodMap.get(k) || { periodo: k };
+        periodMap.set(k, {
+          ...prev, ...per,
+          informe: per.informe || prev.informe || null,
+          cuenta: per.cuenta || prev.cuenta || null,
+          custodia: per.custodia || prev.custodia || null,
+          certificados: (per.certificados && per.certificados.count) ? per.certificados : (prev.certificados || per.certificados || null),
+          emitidoEl: per.emitidoEl || prev.emitidoEl || per.fecha || null,
+        });
+      }
+    }
+    return [...periodMap.values()]
+      .map((p) => ({ ...p, completo: !!((p.certificados?.count > 0) && (p.informe || p.cuenta || p.custodia)) }))
+      .sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
+  }, []);
+
   // FASE: constancia de "Emitido" — derivada de los documentos YA publicados en el
   // portal (siso_portal_empresa_docs). Funciona retroactivamente para empresas que
   // ya enviaron sus documentos. null = sin cargar; {emitido,fecha,n,periodo,docs}.
   const [emitidoEmpresa, setEmitidoEmpresa] = useState(null);
+  // Lista completa de períodos de la empresa activa — alimenta el selector de descarga.
+  const [empresaPeriodos, setEmpresaPeriodos] = useState([]);
   useEffect(() => {
     setEmitidoEmpresa(null);
+    setEmpresaPeriodos([]);
     if (!selectedCompanyReport || !_WORKER_TOKEN) return;
     const comp = companies.find((c) => c.id === selectedCompanyReport);
     const nitClean = (comp?.nit || "").replace(/[^0-9]/g, "");
     if (nitClean.length < 4) return;
-    const variants = [nitClean];
-    for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv);
-    if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
     let cancelado = false;
     (async () => {
-      // Unir periodos de TODAS las variantes de NIT (igual que la Capa B del portal)
-      const periodMap = new Map();
-      for (const nv of variants) {
-        let docs = null;
-        try { docs = await _readSmart(`siso_portal_empresa_docs_${nv}`); } catch {}
-        if (!docs || !Array.isArray(docs.periodos)) continue;
-        for (const per of docs.periodos) {
-          const k = per.periodo || "";
-          const prev = periodMap.get(k) || { periodo: k };
-          periodMap.set(k, {
-            ...prev, ...per,
-            informe: per.informe || prev.informe || null,
-            cuenta: per.cuenta || prev.cuenta || null,
-            custodia: per.custodia || prev.custodia || null,
-            certificados: (per.certificados && per.certificados.count) ? per.certificados : (prev.certificados || per.certificados || null),
-            emitidoEl: per.emitidoEl || prev.emitidoEl || per.fecha || null,
-          });
-        }
-      }
+      const periodos = await _periodosEmpresa(comp);
       if (cancelado) return;
-      const periodos = [...periodMap.values()].sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
-      // El más reciente que tenga al menos certificados + (informe o cuenta o custodia)
-      const emitido = periodos.find((p) => (p.certificados?.count > 0) && (p.informe || p.cuenta || p.custodia));
+      setEmpresaPeriodos(periodos);
+      // El más reciente "completo" (certificados + al menos otro documento)
+      const emitido = periodos.find((p) => p.completo);
       if (emitido) {
         const docs = {
           certificados: emitido.certificados?.count || 0,
@@ -19542,11 +19562,33 @@ function AppInner() {
       }
     })();
     return () => { cancelado = true; };
-  }, [selectedCompanyReport, companies]);
+  }, [selectedCompanyReport, companies, _periodosEmpresa]);
+  // Selector de período + documentos antes de descargar el ZIP (evita que se
+  // arme con un período parcial/equivocado o mezcle documentos de otro mes).
+  const [showDescargaPaquete, setShowDescargaPaquete] = useState(false);
+  const [descargaPeriodoSel, setDescargaPeriodoSel] = useState(null);
+  const [descargaDocsSel, setDescargaDocsSel] = useState({ certificados: true, informe: true, cuenta: true, custodia: true });
+  const _abrirSelectorDescarga = () => {
+    const def = empresaPeriodos.find((p) => p.periodo === emitidoEmpresa?.periodo) || empresaPeriodos[0] || null;
+    setDescargaPeriodoSel(def?.periodo || null);
+    setDescargaDocsSel({
+      certificados: (def?.certificados?.count || 0) > 0,
+      informe: !!def?.informe,
+      cuenta: !!def?.cuenta,
+      custodia: !!def?.custodia,
+    });
+    setShowDescargaPaquete(true);
+  };
 
   // FASE 2: descargar en ZIP los documentos emitidos de la empresa (certificados +
   // informe + cuenta de cobro + carta custodia). Reusa _htmlToPdfBlobMod + JSZip.
-  const _descargarPaqueteEmpresa = async () => {
+  // FIX 2026-09-01: `periodoElegido` y `docsIncluir` ya NO se adivinan — vienen del
+  // selector que el médico confirma antes de descargar (_abrirSelectorDescarga).
+  // Antes esta función elegía sola "el período más reciente con ALGO publicado"
+  // (bastaba con certificados O informe O cuenta O custodia), así que un período
+  // apenas iniciado (3 certificados sueltos, sin los demás documentos) se colaba
+  // por delante de un período completo y anterior — el ZIP salía con casi nada.
+  const _descargarPaqueteEmpresa = async (periodoElegido, docsIncluir = { certificados: true, informe: true, cuenta: true, custodia: true }) => {
     const comp = companies.find((c) => c.id === selectedCompanyReport);
     if (!comp) { showAlert("Selecciona una empresa."); return; }
     const nitClean = (comp.nit || "").replace(/[^0-9]/g, "");
@@ -19559,19 +19601,12 @@ function AppInner() {
     // carta sin firma, documentos ausentes…). Antes esas faltas eran silenciosas.
     const _avisos = [];
 
-    // Leer el periodo EMITIDO del portal (fuente de verdad; funciona aunque el estado
-    // local haya perdido informe/cuenta/custodia al reentrar). Une variantes de NIT.
+    // Leer EXACTAMENTE el período elegido en el selector (fuente de verdad; funciona
+    // aunque el estado local haya perdido informe/cuenta/custodia al reentrar).
     let per = null;
     try {
-      const variants = [nitClean]; for (let dv = 0; dv <= 9; dv++) variants.push(nitClean + dv); if (nitClean.length > 6) variants.push(nitClean.slice(0, -1));
-      const pMap = new Map();
-      for (const nv of variants) {
-        let docs = null; try { docs = await _readSmart(`siso_portal_empresa_docs_${nv}`); } catch {}
-        if (!docs || !Array.isArray(docs.periodos)) continue;
-        for (const pp of docs.periodos) { const k = pp.periodo || ""; const prev = pMap.get(k) || { periodo: k }; pMap.set(k, { ...prev, ...pp, informe: pp.informe || prev.informe || null, cuenta: pp.cuenta || prev.cuenta || null, custodia: pp.custodia || prev.custodia || null, certificados: (pp.certificados && pp.certificados.count) ? pp.certificados : (prev.certificados || pp.certificados || null) }); }
-      }
-      const periodos = [...pMap.values()].sort((a, b) => (b.periodo || "").localeCompare(a.periodo || ""));
-      per = periodos.find(p => (p.certificados?.count > 0) || p.informe || p.cuenta || p.custodia) || null;
+      const periodos = await _periodosEmpresa(comp);
+      per = periodos.find(p => p.periodo === periodoElegido) || null;
     } catch {}
 
     // 1) Certificados — uno por trabajador con el generador REAL (idéntico a la app).
@@ -19581,9 +19616,9 @@ function AppInner() {
     // certificado con el nombre de un trabajador y los datos de otro es un
     // documento legal equivocado, así que es preferible no entregar nada.
     const _certsFallidos = [];
-    try {
+    if (docsIncluir.certificados) try {
       let cedulas = (per?.certificados?.documentos || []).map(d => String(d).replace(/\s/g, "")).filter(Boolean);
-      if (!cedulas.length) cedulas = patientsList.filter(p => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada").map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean);
+      if (!cedulas.length && !per) cedulas = patientsList.filter(p => p.empresaId === selectedCompanyReport && p.estadoHistoria === "Cerrada").map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean);
       // Sin duplicados: la lista publicada puede repetir cédulas.
       cedulas = [...new Set(cedulas)];
       let idx = 0;
@@ -19627,16 +19662,30 @@ function AppInner() {
       return;
     }
 
-    // 2) Informe epidemiológico — diseño REAL (réplica del portal, carga statsKey)
-    try {
-      const local = savedInformes.find(i => i.empresaId === selectedCompanyReport && !i.tipo);
-      const infMeta = {
-        totalPacientes: local?.totalPacientes || per?.informe?.totalPacientes || 0,
-        resumen: local?.resumen || per?.informe?.resumen || "",
-        fecha: local?.fecha || per?.informe?.fecha || (per?.periodo || ""),
-        statsKey: local?.statsKey || per?.informe?.statsKey || null,
-      };
-      if (per?.informe || local) {
+    // 2) Informe epidemiológico — diseño REAL (réplica del portal, carga statsKey).
+    // FIX 2026-09-01: antes SIEMPRE priorizaba el borrador local (`local`) sobre
+    // lo publicado (per.informe), sin filtrar por período — un informe nuevo
+    // generado para OTRO mes (ej. hoy mismo, para septiembre) se colaba por
+    // delante del correcto para el período que se estaba descargando. Ahora usa
+    // estrictamente per.informe (del período elegido); el local solo entra como
+    // respaldo si ESE período específico no tiene nada publicado, y se avisa.
+    if (docsIncluir.informe) try {
+      let infMeta = null;
+      if (per?.informe) {
+        infMeta = {
+          totalPacientes: per.informe.totalPacientes || 0,
+          resumen: per.informe.resumen || "",
+          fecha: per.informe.fecha || per.periodo || "",
+          statsKey: per.informe.statsKey || null,
+        };
+      } else {
+        const local = savedInformes.find(i => i.empresaId === selectedCompanyReport && !i.tipo);
+        if (local) {
+          infMeta = { totalPacientes: local.totalPacientes || 0, resumen: local.resumen || "", fecha: local.fecha || periodoElegido || "", statsKey: local.statsKey || null };
+          _avisos.push(`El informe incluido es un BORRADOR no publicado para el período ${periodoElegido || ""} (puede no corresponder exactamente a este período) — verifica antes de entregar.`);
+        }
+      }
+      if (infMeta) {
         // Cargar fullData (stats + aiResult + pacientes) desde D1 vía statsKey
         let fullData = null;
         if (infMeta.statsKey && _WORKER_TOKEN) { try { fullData = await _workerGet(infMeta.statsKey); } catch {} }
@@ -19645,65 +19694,58 @@ function AppInner() {
       }
     } catch (e) { console.warn("[ZIP] informe:", e?.message); }
 
-    // 3) Cuenta de cobro — diseño REAL (réplica de renderBill)
-    try {
+    // 3) Cuenta de cobro — diseño REAL (réplica de renderBill).
+    // FIX 2026-09-01: la cuenta publicada del período elegido (per.cuenta) tiene
+    // prioridad estricta y ya no se mezcla campo a campo con un borrador local —
+    // antes un borrador SIN datos bancarios podía pisar el número de cuenta real
+    // ya publicado si el período resuelto no era el correcto (por eso salía "No. --").
+    if (docsIncluir.cuenta) try {
       const localBill = savedBillsList.find(b => b && !b._deleted && (b.companyId === selectedCompanyReport || (b.clientNit || "").replace(/[^0-9]/g, "").includes(nitClean) || (b.clientName || "").toUpperCase() === empName.toUpperCase()));
-      // Preferir la cuenta del portal (trae banco/acreedor/firma completos); si no, la local.
-      const base = per?.cuenta || {};
-      const lb = localBill || {};
-      const c = (per?.cuenta || localBill) ? {
-        number: lb.number || base.number,
-        amount: lb.amount || base.amount,
-        date: lb.date || base.date,
-        concept: lb.concept || base.concept,
-        amountWords: lb.amountWords || base.amountWords || "",
-        clientName: lb.clientName || base.clientName || empName,
-        clientNit: lb.clientNit || base.clientNit || (comp.nit || ""),
-        bankName: base.bankName || lb.bankName,
-        accountType: base.accountType || lb.accountType,
-        accountNumber: base.accountNumber || lb.accountNumber,
-        rut: base.rut || lb.rut,
-        doctorNombre: base.doctorNombre || lb.doctorNombre,
-        doctorCC: base.doctorCC || lb.doctorCC,
-        doctorLicencia: base.doctorLicencia || lb.doctorLicencia,
-        doctorTitulo: base.doctorTitulo || lb.doctorTitulo,
-        doctorCel: base.doctorCel || lb.doctorCel,
-        doctorEmail: base.doctorEmail || lb.doctorEmail,
-        firma: base.firma || lb.firma,
+      const base = per?.cuenta || null;
+      if (!base && localBill) _avisos.push(`La cuenta de cobro incluida es un BORRADOR no publicado para el período ${periodoElegido || ""} — verifica banco/tipo/número de cuenta antes de entregar.`);
+      const src = base || localBill;
+      const c = src ? {
+        number: src.number, amount: src.amount, date: src.date, concept: src.concept,
+        amountWords: src.amountWords || "",
+        clientName: src.clientName || empName,
+        clientNit: src.clientNit || (comp.nit || ""),
+        bankName: src.bankName, accountType: src.accountType, accountNumber: src.accountNumber,
+        rut: src.rut, doctorNombre: src.doctorNombre, doctorCC: src.doctorCC,
+        doctorLicencia: src.doctorLicencia, doctorTitulo: src.doctorTitulo,
+        doctorCel: src.doctorCel, doctorEmail: src.doctorEmail, firma: src.firma,
       } : null;
       if (c) {
         const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCuentaCobroHTMLMod(c))); zip.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
-        // FIX 2026-07-29: avisar si la cuenta incluida NO es del período que se
-        // está descargando. Antes se tomaba en silencio la única cuenta que
-        // existiera de la empresa — así se colaba una de marzo por $70.000 en
-        // un paquete de julio, sin que nada lo advirtiera.
-        const _mesCuenta = String(c.date || "").slice(0, 7);
-        if (per?.periodo && _mesCuenta && _mesCuenta !== per.periodo) {
-          _avisos.push(`La cuenta de cobro incluida (No ${c.number}, ${_mesCuenta}, $${Number(c.amount || 0).toLocaleString("es-CO")}) NO es del período ${per.periodo}: es la única registrada para esta empresa. Emite la cuenta del período antes de entregar el paquete.`);
-        }
       } else {
         _avisos.push("No hay ninguna cuenta de cobro registrada para esta empresa; el paquete va sin ella.");
       }
     } catch (e) { console.warn("[ZIP] cuenta:", e?.message); }
 
-    // 4) Carta de custodia (portal con respaldo local)
-    try {
-      // FIX 2026-07-29: antes solo se leía la clave `siso_cartas_custodia`, pero
-      // al crear la carta se guarda en `siso_cartas_custodia_<usuario>` y en
-      // savedInformes (tipo "custodia"). Si estaba en cualquiera de esas otras,
-      // el ZIP no la encontraba y armaba una carta vacía. Ahora se buscan TODAS
-      // las fuentes y se toma la primera que corresponda a la empresa.
+    // 4) Carta de custodia — misma prioridad estricta: per.custodia (período
+    // elegido) primero; el respaldo local (que no distingue período) solo entra
+    // si ese período no tiene custodia publicada, y se avisa.
+    if (docsIncluir.custodia) try {
       const _coincide = (c) => c && (c.empresaId === selectedCompanyReport || (c.empresaNombre || "").toUpperCase() === empName.toUpperCase());
       let cust = null;
-      for (const _k of ["siso_cartas_custodia", `siso_cartas_custodia_${currentUser?.user || "shared"}`]) {
-        if (cust || !_WORKER_TOKEN) break;
-        try { const arr = await _workerGet(_k); cust = (arr || []).find(_coincide) || null; } catch {}
+      if (per?.custodia) {
+        const pc = per.custodia;
+        cust = { empresaNombre: empName, docNombre: pc.medicoNombre, medicoNombre: pc.medicoNombre, docTitulo: pc.medicoTitulo, docLicencia: pc.medicoLicencia, docCC: pc.medicoCC, docEmail: pc.medicoEmail, docCel: pc.medicoTel, docCiudad: pc.medicoCiudad, firma: pc.firma, firmaSrc: pc.firma, fecha: pc.fecha };
       }
       if (!cust) {
-        try { const arr = JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]"); cust = (arr || []).find(_coincide) || null; } catch {}
+        // FIX 2026-07-29: antes solo se leía la clave `siso_cartas_custodia`, pero
+        // al crear la carta se guarda en `siso_cartas_custodia_<usuario>` y en
+        // savedInformes (tipo "custodia"). Se buscan TODAS las fuentes y se toma
+        // la primera que corresponda a la empresa (no distingue período).
+        for (const _k of ["siso_cartas_custodia", `siso_cartas_custodia_${currentUser?.user || "shared"}`]) {
+          if (cust || !_WORKER_TOKEN) break;
+          try { const arr = await _workerGet(_k); cust = (arr || []).find(_coincide) || null; } catch {}
+        }
+        if (!cust) {
+          try { const arr = JSON.parse(localStorage.getItem("siso_cartas_custodia") || "[]"); cust = (arr || []).find(_coincide) || null; } catch {}
+        }
+        if (!cust) cust = (savedInformes || []).find(i => i && i.tipo === "custodia" && _coincide(i)) || null;
+        if (cust) _avisos.push(`La carta de custodia incluida NO está publicada para el período ${periodoElegido || ""} (es la más reciente disponible localmente) — verifica que corresponda antes de entregar.`);
       }
-      if (!cust) cust = (savedInformes || []).find(i => i && i.tipo === "custodia" && _coincide(i)) || null;
-      if (!cust && per?.custodia) { const pc = per.custodia; cust = { empresaNombre: empName, docNombre: pc.medicoNombre, medicoNombre: pc.medicoNombre, docTitulo: pc.medicoTitulo, docLicencia: pc.medicoLicencia, docCC: pc.medicoCC, docEmail: pc.medicoEmail, docCel: pc.medicoTel, docCiudad: pc.medicoCiudad, firma: pc.firma, firmaSrc: pc.firma, fecha: pc.fecha }; }
       // FIX 2026-07-29: al publicar al portal solo se guardaba {id, fecha} de la
       // custodia — sin médico, sin firma y sin mes — así que la carta salía muda
       // (fue lo que el usuario vio como "sin firma y sin mes"). Se completan los
@@ -19720,7 +19762,7 @@ function AppInner() {
             docCel: activeDoctorData.celular, docCiudad: activeDoctorData.ciudad };
         }
         if (!Number.isInteger(cust.mes) && !cust.mesTexto) {
-          const _ref = String(cust.fecha || per?.periodo || "").match(/^(\d{4})-(\d{2})/);
+          const _ref = String(cust.fecha || periodoElegido || "").match(/^(\d{4})-(\d{2})/);
           if (_ref) cust = { ...cust, mes: Number(_ref[2]) - 1, anioVal: Number(_ref[1]) };
         }
         if (!cust.firma && !cust.firmaSrc) _avisos.push("La carta de custodia va SIN firma: no se encontró firma ni en el registro ni en el perfil del médico.");
@@ -19730,13 +19772,13 @@ function AppInner() {
       }
     } catch (e) { console.warn("[ZIP] custodia:", e?.message); _avisos.push("La carta de custodia falló al generarse."); }
 
-    if (!total) { showAlert("⚠️ No se pudo generar ningún documento. Verifica que la empresa tenga documentos emitidos."); return; }
+    if (!total) { showAlert("⚠️ No se pudo generar ningún documento para el período " + (periodoElegido || "") + ". Verifica que la empresa tenga documentos emitidos, o elige otro período/documentos en el selector."); return; }
     try {
       const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "Paquete_" + empName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 25) + "_" + (emitidoEmpresa?.periodo || new Date().toISOString().slice(0, 7)) + ".zip";
+      a.download = "Paquete_" + empName.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 25) + "_" + (periodoElegido || new Date().toISOString().slice(0, 7)) + ".zip";
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 3000);
       showAlert(
@@ -34888,13 +34930,83 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   {" "}({emitidoEmpresa.docs.certificados > 0 ? "📄" : ""}{emitidoEmpresa.docs.informe ? "📋" : ""}{emitidoEmpresa.docs.cuenta ? "💰" : ""}{emitidoEmpresa.docs.custodia ? "📁" : ""})
                 </span>
                 <button
-                  onClick={() => _descargarPaqueteEmpresa()}
-                  title="Descargar los documentos emitidos en un ZIP"
+                  onClick={_abrirSelectorDescarga}
+                  title="Elegir período y documentos a descargar"
                   className="ml-1 bg-gray-800 hover:bg-gray-900 text-white text-[10px] font-black rounded px-2 py-1"
                 >📦 Descargar ZIP</button>
               </div>
             )}
           </div>
+
+          {/* MODAL: selector de período + documentos para el paquete ZIP */}
+          {showDescargaPaquete && (
+            <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 overflow-y-auto no-print">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-4">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="text-lg font-black text-gray-800">📦 Descargar paquete</h3>
+                  <button onClick={() => setShowDescargaPaquete(false)} className="text-gray-400 hover:text-red-500 text-xl font-black">✕</button>
+                </div>
+                <p className="text-xs text-gray-500 mb-3">Elige el período y los documentos a incluir. Cada período conserva sus propios documentos — elegir uno no borra ni afecta a los demás.</p>
+                <div className="space-y-2 mb-4 max-h-56 overflow-y-auto">
+                  {empresaPeriodos.length === 0 && (
+                    <p className="text-xs text-gray-400 italic">No hay períodos publicados para esta empresa.</p>
+                  )}
+                  {empresaPeriodos.map((p) => (
+                    <label
+                      key={p.periodo || "sin-periodo"}
+                      className={`flex items-center gap-2 border rounded-lg px-3 py-2 cursor-pointer ${descargaPeriodoSel === p.periodo ? "border-emerald-500 bg-emerald-50" : "border-gray-200"}`}
+                    >
+                      <input
+                        type="radio"
+                        name="periodoDescargaZip"
+                        checked={descargaPeriodoSel === p.periodo}
+                        onChange={() => {
+                          setDescargaPeriodoSel(p.periodo);
+                          setDescargaDocsSel({
+                            certificados: (p.certificados?.count || 0) > 0,
+                            informe: !!p.informe, cuenta: !!p.cuenta, custodia: !!p.custodia,
+                          });
+                        }}
+                      />
+                      <div className="flex-1 text-xs">
+                        <span className="font-bold">{p.periodo || "Sin período"}</span>
+                        {p.completo
+                          ? <span className="ml-2 text-emerald-700 font-black">✅ Completo</span>
+                          : <span className="ml-2 text-amber-600 font-black">⚠️ Parcial</span>}
+                        <div className="text-[10px] text-gray-500">
+                          {p.certificados?.count || 0} certificado(s)
+                          {p.informe ? " · Informe ✓" : " · sin Informe"}
+                          {p.cuenta ? " · Cuenta ✓" : " · sin Cuenta"}
+                          {p.custodia ? " · Custodia ✓" : " · sin Custodia"}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs font-bold text-gray-700 mb-2">Documentos a incluir:</p>
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  {[["certificados", "📄 Certificados"], ["informe", "📋 Informe"], ["cuenta", "💰 Cuenta de cobro"], ["custodia", "📁 Carta de custodia"]].map(([k, l]) => (
+                    <label key={k} className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={!!descargaDocsSel[k]}
+                        onChange={(e) => setDescargaDocsSel((prev) => ({ ...prev, [k]: e.target.checked }))}
+                      />
+                      {l}
+                    </label>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setShowDescargaPaquete(false)} className="flex-1 py-2 bg-gray-100 rounded-xl text-sm font-bold">Cancelar</button>
+                  <button
+                    disabled={!descargaPeriodoSel}
+                    onClick={() => { setShowDescargaPaquete(false); _descargarPaqueteEmpresa(descargaPeriodoSel, descargaDocsSel); }}
+                    className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-sm font-black disabled:opacity-40 disabled:cursor-not-allowed"
+                  >Descargar ZIP</button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── TABS: Estadísticas | Certificados por empresa ── */}
           {selectedCompanyReport && (
