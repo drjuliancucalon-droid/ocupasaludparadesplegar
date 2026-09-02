@@ -61855,8 +61855,26 @@ body{padding-top:52px;}
                   const codigoAcceso = comp?.portalCode || ("EMP-" + (nitClean ? nitClean.slice(-4) : _randEI(4)) + "-" + _randEI(4));
                   // Guardar documentación completa en Supabase para el portal
                   const mesActual = new Date().toISOString().slice(0, 7);
-                  const informeData = savedInformes.find(i => i.empresaId === emp.empresaId && !i.tipo);
-                  const custodiaData = savedInformes.find(i => i.empresaId === emp.empresaId && i.tipo === "custodia");
+                  // FIX 2026-09-02: antes se tomaba el PRIMER informe/custodia/cuenta
+                  // guardado para la empresa (.find sin filtrar por mes) y se publicaba
+                  // bajo la etiqueta de mesActual — así, un mes nuevo que ya tenía
+                  // certificados frescos terminaba con el informe/cuenta/custodia de
+                  // OTRO mes pegados debajo de su propia etiqueta, sin ningún aviso
+                  // (reportado: "pido lo de HOY y me descarga lo anterior"). Ahora se
+                  // exige que la fecha del documento sea del MISMO mes que se está
+                  // publicando (el más reciente si hay varios); si ninguno coincide,
+                  // se deja sin ese documento (nunca se rellena con uno de otro mes) y
+                  // se avisa antes de enviar.
+                  const _delMes = (fecha) => (fecha || "").slice(0, 7) === mesActual;
+                  const _masReciente = (arr) => [...arr].sort((a, b) => (b.fecha || b.savedAt || b.date || "").localeCompare(a.fecha || a.savedAt || a.date || ""))[0] || null;
+                  const informeData = _masReciente(savedInformes.filter(i => i.empresaId === emp.empresaId && !i.tipo && _delMes(i.fecha)));
+                  const custodiaData = _masReciente(savedInformes.filter(i => i.empresaId === emp.empresaId && i.tipo === "custodia" && _delMes(i.fecha)));
+                  const cuentaDataMes = _masReciente(savedBillsList.filter(b => b && !b._deleted && (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && _delMes(b.date)));
+                  const _faltanEsteMes = [
+                    !informeData && "Informe epidemiológico",
+                    !cuentaDataMes && "Cuenta de cobro",
+                    !custodiaData && "Carta de custodia",
+                  ].filter(Boolean);
                   const certsEmpresa = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada");
                   const portalDocsData = {
                     nit: nitClean,
@@ -61876,26 +61894,26 @@ body{padding-top:52px;}
                         const docsCert = [...new Set(certsEmpresa.map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean))];
                         return { count: docsCert.length, documentos: docsCert };
                       })(),
-                      cuenta: cuentaData ? {
+                      cuenta: cuentaDataMes ? {
                         // Datos base
-                        number: cuentaData.number,
-                        amount: cuentaData.amount,
-                        date: cuentaData.date,
-                        concept: cuentaData.concept,
-                        amountWords: cuentaData.amountWords || "",
+                        number: cuentaDataMes.number,
+                        amount: cuentaDataMes.amount,
+                        date: cuentaDataMes.date,
+                        concept: cuentaDataMes.concept,
+                        amountWords: cuentaDataMes.amountWords || "",
                         pagado: false,
                         comprobante: null,
                         // Cliente
-                        clientName: cuentaData.clientName || emp.empresaNombre,
-                        clientNit: cuentaData.clientNit || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit || ""),
+                        clientName: cuentaDataMes.clientName || emp.empresaNombre,
+                        clientNit: cuentaDataMes.clientNit || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit || ""),
                         // Banco / pago
-                        bankName: cuentaData.bankName || (activeDoctorData?.banco || "BANCOLOMBIA"),
-                        accountType: cuentaData.accountType || (activeDoctorData?.tipoCuenta || "Ahorros"),
+                        bankName: cuentaDataMes.bankName || (activeDoctorData?.banco || "BANCOLOMBIA"),
+                        accountType: cuentaDataMes.accountType || (activeDoctorData?.tipoCuenta || "Ahorros"),
                         // FIX 2026-07-22: el perfil del médico guarda el número de
                         // cuenta en "numeroCuenta" (verificado en D1) — "cuentaBancaria"
                         // no existe en ese objeto, por eso la cuenta de cobro publicada
                         // al portal llegaba sin número de cuenta bancaria.
-                        accountNumber: cuentaData.accountNumber || (activeDoctorData?.numeroCuenta || ""),
+                        accountNumber: cuentaDataMes.accountNumber || (activeDoctorData?.numeroCuenta || ""),
                         rut: activeDoctorData?.cedula || "1061750704",
                         // Médico acreedor
                         doctorNombre: (activeDoctorData?.nombre || "JULIAN CUCALON").toUpperCase(),
@@ -61987,12 +62005,21 @@ body{padding-top:52px;}
                       // ANTI-PÉRDIDA (FIX 2026-06-22): para el periodo actual, preservar lo
                       // que YA estaba emitido si el dato local viene nulo. Evita que un
                       // re-envío con estado local incompleto borre informe/cuenta/custodia.
+                      // FIX 2026-09-02: antes rescataba _oldSame.informe/cuenta/custodia
+                      // SIN verificar su propia fecha — si ese registro ya estaba
+                      // contaminado por el bug de selección sin filtro de mes (ver arriba),
+                      // este "rescate" habría perpetuado esos datos de OTRO mes para
+                      // siempre, republicación tras republicación. Ahora solo rescata si
+                      // el documento guardado ahí es realmente de este mes; si no, se dejan
+                      // null a propósito (y _faltanEsteMes ya avisa de esto arriba) — con
+                      // esto la próxima vez que se publique, un registro contaminado por
+                      // el bug anterior se autocorrige en vez de perpetuarse.
                       const _oldSame = (_existVal.periodos || []).find(p => p.periodo === mesActual);
                       if (_oldSame) {
                         const np = portalDocsData.periodos[0];
-                        np.informe = np.informe || _oldSame.informe || null;
-                        np.cuenta = np.cuenta || _oldSame.cuenta || null;
-                        np.custodia = np.custodia || _oldSame.custodia || null;
+                        if (!np.informe && _delMes(_oldSame.informe?.fecha)) np.informe = _oldSame.informe;
+                        if (!np.cuenta && _delMes(_oldSame.cuenta?.date)) np.cuenta = _oldSame.cuenta;
+                        if (!np.custodia && _delMes(_oldSame.custodia?.fecha)) np.custodia = _oldSame.custodia;
                         if (!(np.certificados && np.certificados.count) && _oldSame.certificados) np.certificados = _oldSame.certificados;
                       }
                       if (_existVal.periodos) {
@@ -62032,10 +62059,10 @@ body{padding-top:52px;}
                     `ocupacional correspondiente a su empresa y ponemos a su`,
                     `disposición la documentación completa:`,
                     ``,
-                    `  • Informe Epidemiológico ............. ${emp.totalPacientes} trabajador(es)`,
+                    `  • Informe Epidemiológico ............. ${informeData ? emp.totalPacientes + " trabajador(es)" : "⚠️ no generado este mes"}`,
                     `  • Certificados de Aptitud Laboral .... ${certCount} certificado(s)`,
-                    `  • Cuenta de Cobro ................... No. ${String(cuentaData?.number||"0").padStart(3,"0")} — $${Number(cuentaData?.amount||0).toLocaleString("es-CO")}`,
-                    `  • Carta de Custodia de Historias ..... Incluida`,
+                    `  • Cuenta de Cobro ................... ${cuentaDataMes ? "No. " + String(cuentaDataMes.number||"0").padStart(3,"0") + " — $" + Number(cuentaDataMes.amount||0).toLocaleString("es-CO") : "⚠️ no generada este mes"}`,
+                    `  • Carta de Custodia de Historias ..... ${custodiaData ? "Incluida" : "⚠️ no generada este mes"}`,
                     ``,
                     _sep,
                     `ACCESO AL PORTAL DE DOCUMENTOS`,
@@ -62071,15 +62098,24 @@ body{padding-top:52px;}
                     `Res. 1843/2025 · Ley 1581/2012`,
                     `La información es confidencial y de uso exclusivo del destinatario.`,
                   ].filter(l => l !== undefined).join("\n");
-                  const extraHTML = `<p style="font-size:12px;color:#065f46;font-weight:900;margin:0 0 10px;">📦 Documentación completa — ${emp.empresaNombre}</p><table style="width:100%;border-collapse:collapse;"><tbody><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📋 Informe Epidemiológico</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">${emp.totalPacientes} trabajadores</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📄 Certificados</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">${certCount} certificados</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">💰 Cuenta de Cobro</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">No. ${cuentaData?.number || "—"} · $${Number(cuentaData?.amount || 0).toLocaleString("es-CO")}</td></tr><tr><td style="padding:8px;font-size:12px;">📁 Carta de Custodia</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">✅</td></tr></tbody></table><div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;margin-top:12px;text-align:center;"><p style="font-size:10px;color:#065f46;font-weight:700;margin:0;">🔑 Código de acceso empresarial</p><p style="font-size:18px;font-family:monospace;font-weight:900;color:#065f46;margin:4px 0 0;letter-spacing:2px;">${codAccFinal}</p></div>`;
+                  const _okBadge = `<span style="color:#065f46;font-weight:700;">✅</span>`;
+                  const _faltaBadge = `<span style="color:#b45309;font-weight:700;">⚠️ no generado este mes</span>`;
+                  const extraHTML = `<p style="font-size:12px;color:#065f46;font-weight:900;margin:0 0 10px;">📦 Documentación completa — ${emp.empresaNombre}</p><table style="width:100%;border-collapse:collapse;"><tbody><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📋 Informe Epidemiológico</td><td style="padding:8px;font-size:11px;">${informeData ? emp.totalPacientes + " trabajadores" : _faltaBadge}</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📄 Certificados</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">${certCount} certificados</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">💰 Cuenta de Cobro</td><td style="padding:8px;font-size:11px;">${cuentaDataMes ? `<span style="color:#065f46;font-weight:700;">No. ${cuentaDataMes.number || "—"} · $${Number(cuentaDataMes.amount || 0).toLocaleString("es-CO")}</span>` : _faltaBadge}</td></tr><tr><td style="padding:8px;font-size:12px;">📁 Carta de Custodia</td><td style="padding:8px;font-size:11px;">${custodiaData ? _okBadge : _faltaBadge}</td></tr></tbody></table><div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;margin-top:12px;text-align:center;"><p style="font-size:10px;color:#065f46;font-weight:700;margin:0;">🔑 Código de acceso empresarial</p><p style="font-size:18px;font-family:monospace;font-weight:900;color:#065f46;margin:4px 0 0;letter-spacing:2px;">${codAccFinal}</p></div>`;
                   const htmlBody = _generarEmailHTML("encargado de SST", nitEmp, portalUrl, extraHTML, true);
                   const emailEmp = comp?.emailContacto || comp?.email || "";
+                  // FIX 2026-09-02: avisar explícitamente si algún documento se quedó
+                  // FUERA de este envío por no tener nada generado para el mes que se
+                  // está publicando (mesActual) — antes esto pasaba en silencio y el
+                  // médico creía haber enviado todo.
+                  const _avisoFaltantes = _faltanEsteMes.length
+                    ? `\n\n⚠️ Se publicó SIN estos documentos porque no hay ninguno generado para ${mesActual} (se dejaron vacíos, no se usó uno de otro mes):\n• ${_faltanEsteMes.join("\n• ")}`
+                    : "";
                   if (emailEmp) {
                     _enviarEmail(emailEmp, subject, body, htmlBody);
-                    showAlert(`✅ Documentación enviada a ${emailEmp}\n\n🔑 Código de acceso: ${codAccFinal}\n\nLa empresa puede acceder al portal con su NIT para ver y descargar todos los documentos.`);
+                    showAlert(`✅ Documentación enviada a ${emailEmp}\n\n🔑 Código de acceso: ${codAccFinal}\n\nLa empresa puede acceder al portal con su NIT para ver y descargar todos los documentos.${_avisoFaltantes}`);
                   } else {
                     showPrompt("Email de la empresa:", (em) => {
-                      if (em) { _enviarEmail(em, subject, body, htmlBody); showAlert(`✅ Enviado a ${em}\n🔑 Código: ${codAccFinal}`); }
+                      if (em) { _enviarEmail(em, subject, body, htmlBody); showAlert(`✅ Enviado a ${em}\n🔑 Código: ${codAccFinal}${_avisoFaltantes}`); }
                     });
                   }
                   setShowEnvioIntegral(false);
