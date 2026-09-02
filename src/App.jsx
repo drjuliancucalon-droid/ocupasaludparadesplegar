@@ -14780,20 +14780,59 @@ const _htmlToPdfBlobMod = (htmlContent, singlePage, expectMarker) => new Promise
       ifr.style.height = sh + "px";
       // dos frames para que el reflow por la nueva altura quede aplicado
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const canvas = await html2canvas(iDoc.body, { scale: 2, useCORS: true, allowTaint: true, backgroundColor: "#ffffff", width: 816, windowWidth: 816, scrollX: 0, scrollY: 0, height: sh, windowHeight: sh });
+      // FIX 2026-09-02: recolectar ANTES de rasterizar los bloques marcados
+      // `page-break-inside:avoid` (tarjetas, cajas, filas de tabla). Esta
+      // función pagina recortando el canvas por PÍXELES a intervalos fijos —
+      // las reglas CSS de paginación del navegador solo se aplican en
+      // window.print(), nunca aquí — así que sin esto una caja alta (ej. el
+      // bloque de Análisis IA de un informe) podía cortarse justo por la
+      // mitad donde cayera el borde de página, dejando un recuadro vacío al
+      // inicio de una hoja y el resto del contenido sin su encabezado.
+      const _scale = 2;
+      const _atomicBlocks = [...iDoc.querySelectorAll('[style*="page-break-inside:avoid"], [style*="page-break-inside: avoid"]')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((r) => r.height > 0)
+        .map((r) => ({ top: Math.round(r.top * _scale), bottom: Math.round(r.bottom * _scale) }))
+        .sort((a, b) => a.top - b.top);
+      const canvas = await html2canvas(iDoc.body, { scale: _scale, useCORS: true, allowTaint: true, backgroundColor: "#ffffff", width: 816, windowWidth: 816, scrollX: 0, scrollY: 0, height: sh, windowHeight: sh });
       const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
       const pW = pdf.internal.pageSize.getWidth(), pH = pdf.internal.pageSize.getHeight();
       const mg = 12, cW = pW - mg * 2, pcH = pH - mg * 2;
       const pxPerMm = canvas.width / cW, pcHpx = Math.round(pcH * pxPerMm);
       let totalPages = Math.ceil(canvas.height / pcHpx);
       if (singlePage && totalPages > 1 && _tryFitCanvasOnePage(pdf, canvas, mg, cW, pcHpx, pxPerMm)) totalPages = 0;
-      for (let pg = 0; pg < totalPages; pg++) {
-        if (pg > 0) pdf.addPage();
-        const y0 = pg * pcHpx, y1 = Math.min(y0 + pcHpx, canvas.height), slicePx = y1 - y0;
-        const tmp = document.createElement("canvas"); tmp.width = canvas.width; tmp.height = slicePx;
-        const ctx = tmp.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, tmp.width, tmp.height);
-        ctx.drawImage(canvas, 0, y0, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
-        pdf.addImage(tmp.toDataURL("image/jpeg", 0.92), "JPEG", mg, mg, cW, slicePx / pxPerMm);
+      if (totalPages > 0) {
+        // Cortes "inteligentes": el corte por defecto (cada pcHpx) se retrocede
+        // hasta justo antes de cualquier bloque no-partible que atraviese —
+        // ese bloque completo pasa entero a la página siguiente. Si un bloque
+        // es más alto que una página completa no hay forma de evitar partirlo
+        // (se usa el corte fijo tal cual, para no generar páginas vacías).
+        const cuts = [0];
+        let cursor = 0;
+        while (cursor < canvas.height) {
+          let next = Math.min(cursor + pcHpx, canvas.height);
+          if (next < canvas.height) {
+            let shrunk = true;
+            while (shrunk) {
+              shrunk = false;
+              for (const b of _atomicBlocks) {
+                if (b.top < next && b.bottom > next && b.top > cursor) { next = b.top; shrunk = true; }
+              }
+            }
+            if (next <= cursor) next = Math.min(cursor + pcHpx, canvas.height);
+          }
+          cuts.push(next);
+          cursor = next;
+        }
+        totalPages = cuts.length - 1;
+        for (let pg = 0; pg < totalPages; pg++) {
+          if (pg > 0) pdf.addPage();
+          const y0 = cuts[pg], y1 = cuts[pg + 1], slicePx = y1 - y0;
+          const tmp = document.createElement("canvas"); tmp.width = canvas.width; tmp.height = slicePx;
+          const ctx = tmp.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, tmp.width, tmp.height);
+          ctx.drawImage(canvas, 0, y0, canvas.width, slicePx, 0, 0, canvas.width, slicePx);
+          pdf.addImage(tmp.toDataURL("image/jpeg", 0.92), "JPEG", mg, mg, cW, slicePx / pxPerMm);
+        }
       }
       settle(resolve, pdf.output("blob"));
     } catch (e) { settle(reject, e); }
@@ -15007,7 +15046,7 @@ const _infStatBar = (dat, color, total) => {
 const _infBlocks = (arr, total) => {
   const cards = arr.filter(t => t.data && Object.keys(t.data).length > 0).map(t => {
     const C = _INF_COLORS[t.color] || _INF_COLORS.blue;
-    return `<div style="width:${_INF_COL_W}px;box-sizing:border-box;background:${C.bg};border-radius:12px;padding:12px;border:1px solid ${C.bd};">
+    return `<div style="width:${_INF_COL_W}px;box-sizing:border-box;background:${C.bg};border-radius:12px;padding:12px;border:1px solid ${C.bd};page-break-inside:avoid;">
       <h4 style="font-weight:700;color:${C.txd};margin:0 0 8px;text-transform:uppercase;font-size:11px;">${t.title}</h4>
       ${_infStatBar(t.data, t.color, total)}
     </div>`;
@@ -15027,7 +15066,12 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
   const kpi = (l, v, color) => { const C = _INF_COLORS[color]; return `<div style="flex:1;background:${C.bg};border:1px solid ${C.bd};border-radius:12px;padding:12px;text-align:center;"><p style="font-size:8pt;color:#6b7280;text-transform:uppercase;font-weight:700;margin:0;">${l}</p><p style="font-size:26pt;font-weight:900;color:${C.bar};margin:4px 0 0;">${v}</p></div>`; };
   const hasStats = Object.keys(stats).length > 0 && total > 0;
   const ai = aiResult || {};
-  const aiBlock = (bg, bd, txd, title, body) => `<div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:14px;margin-bottom:12px;"><p style="font-weight:900;color:${txd};font-size:9pt;text-transform:uppercase;margin:0 0 8px;">${title}</p><div style="font-size:9pt;text-align:justify;color:${txd};line-height:1.6;white-space:pre-wrap;">${_sanitize(body)}</div></div>`;
+  // FIX 2026-09-02: `page-break-inside:avoid` en las cajas con borde/fondo —
+  // esta función se convierte a PDF con html2canvas + recorte por píxeles
+  // (_htmlToPdfBlobMod), que NO aplica paginación CSS del navegador. Sin esta
+  // marca, cualquier caja alta podía cortarse justo por la mitad al caer ahí
+  // el borde de página, dejando un recuadro vacío al inicio de una hoja.
+  const aiBlock = (bg, bd, txd, title, body) => `<div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:14px;margin-bottom:12px;page-break-inside:avoid;"><p style="font-weight:900;color:${txd};font-size:9pt;text-transform:uppercase;margin:0 0 8px;">${title}</p><div style="font-size:9pt;text-align:justify;color:${txd};line-height:1.6;white-space:pre-wrap;">${_sanitize(body)}</div></div>`;
   return `<div style="font-family:'Arial','Helvetica',sans-serif;color:#1f2937;background:#fff;width:816px;padding:40px 44px;box-sizing:border-box;">
     <!-- Encabezado -->
     <div style="text-align:center;margin-bottom:24px;">
@@ -15038,7 +15082,7 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
         ${informe.fecha ? `<p style="font-size:9pt;color:#9ca3af;margin:2px 0 0;">Período: ${_sanitize(informe.fecha)}</p>` : ""}
       </div>
     </div>
-    ${informe.resumen ? `<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:14px;margin-bottom:16px;"><p style="font-size:8pt;font-weight:900;color:#3730a3;text-transform:uppercase;margin:0 0 6px;">📝 Resumen Ejecutivo</p><p style="font-size:9pt;color:#312e81;line-height:1.6;margin:0;">${_sanitize(informe.resumen)}</p></div>` : ""}
+    ${informe.resumen ? `<div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:14px;margin-bottom:16px;page-break-inside:avoid;"><p style="font-size:8pt;font-weight:900;color:#3730a3;text-transform:uppercase;margin:0 0 6px;">📝 Resumen Ejecutivo</p><p style="font-size:9pt;color:#312e81;line-height:1.6;margin:0;">${_sanitize(informe.resumen)}</p></div>` : ""}
     ${total > 0 ? `<div style="display:flex;gap:12px;margin-bottom:24px;text-align:center;">${kpi("Total evaluados", total, "blue")}${kpi("Aptos", aptos, "emerald")}${kpi("Con restricciones", conRestr, "amber")}${kpi("No aptos", noAptos, "red")}</div>` : ""}
     ${hasStats ? `
     <div style="margin-bottom:20px;">
@@ -15069,7 +15113,7 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
         <tbody>${pacientes.map((p, i) => {
           const cap = (p.conceptoAptitud || "").toLowerCase();
           const badge = cap.includes("no apto") ? "background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;" : cap.includes("condic") ? "background:#fef3c7;color:#92400e;border:1px solid #fcd34d;" : "background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;";
-          return `<tr style="border-bottom:1px solid #e5e7eb;background:${i % 2 === 0 ? "#fff" : "#f9fafb"};vertical-align:top;">
+          return `<tr style="border-bottom:1px solid #e5e7eb;background:${i % 2 === 0 ? "#fff" : "#f9fafb"};vertical-align:top;page-break-inside:avoid;">
             <td style="padding:7px;"><p style="font-weight:700;color:#1e3a8a;margin:0;">${_sanitize(p.docNumero || "")}</p><p style="color:#4b5563;font-size:8pt;margin:0;">${_sanitize((p.nombres || "").substring(0, 28))}</p></td>
             <td style="padding:7px;text-align:center;">${_sanitize(p.edad || "--")}</td>
             <td style="padding:7px;color:#374151;">${_sanitize(p.diagnosticoPrincipal || "Z10.0")}</td>
@@ -15082,13 +15126,13 @@ const _buildInformeHTMLMod = (informe, d, empName) => {
     ${aiResult ? `
     <div style="background:#eef2ff;border:1px solid #c7d2fe;border-radius:12px;padding:14px;margin-bottom:16px;">
       <h3 style="font-weight:900;color:#3730a3;font-size:9pt;text-transform:uppercase;margin:0 0 12px;">🤖 Análisis Inteligente IA</h3>
-      ${ai.resumenEjecutivo ? `<div style="background:#fff;padding:12px;border-radius:8px;border:1px solid #c7d2fe;margin-bottom:12px;font-size:9pt;font-weight:700;color:#312e81;">${_sanitize(ai.resumenEjecutivo)}</div>` : ""}
+      ${ai.resumenEjecutivo ? `<div style="background:#fff;padding:12px;border-radius:8px;border:1px solid #c7d2fe;margin-bottom:12px;font-size:9pt;font-weight:700;color:#312e81;page-break-inside:avoid;">${_sanitize(ai.resumenEjecutivo)}</div>` : ""}
       ${ai.conclusiones ? `<div style="font-size:9pt;text-align:justify;color:#374151;line-height:1.6;white-space:pre-wrap;margin-bottom:12px;">${_sanitize(ai.conclusiones)}</div>` : ""}
       ${ai.analisisJustificado ? aiBlock("#fffbeb", "#fde68a", "#92400e", "Análisis Justificado — Interpretación Epidemiológica", ai.analisisJustificado) : ""}
       ${ai.recomendacionesInforme ? aiBlock("#ecfdf5", "#a7f3d0", "#065f46", "Recomendaciones — Acciones Correctivas y PVE", ai.recomendacionesInforme) : ""}
-      ${(ai.tabla && ai.tabla.length > 0) ? `<div style="margin-bottom:12px;"><p style="font-weight:900;color:#374151;font-size:9pt;text-transform:uppercase;margin:0 0 8px;">📊 Morbilidad Prevalente</p><table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #d1d5db;"><thead><tr style="background:#1e293b;color:#fff;"><th style="padding:8px;text-align:left;">Diagnóstico (CIE-10)</th><th style="padding:8px;text-align:center;">Casos</th><th style="padding:8px;text-align:center;">%</th><th style="padding:8px;text-align:left;">Relación</th></tr></thead><tbody>${ai.tabla.map((r, i) => `<tr style="background:${i % 2 === 0 ? "#fff" : "#f9fafb"};"><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-weight:600;">${_sanitize(r.diagnostico)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;">${_sanitize(r.cantidad)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;color:#4338ca;">${_sanitize(r.porcentaje)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#4b5563;">${_sanitize(r.relacion || "—")}</td></tr>`).join("")}</tbody></table></div>` : ""}
-      ${ai.matrizLegalNormativa ? `<div style="margin-top:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px;font-size:9pt;color:#1e3a8a;"><p style="font-weight:900;margin:0 0 8px;text-transform:uppercase;color:#1e40af;">Cumplimiento Normativo</p><p style="text-align:justify;line-height:1.6;margin:0;">${_sanitize(ai.matrizLegalNormativa)}</p></div>` : ""}
-      ${(ai.pveRecomendados && ai.pveRecomendados.length > 0) ? `<div style="margin-top:12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:14px;font-size:9pt;"><p style="font-weight:900;color:#115e59;text-transform:uppercase;margin:0 0 8px;">Programas de Vigilancia Epidemiológica Recomendados</p><div style="display:flex;flex-wrap:wrap;gap:8px;">${ai.pveRecomendados.map(pve => `<div style="width:340px;box-sizing:border-box;display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ccfbf1;border-radius:8px;padding:8px 12px;"><span style="color:#0d9488;font-weight:700;">✓</span><span style="color:#115e59;font-weight:600;">${_sanitize(pve)}</span></div>`).join("")}</div></div>` : ""}
+      ${(ai.tabla && ai.tabla.length > 0) ? `<div style="margin-bottom:12px;"><p style="font-weight:900;color:#374151;font-size:9pt;text-transform:uppercase;margin:0 0 8px;">📊 Morbilidad Prevalente</p><table style="width:100%;border-collapse:collapse;font-size:8.5pt;border:1px solid #d1d5db;"><thead><tr style="background:#1e293b;color:#fff;"><th style="padding:8px;text-align:left;">Diagnóstico (CIE-10)</th><th style="padding:8px;text-align:center;">Casos</th><th style="padding:8px;text-align:center;">%</th><th style="padding:8px;text-align:left;">Relación</th></tr></thead><tbody>${ai.tabla.map((r, i) => `<tr style="background:${i % 2 === 0 ? "#fff" : "#f9fafb"};page-break-inside:avoid;"><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;font-weight:600;">${_sanitize(r.diagnostico)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;">${_sanitize(r.cantidad)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:700;color:#4338ca;">${_sanitize(r.porcentaje)}</td><td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;color:#4b5563;">${_sanitize(r.relacion || "—")}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${ai.matrizLegalNormativa ? `<div style="margin-top:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:14px;font-size:9pt;color:#1e3a8a;page-break-inside:avoid;"><p style="font-weight:900;margin:0 0 8px;text-transform:uppercase;color:#1e40af;">Cumplimiento Normativo</p><p style="text-align:justify;line-height:1.6;margin:0;">${_sanitize(ai.matrizLegalNormativa)}</p></div>` : ""}
+      ${(ai.pveRecomendados && ai.pveRecomendados.length > 0) ? `<div style="margin-top:12px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;padding:14px;font-size:9pt;page-break-inside:avoid;"><p style="font-weight:900;color:#115e59;text-transform:uppercase;margin:0 0 8px;">Programas de Vigilancia Epidemiológica Recomendados</p><div style="display:flex;flex-wrap:wrap;gap:8px;">${ai.pveRecomendados.map(pve => `<div style="width:340px;box-sizing:border-box;display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #ccfbf1;border-radius:8px;padding:8px 12px;"><span style="color:#0d9488;font-weight:700;">✓</span><span style="color:#115e59;font-weight:600;">${_sanitize(pve)}</span></div>`).join("")}</div></div>` : ""}
     </div>` : ""}
   </div>`;
 };
