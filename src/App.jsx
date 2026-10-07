@@ -19867,6 +19867,56 @@ function AppInner() {
   const [atencEstado, setAtencEstado] = useState("");
   const [atencTipo, setAtencTipo] = useState("");
   const [atencBusq, setAtencBusq] = useState("");
+  const [atencVerDuplicados, setAtencVerDuplicados] = useState(false);
+  // Borradores de historias clínicas EN CURSO (todavía sin presionar Guardar).
+  // Un paciente solo entra a `patientsList` al guardar; mientras se le atiende
+  // existe únicamente como borrador (autoguardado local `siso_autosave_<id>` y
+  // en la nube `siso_autosave_cloud_<usuario>_<id>`), por eso no aparecía en
+  // Reportes (caso real: una trabajadora de ingreso atendida a las 21:40).
+  // Solo lectura — no escribe nada.
+  const [atencBorradores, setAtencBorradores] = useState([]);
+  useEffect(() => {
+    if (view !== "reporte" || reporteActiveTab !== "atenciones") return;
+    let cancelado = false;
+    const _limiteMs = Date.now() - 45 * 24 * 60 * 60 * 1000; // ignora borradores abandonados hace >45 días
+    const cargar = async () => {
+      const porId = new Map();
+      const sumar = (v, ts) => {
+        if (!v || typeof v !== "object" || !String(v.nombres || "").trim() || !v.id) return;
+        if (ts && Date.parse(ts) < _limiteMs) return;
+        const id = String(v.id);
+        const prev = porId.get(id);
+        if (prev && String(prev._tsBorrador || "") >= String(ts || "")) return;
+        porId.set(id, { ...v, _esBorrador: true, _tsBorrador: ts || "" });
+      };
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k || !k.startsWith("siso_autosave_") || k.startsWith("siso_autosave_cloud_")) continue;
+          try { const v = JSON.parse(localStorage.getItem(k) || "null"); sumar(v, v?._autoSaved); } catch {}
+        }
+      } catch {}
+      if (_WORKER_TOKEN) {
+        try {
+          // El administrador ve los borradores de todos; el resto solo los suyos.
+          const prefijo = _isAdmin(currentUser?.role) ? "siso_autosave_cloud_" : `siso_autosave_cloud_${currentUser?.user || "anon"}_`;
+          const r = await fetch(`${_WORKER_URL}/store/prefix/${encodeURIComponent(prefijo)}`, { headers: { "X-Siso-Token": _WORKER_TOKEN } });
+          if (r.ok) {
+            const rows = await r.json();
+            for (const row of rows) {
+              let v = row.value;
+              if (typeof v === "string") { try { v = JSON.parse(v); } catch { continue; } }
+              sumar(v, v?._cloudSaved);
+            }
+          }
+        } catch {}
+      }
+      if (!cancelado) setAtencBorradores([...porId.values()]);
+    };
+    cargar();
+    const iv = setInterval(cargar, 60000);
+    return () => { cancelado = true; clearInterval(iv); };
+  }, [view, reporteActiveTab, currentUser]);
   const [certSelected, setCertSelected] = useState({}); // {[patientId]: bool}
   const [reportStartDate, setReportStartDate] = useState("");
   const [reportEndDate, setReportEndDate] = useState("");
@@ -35124,18 +35174,51 @@ Esta historia clínica debe conservarse mínimo 20 años.
             const _q = _normBusq(atencBusq).trim();
             const _medNombre = (id) => { const u = usersList.find((x) => x.user === id); return u ? (u.name || u.user) : (id || "—"); };
             const _empNombre = (p) => p.empresaNombre || companies.find((c) => c.id === p.empresaId)?.nombre || (p.type === "general" ? "Particular" : "Sin empresa");
-            const _estadoDe = (p) => p.estadoHistoria || "Sin estado";
-            const base = patientsList
-              .filter((p) => p && !p._archivado)
-              .map((p) => ({ p, f: _fechaAtencionPaciente(p) }))
+            const _estadoDe = (p) => (p._esBorrador ? "Borrador (sin guardar)" : (p.estadoHistoria || "Sin estado"));
+            const _fechaDe = (p) => _fechaAtencionPaciente(p) || String(p._tsBorrador || "").slice(0, 10);
+            // Qué tan "avanzado" está un registro: cerrada > abierta > borrador >
+            // pre-registro (un pre-registro es solo un cupo, no una atención).
+            const _nivel = (p) => (p._esBorrador ? 2 : p.estadoHistoria === "Cerrada" ? 4 : p.estadoHistoria === "Abierta" ? 3 : 1);
+            const _esVisto = (p) => _nivel(p) >= 2;
+            const _cedulaDe = (p) => String(p.docNumero || "").replace(/\s/g, "") || String(p.id);
+            const _hoy = _fechaLocalISO();
+            // Universo = pacientes guardados + borradores en curso, con las mismas
+            // restricciones de rol/empresa/médico de siempre (sin filtro de fecha).
+            const universo = [...patientsList.filter((p) => p && !p._archivado), ...atencBorradores]
+              .map((p) => ({ p, f: _fechaDe(p) }))
               .filter(({ p, f }) =>
                 f &&
-                (!atencStart || f >= atencStart) &&
-                (!atencEnd || f <= atencEnd) &&
                 (!_empFiltro || p.empresaId === _empFiltro) &&
-                (!selectedMedicoReport || p._medicoId === selectedMedicoReport) &&
+                (!selectedMedicoReport || (p._medicoId || p._userId) === selectedMedicoReport) &&
                 (!_secMedVisibles || _secMedVisibles.includes(p._medicoId) || !p._medicoId)
               );
+            // Una misma persona suele tener varios registros el mismo día (el
+            // pre-registro de la encuesta + la historia real + el borrador). Se
+            // conserva el más avanzado por persona + empresa + día.
+            const _claveDe = ({ p, f }) => {
+              const c = String(p.docNumero || "").replace(/\s/g, "");
+              const emp = _normBusq(p.empresaNombre).trim() || String(p.empresaId || "");
+              return c ? `${c}|${f}|${emp}` : `id|${p.id}|${f}`;
+            };
+            const _mejor = new Map();
+            let ocultos = 0;
+            for (const r of universo) {
+              const k = _claveDe(r);
+              const cur = _mejor.get(k);
+              if (!cur) { _mejor.set(k, r); continue; }
+              ocultos++;
+              if (_nivel(r.p) > _nivel(cur.p)) _mejor.set(k, r);
+            }
+            const unico = atencVerDuplicados ? universo : [..._mejor.values()];
+            // "Vistos hoy": siempre sobre los registros ya depurados, sin importar
+            // el rango de fechas ni el interruptor de duplicados.
+            const hoyUnico = [..._mejor.values()].filter(({ f }) => f === _hoy);
+            const _personas = (arr) => new Set(arr.filter(({ p }) => _esVisto(p)).map(({ p }) => _cedulaDe(p))).size;
+            const vistosHoy = _personas(hoyUnico);
+            const hoyCerradas = hoyUnico.filter(({ p }) => !p._esBorrador && p.estadoHistoria === "Cerrada").length;
+            const hoyEnConsulta = hoyUnico.filter(({ p }) => _esVisto(p) && !(!p._esBorrador && p.estadoHistoria === "Cerrada")).length;
+            const hoyPre = hoyUnico.filter(({ p }) => !_esVisto(p)).length;
+            const base = unico.filter(({ f }) => (!atencStart || f >= atencStart) && (!atencEnd || f <= atencEnd));
             const estados = [...new Set(base.map(({ p }) => _estadoDe(p)))].sort();
             const tipos = [...new Set(base.map(({ p }) => _tipoAtencionLabel(p)))].sort();
             const filas = base
@@ -35151,10 +35234,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
               if (last && last.f === r.f) last.items.push(r.p);
               else grupos.push({ f: r.f, items: [r.p] });
             }
-            const unicos = new Set(filas.map(({ p }) => (p.docNumero || "").replace(/\s/g, "") || String(p.id))).size;
+            const unicos = _personas(filas); // pacientes distintos realmente vistos (sin contar pre-registros)
             const _fmtDia = (f) => { try { return new Date(f + "T12:00:00").toLocaleDateString("es-CO", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }); } catch { return f; } };
             const _rango = atencStart || atencEnd ? `${atencStart || "…"} a ${atencEnd || "…"}` : "todo el historial";
-            const _hoy = _fechaLocalISO();
             const _d = new Date();
             const _mesIni = _fechaLocalISO(new Date(_d.getFullYear(), _d.getMonth(), 1));
             const _mesAntIni = _fechaLocalISO(new Date(_d.getFullYear(), _d.getMonth() - 1, 1));
@@ -35209,6 +35291,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
                     <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Buscar</label>
                     <input type="text" placeholder="Nombre, cédula o empresa..." className="w-full text-xs border rounded p-1.5" value={atencBusq} onChange={(e) => setAtencBusq(e.target.value)} />
                   </div>
+                  <label className="flex items-center gap-1.5 text-[11px] text-gray-600 pb-2 cursor-pointer" title="Un mismo trabajador puede tener un pre-registro, la historia y un borrador el mismo día; por defecto se muestra solo el más avanzado.">
+                    <input type="checkbox" checked={atencVerDuplicados} onChange={(e) => setAtencVerDuplicados(e.target.checked)} />
+                    Mostrar duplicados{ocultos ? ` (${ocultos})` : ""}
+                  </label>
                   <div className="flex gap-1.5">
                     <button onClick={exportarCSV} disabled={filas.length === 0} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-black disabled:opacity-40 hover:bg-emerald-700">⬇️ Excel (CSV)</button>
                     <button onClick={imprimir} disabled={filas.length === 0} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-xs font-black disabled:opacity-40 hover:bg-slate-800">🖨️ Imprimir</button>
@@ -35216,12 +35302,19 @@ Esta historia clínica debe conservarse mínimo 20 años.
                 </div>
 
                 <div className="flex flex-wrap gap-3 items-center">
+                  <div className="bg-indigo-50 border-2 border-indigo-300 rounded-xl px-4 py-2 text-center">
+                    <p className="text-[10px] font-black text-indigo-600 uppercase">Pacientes vistos hoy</p>
+                    <p className="text-3xl font-black text-indigo-800">{vistosHoy}</p>
+                    <p className="text-[10px] text-indigo-700">
+                      {hoyCerradas} cerradas · {hoyEnConsulta} en consulta o sin guardar{hoyPre ? ` · ${hoyPre} pre-registrados sin atender` : ""}
+                    </p>
+                  </div>
                   <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 text-center">
                     <p className="text-[10px] font-black text-blue-600 uppercase">Atenciones</p>
                     <p className="text-2xl font-black text-blue-800">{filas.length}</p>
                   </div>
                   <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-center">
-                    <p className="text-[10px] font-black text-emerald-600 uppercase">Pacientes</p>
+                    <p className="text-[10px] font-black text-emerald-600 uppercase">Pacientes vistos (período)</p>
                     <p className="text-2xl font-black text-emerald-800">{unicos}</p>
                   </div>
                   <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-center">
@@ -35260,9 +35353,9 @@ Esta historia clínica debe conservarse mínimo 20 años.
                             </tr>
                             {g.items.map((p, i) => {
                               const est = _estadoDe(p);
-                              const estCls = est === "Cerrada" ? "bg-emerald-100 text-emerald-800" : est === "Abierta" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700";
+                              const estCls = p._esBorrador ? "bg-orange-200 text-orange-900" : est === "Cerrada" ? "bg-emerald-100 text-emerald-800" : est === "Abierta" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700";
                               return (
-                                <tr key={`${p.id || p.docNumero}-${i}`} className="border-b border-gray-100 hover:bg-gray-50 align-top">
+                                <tr key={`${p.id || p.docNumero}-${i}`} className={`border-b border-gray-100 hover:bg-gray-50 align-top ${p._esBorrador ? "bg-orange-50" : ""}`}>
                                   <td className="p-2 font-bold text-gray-800">{p.nombres || "—"}</td>
                                   <td className="p-2 text-gray-600 whitespace-nowrap">{p.docNumero || "—"}</td>
                                   <td className="p-2 text-gray-700">{_empNombre(p)}</td>
