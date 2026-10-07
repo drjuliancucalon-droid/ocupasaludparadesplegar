@@ -14668,6 +14668,32 @@ const _generarCertificadoDesdePortal = (portalData) => {
 // Reutilizan generadores existentes. No dependen de scope de componente.
 // ══════════════════════════════════════════════════════════════════════════
 // Abre una ventana imprimible con el HTML dado.
+// ── REPORTES → "Atenciones por fecha" (2026-10) ───────────────────────────
+// Antes Reportes quedaba vacío hasta elegir una empresa, y el filtro exigía
+// `fechaExamen`, por lo que los pacientes de medicina general (que usan
+// `fechaConsulta`) nunca habrían aparecido aunque se quitara la empresa.
+const _fechaLocalISO = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Fecha de la atención, sea ocupacional (fechaExamen) o de medicina general
+// (fechaConsulta); como último recurso la de registro/cierre.
+const _fechaAtencionPaciente = (p) =>
+  String(p?.fechaExamen || p?.fechaConsulta || p?.fechaCierre || p?.fechaRegistro || "").slice(0, 10);
+const _tipoAtencionLabel = (p) =>
+  p?.type === "general" ? "Medicina general" : (p?.tipoExamen || "Ocupacional");
+const _normBusq = (s) =>
+  String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+// CSV con BOM UTF-8 y ';' como separador: es lo que abre bien Excel en
+// configuración regional española/colombiana (con ',' queda todo en 1 columna).
+const _descargarCSV = (nombreArchivo, filas) => {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = "﻿" + filas.map((f) => f.map(esc).join(";")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = nombreArchivo;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+};
+
 const _abrirVentanaPDF = (html, titulo) => {
   const w = window.open("", "_blank", "width=920,height=1150");
   if (!w) { alert("Permita ventanas emergentes para ver/descargar el documento."); return false; }
@@ -19832,7 +19858,15 @@ function AppInner() {
     } catch (e) { showAlert("Error generando el ZIP: " + (e?.message || "")); }
   };
 
-  const [reporteActiveTab, setReporteActiveTab] = useState("estadisticas"); // 'estadisticas' | 'certificados'
+  const [reporteActiveTab, setReporteActiveTab] = useState("atenciones"); // 'atenciones' | 'estadisticas' | 'certificados'
+  // Filtros propios de la pestaña "Atenciones por fecha" — NO comparten las
+  // fechas de arriba (reportStartDate/EndDate): esas vacías significan "todo
+  // el historial" para Estadísticas, y aquí el valor por defecto es el mes en curso.
+  const [atencStart, setAtencStart] = useState(() => { const d = new Date(); return _fechaLocalISO(new Date(d.getFullYear(), d.getMonth(), 1)); });
+  const [atencEnd, setAtencEnd] = useState(() => _fechaLocalISO());
+  const [atencEstado, setAtencEstado] = useState("");
+  const [atencTipo, setAtencTipo] = useState("");
+  const [atencBusq, setAtencBusq] = useState("");
   const [certSelected, setCertSelected] = useState({}); // {[patientId]: bool}
   const [reportStartDate, setReportStartDate] = useState("");
   const [reportEndDate, setReportEndDate] = useState("");
@@ -29344,7 +29378,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
               <button
                 onClick={() =>
                   _canUse("reportes_basicos", currentUser)
-                    ? goTo("reporte")
+                    ? (setReporteActiveTab("atenciones"), goTo("reporte"))
                     : showAlert("🔒 Reportes disponible en plan Starter+")
                 }
                 className="bg-white border border-gray-100 rounded-xl p-3 flex items-center gap-2.5 hover:border-indigo-200 hover:bg-indigo-50/40 transition group shadow-sm"
@@ -34673,19 +34707,23 @@ Esta historia clínica debe conservarse mínimo 20 años.
               {/* FIX 2026-07-22: cambiar el rango de fechas sin limpiar reportAIResult
                   permitía "Guardar Informe" con un análisis de IA generado para un
                   período distinto al que realmente se está guardando/publicando. */}
-              <input
-                type="date"
-                className="text-xs border rounded p-1.5"
-                value={reportStartDate}
-                onChange={(e) => { setReportStartDate(e.target.value); setReportAIResult(null); }}
-              />
-              <span className="text-gray-400 text-xs">--</span>
-              <input
-                type="date"
-                className="text-xs border rounded p-1.5"
-                value={reportEndDate}
-                onChange={(e) => { setReportEndDate(e.target.value); setReportAIResult(null); }}
-              />
+              {reporteActiveTab !== "atenciones" && (
+                <>
+                  <input
+                    type="date"
+                    className="text-xs border rounded p-1.5"
+                    value={reportStartDate}
+                    onChange={(e) => { setReportStartDate(e.target.value); setReportAIResult(null); }}
+                  />
+                  <span className="text-gray-400 text-xs">--</span>
+                  <input
+                    type="date"
+                    className="text-xs border rounded p-1.5"
+                    value={reportEndDate}
+                    onChange={(e) => { setReportEndDate(e.target.value); setReportAIResult(null); }}
+                  />
+                </>
+              )}
               <select
                 className="border rounded p-1.5 text-sm max-w-[200px]"
                 value={selectedCompanyReport}
@@ -34694,7 +34732,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                   setReportAIResult(null);
                 }}
               >
-                <option value="">Seleccione empresa...</option>
+                <option value="">{reporteActiveTab === "atenciones" ? "Todas las empresas" : "Seleccione empresa..."}</option>
                 {(currentUser?.empresaId
                   ? companies.filter((c) => c.id === currentUser.empresaId)
                   : companies
@@ -35053,9 +35091,10 @@ Esta historia clínica debe conservarse mínimo 20 años.
           )}
 
           {/* ── TABS: Estadísticas | Certificados por empresa ── */}
-          {selectedCompanyReport && (
+          {(
             <div className="flex gap-1 mb-6 border-b border-gray-200 no-print">
               {[
+                { k: "atenciones", l: "📅 Atenciones por fecha" },
                 { k: "estadisticas", l: "📊 Estadísticas y Diagnóstico" },
                 { k: "certificados", l: "📄 Certificados por empresa" },
               ].map((t) => (
@@ -35077,6 +35116,179 @@ Esta historia clínica debe conservarse mínimo 20 años.
             </div>
           )}
 
+          {/* ══ TAB: ATENCIONES POR FECHA — todos los pacientes vistos, no solo por empresa ══ */}
+          {reporteActiveTab === "atenciones" && (() => {
+            // Mismas restricciones de rol que el resto de Reportes: el usuario de
+            // empresa solo ve su empresa y la secretaria solo sus médicos asignados.
+            const _empFiltro = currentUser?.empresaId || selectedCompanyReport;
+            const _q = _normBusq(atencBusq).trim();
+            const _medNombre = (id) => { const u = usersList.find((x) => x.user === id); return u ? (u.name || u.user) : (id || "—"); };
+            const _empNombre = (p) => p.empresaNombre || companies.find((c) => c.id === p.empresaId)?.nombre || (p.type === "general" ? "Particular" : "Sin empresa");
+            const _estadoDe = (p) => p.estadoHistoria || "Sin estado";
+            const base = patientsList
+              .filter((p) => p && !p._archivado)
+              .map((p) => ({ p, f: _fechaAtencionPaciente(p) }))
+              .filter(({ p, f }) =>
+                f &&
+                (!atencStart || f >= atencStart) &&
+                (!atencEnd || f <= atencEnd) &&
+                (!_empFiltro || p.empresaId === _empFiltro) &&
+                (!selectedMedicoReport || p._medicoId === selectedMedicoReport) &&
+                (!_secMedVisibles || _secMedVisibles.includes(p._medicoId) || !p._medicoId)
+              );
+            const estados = [...new Set(base.map(({ p }) => _estadoDe(p)))].sort();
+            const tipos = [...new Set(base.map(({ p }) => _tipoAtencionLabel(p)))].sort();
+            const filas = base
+              .filter(({ p }) =>
+                (!atencEstado || _estadoDe(p) === atencEstado) &&
+                (!atencTipo || _tipoAtencionLabel(p) === atencTipo) &&
+                (!_q || _normBusq(`${p.nombres} ${p.docNumero} ${_empNombre(p)}`).includes(_q))
+              )
+              .sort((a, b) => b.f.localeCompare(a.f) || String(a.p.nombres || "").localeCompare(String(b.p.nombres || "")));
+            const grupos = [];
+            for (const r of filas) {
+              const last = grupos[grupos.length - 1];
+              if (last && last.f === r.f) last.items.push(r.p);
+              else grupos.push({ f: r.f, items: [r.p] });
+            }
+            const unicos = new Set(filas.map(({ p }) => (p.docNumero || "").replace(/\s/g, "") || String(p.id))).size;
+            const _fmtDia = (f) => { try { return new Date(f + "T12:00:00").toLocaleDateString("es-CO", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }); } catch { return f; } };
+            const _rango = atencStart || atencEnd ? `${atencStart || "…"} a ${atencEnd || "…"}` : "todo el historial";
+            const _hoy = _fechaLocalISO();
+            const _d = new Date();
+            const _mesIni = _fechaLocalISO(new Date(_d.getFullYear(), _d.getMonth(), 1));
+            const _mesAntIni = _fechaLocalISO(new Date(_d.getFullYear(), _d.getMonth() - 1, 1));
+            const _mesAntFin = _fechaLocalISO(new Date(_d.getFullYear(), _d.getMonth(), 0));
+            const exportarCSV = () => {
+              const cab = ["Fecha", "Nombre", "Cédula", "Empresa", "Cargo", "Tipo de atención", "Médico", "Estado", "Concepto de aptitud"];
+              const rows = filas.map(({ p, f }) => [f, p.nombres, p.docNumero, _empNombre(p), p.cargo, _tipoAtencionLabel(p), _medNombre(p._medicoId), _estadoDe(p), p.conceptoAptitud]);
+              _descargarCSV(`Atenciones_${atencStart || "inicio"}_a_${atencEnd || "hoy"}.csv`, [cab, ...rows]);
+            };
+            const imprimir = () => {
+              const td = "padding:4px 6px;border-bottom:1px solid #e5e7eb;";
+              const filasHTML = filas.map(({ p, f }) =>
+                `<tr style="page-break-inside:avoid;"><td style="${td}white-space:nowrap;">${_sanitize(f)}</td><td style="${td}">${_sanitize(p.nombres || "")}</td><td style="${td}">${_sanitize(p.docNumero || "")}</td><td style="${td}">${_sanitize(_empNombre(p))}</td><td style="${td}">${_sanitize(_tipoAtencionLabel(p))}</td><td style="${td}">${_sanitize(_medNombre(p._medicoId))}</td><td style="${td}">${_sanitize(_estadoDe(p))}</td></tr>`
+              ).join("");
+              const th = "padding:6px;text-align:left;";
+              const html = `<div style="font-family:Arial,sans-serif;width:100%;max-width:1000px;background:#fff;padding:20px;font-size:11px;"><h2 style="margin:0 0 4px;color:#1e3a8a;">Atenciones por fecha</h2><p style="margin:0 0 10px;color:#6b7280;">Período: ${_sanitize(_rango)} · ${filas.length} atenciones · ${unicos} pacientes</p><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#1e3a8a;color:#fff;"><th style="${th}">Fecha</th><th style="${th}">Nombre</th><th style="${th}">Cédula</th><th style="${th}">Empresa</th><th style="${th}">Tipo</th><th style="${th}">Médico</th><th style="${th}">Estado</th></tr></thead><tbody>${filasHTML}</tbody></table></div>`;
+              _abrirVentanaPDF(html, "Atenciones por fecha");
+            };
+            const _chip = "px-2.5 py-1 rounded-lg text-[11px] font-bold border border-gray-300 bg-white hover:bg-blue-50 hover:border-blue-300";
+            return (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-end gap-3 bg-gray-50 border border-gray-200 rounded-xl p-3 no-print">
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Desde</label>
+                    <input type="date" className="text-xs border rounded p-1.5" value={atencStart} onChange={(e) => setAtencStart(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Hasta</label>
+                    <input type="date" className="text-xs border rounded p-1.5" value={atencEnd} onChange={(e) => setAtencEnd(e.target.value)} />
+                  </div>
+                  <div className="flex gap-1.5 flex-wrap">
+                    <button className={_chip} onClick={() => { setAtencStart(_hoy); setAtencEnd(_hoy); }}>Hoy</button>
+                    <button className={_chip} onClick={() => { setAtencStart(_mesIni); setAtencEnd(_hoy); }}>Este mes</button>
+                    <button className={_chip} onClick={() => { setAtencStart(_mesAntIni); setAtencEnd(_mesAntFin); }}>Mes anterior</button>
+                    <button className={_chip} onClick={() => { setAtencStart(""); setAtencEnd(""); }}>Todo</button>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Estado</label>
+                    <select className="text-xs border rounded p-1.5" value={atencEstado} onChange={(e) => setAtencEstado(e.target.value)}>
+                      <option value="">Todos</option>
+                      {estados.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Tipo</label>
+                    <select className="text-xs border rounded p-1.5" value={atencTipo} onChange={(e) => setAtencTipo(e.target.value)}>
+                      <option value="">Todos</option>
+                      {tipos.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex-1 min-w-[180px]">
+                    <label className="block text-[10px] font-black text-gray-500 uppercase mb-1">Buscar</label>
+                    <input type="text" placeholder="Nombre, cédula o empresa..." className="w-full text-xs border rounded p-1.5" value={atencBusq} onChange={(e) => setAtencBusq(e.target.value)} />
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button onClick={exportarCSV} disabled={filas.length === 0} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-black disabled:opacity-40 hover:bg-emerald-700">⬇️ Excel (CSV)</button>
+                    <button onClick={imprimir} disabled={filas.length === 0} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-xs font-black disabled:opacity-40 hover:bg-slate-800">🖨️ Imprimir</button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 items-center">
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 text-center">
+                    <p className="text-[10px] font-black text-blue-600 uppercase">Atenciones</p>
+                    <p className="text-2xl font-black text-blue-800">{filas.length}</p>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-center">
+                    <p className="text-[10px] font-black text-emerald-600 uppercase">Pacientes</p>
+                    <p className="text-2xl font-black text-emerald-800">{unicos}</p>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-center">
+                    <p className="text-[10px] font-black text-gray-500 uppercase">Días con atención</p>
+                    <p className="text-2xl font-black text-gray-700">{grupos.length}</p>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Período: <strong>{_rango}</strong>
+                    {_empFiltro ? <> · Empresa: <strong>{companies.find((c) => c.id === _empFiltro)?.nombre || "—"}</strong></> : " · Todas las empresas y particulares"}
+                  </p>
+                </div>
+
+                {filas.length === 0 ? (
+                  <div className="text-center py-14 text-gray-400">
+                    <BarChart3 className="w-14 h-14 mx-auto mb-3 opacity-30" />
+                    <p>No hay atenciones en este rango con los filtros actuales.</p>
+                    <p className="text-xs mt-1">Prueba con "Todo" o quita algún filtro.</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                    <table className="w-full text-xs">
+                      <thead className="bg-blue-900 text-white">
+                        <tr>
+                          {["Nombre", "Cédula", "Empresa", "Cargo", "Tipo", "Médico", "Estado", "Concepto"].map((h) => (
+                            <th key={h} className="p-2 text-left font-bold">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {grupos.map((g) => (
+                          <React.Fragment key={g.f}>
+                            <tr className="bg-blue-50">
+                              <td colSpan={8} className="px-3 py-1.5 font-black text-blue-900 capitalize">
+                                📅 {_fmtDia(g.f)} <span className="font-bold text-blue-700 normal-case">· {g.items.length} atención{g.items.length !== 1 ? "es" : ""}</span>
+                              </td>
+                            </tr>
+                            {g.items.map((p, i) => {
+                              const est = _estadoDe(p);
+                              const estCls = est === "Cerrada" ? "bg-emerald-100 text-emerald-800" : est === "Abierta" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700";
+                              return (
+                                <tr key={`${p.id || p.docNumero}-${i}`} className="border-b border-gray-100 hover:bg-gray-50 align-top">
+                                  <td className="p-2 font-bold text-gray-800">{p.nombres || "—"}</td>
+                                  <td className="p-2 text-gray-600 whitespace-nowrap">{p.docNumero || "—"}</td>
+                                  <td className="p-2 text-gray-700">{_empNombre(p)}</td>
+                                  <td className="p-2 text-gray-600">{p.cargo || "—"}</td>
+                                  <td className="p-2 text-gray-600">{_tipoAtencionLabel(p)}</td>
+                                  <td className="p-2 text-gray-600">{_medNombre(p._medicoId)}</td>
+                                  <td className="p-2"><span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${estCls}`}>{est}</span></td>
+                                  <td className="p-2 text-gray-600">{String(p.conceptoAptitud || "—").slice(0, 60)}</td>
+                                </tr>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {reporteActiveTab === "certificados" && !selectedCompanyReport && (
+            <div className="text-center py-16 text-gray-400">
+              <BarChart3 className="w-16 h-16 mx-auto mb-3 opacity-30" />
+              <p>Seleccione una empresa para ver sus certificados.</p>
+            </div>
+          )}
           {reporteActiveTab === "estadisticas" && (
             <div data-report-content>
               <div className="text-center mb-6">
@@ -37268,6 +37480,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
     const _verInforme = (c) => {
       const has = savedInformes.some((i) => !i.tipo && _docBelongsTo(i, c));
       try { setSelectedCompanyReport(c.id); } catch {}
+      setReporteActiveTab("estadisticas");
       goTo("reporte");
       showAlert(has
         ? `El informe sociodemográfico de "${c.nombre}" se ve e imprime en Reportes.`
@@ -40189,6 +40402,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           setEnvioIntegralEmpresa({ empresaId: volverAEnvioIntegral.empresaId, empresaNombre: volverAEnvioIntegral.empresaNombre, totalPacientes: 0, periodo: "", precioPaciente: "35000", empresaNit: "" });
                           setShowEnvioIntegral(true);
                           setVolverAEnvioIntegral(null);
+                          setReporteActiveTab("estadisticas");
                           goTo("reporte");
                         }, 1000);
                       } else {
@@ -61801,7 +62015,7 @@ body{padding-top:52px;}
                   {/* Informe — abre la vista de reportes donde se ve/imprime */}
                   <button
                     disabled={!hasInforme}
-                    onClick={() => { setShowEnvioIntegral(false); goTo("reporte"); showAlert("El informe se ve e imprime en la sección Reportes (botón 'Descargar / Imprimir Informe')."); }}
+                    onClick={() => { setShowEnvioIntegral(false); setReporteActiveTab("estadisticas"); goTo("reporte"); showAlert("El informe se ve e imprime en la sección Reportes (botón 'Descargar / Imprimir Informe')."); }}
                     className={"py-2 text-[11px] font-black rounded-xl flex items-center justify-center gap-1 " + (hasInforme ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-gray-100 text-gray-400 cursor-not-allowed")}
                   >📋 Informe</button>
                 </div>
