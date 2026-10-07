@@ -25037,6 +25037,24 @@ const handleLogin = (u, p) => {
     _setHcDirty(false);
     setView("historia");
   };
+  // Abre en el formulario un BORRADOR en curso (historia aún sin guardar) listado
+  // en Reportes → "Atenciones por fecha", para poder terminarla y cerrarla.
+  // Se limpian las marcas internas del listado/autoguardado; queda marcada como
+  // modificada (_hcDirty) porque el contenido viene de un autoguardado, no de la lista.
+  const abrirBorrador = (b) => {
+    const { _esBorrador, _tsBorrador, _autoSaved, _cloudSaved, _userId, ...hc } = b || {};
+    if (!hc.id) { showAlert("No se pudo abrir el borrador: no tiene identificador."); return; }
+    if (!canViewPatient(hc)) {
+      showAlert("⛔ No tiene permiso para ver esta historia clínica.\nSolo puede acceder a historias creadas por usted.");
+      return;
+    }
+    if (currentUser?.role === "secretaria") { setShowSecretariaPatientModal(hc); return; }
+    setData(hc);
+    setDataType(hc.type || "ocupacional");
+    setActiveTab(hc.type === "general" ? "formGeneral" : "form");
+    _setHcDirty(true);
+    setView("historia");
+  };
   const handleNewOccupHistory = () => {
     if (currentUser?.role === "secretaria") {
       if (!_secretariaPuede("pacientes_crear", currentUser, usersList)) {
@@ -35356,7 +35374,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
                               const estCls = p._esBorrador ? "bg-orange-200 text-orange-900" : est === "Cerrada" ? "bg-emerald-100 text-emerald-800" : est === "Abierta" ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-700";
                               return (
                                 <tr key={`${p.id || p.docNumero}-${i}`} className={`border-b border-gray-100 hover:bg-gray-50 align-top ${p._esBorrador ? "bg-orange-50" : ""}`}>
-                                  <td className="p-2 font-bold text-gray-800">{p.nombres || "—"}</td>
+                                  <td className="p-2 font-bold">
+                                    <button
+                                      type="button"
+                                      onClick={() => (p._esBorrador ? abrirBorrador(p) : openPatient(p))}
+                                      title={p._esBorrador ? "Abrir el borrador para terminar y cerrar la historia" : "Abrir la historia clínica"}
+                                      className="text-left text-blue-800 hover:text-blue-600 hover:underline"
+                                    >
+                                      {p.nombres || "—"}
+                                    </button>
+                                    {p._esBorrador && <span className="block text-[10px] font-black text-orange-700">▶ Clic para continuar y cerrar</span>}
+                                  </td>
                                   <td className="p-2 text-gray-600 whitespace-nowrap">{p.docNumero || "—"}</td>
                                   <td className="p-2 text-gray-700">{_empNombre(p)}</td>
                                   <td className="p-2 text-gray-600">{p.cargo || "—"}</td>
