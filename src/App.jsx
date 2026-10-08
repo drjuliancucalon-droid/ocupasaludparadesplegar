@@ -378,7 +378,14 @@ const _workerFetch = async (url, opts = {}, retries = 3) => {
   try {
     for (let attempt = 0; ; attempt++) {
       let r = null;
-      try { r = await fetch(url, opts); } catch { r = null; }
+      // FIX 2026-10-08: sin tiempo límite una petición colgada nunca devolvía el control NI
+      // liberaba su lugar (solo hay 5 simultáneos): cinco colgadas bloqueaban TODAS las lecturas
+      // y escrituras de la app hasta recargar (caso real: el portal de FISIOSALUD se quedó en
+      // "Verificando acceso…"). El temporizador NO se limpia a propósito: así también corta una
+      // descarga cuyo cuerpo se detenga a mitad; abortar una petición ya terminada no hace nada.
+      const _ctrl = (typeof AbortController !== "undefined" && !opts.signal) ? new AbortController() : null;
+      if (_ctrl) setTimeout(() => _ctrl.abort(), (opts.method && opts.method !== "GET") ? 60000 : 15000);
+      try { r = await fetch(url, _ctrl ? { ...opts, signal: _ctrl.signal } : opts); } catch { r = null; }
       if (r && r.status === 401) {
         _wAuth401Count++;
         _wNetFailCount = 0;
@@ -14668,6 +14675,71 @@ const _generarCertificadoDesdePortal = (portalData) => {
 // Reutilizan generadores existentes. No dependen de scope de componente.
 // ══════════════════════════════════════════════════════════════════════════
 // Abre una ventana imprimible con el HTML dado.
+// ── PORTAL DE EMPRESA: lectura RÁPIDA de las variantes de NIT (2026-10-08) ──
+// Antes el portal probaba las 12 variantes de NIT (nit, nit+0..9, nit sin último dígito) UNA
+// POR UNA, tres veces (docs, índice, atenciones), y cada variante inexistente costaba 2
+// peticiones: ~66 peticiones en fila (17 s en buena conexión, más de 1 minuto en red lenta,
+// sin avance en pantalla). Ahora: UNA consulta por prefijo trae las variantes que existen de
+// verdad; si el atajo falla se cae al método anterior pero EN PARALELO.
+const _variantesNit = (nitClean) => {
+  const v = [nitClean];
+  for (let dv = 0; dv <= 9; dv++) v.push(nitClean + dv);
+  if (nitClean.length > 6) v.push(nitClean.slice(0, -1));
+  return v;
+};
+// fetch + lectura del cuerpo con UN solo tiempo límite (cubre también un cuerpo que se detiene)
+const _jsonConLimite = async (url, opts, ms = 20000) => {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { ...opts, signal: ctrl.signal });
+    if (!r.ok) return null;
+    return await r.json();
+  } finally { clearTimeout(t); }
+};
+// Devuelve { items: [{nv, data}] en el orden de las variantes, fallo: boolean }.
+// `fetchKey(key)` debe devolver {ok, data} (ok=false = error de red, no "no existe").
+const _leerVariantesPortal = async (familia, nitClean, fetchKey) => {
+  const variantes = _variantesNit(nitClean);
+  const orden = new Map(variantes.map((v, i) => [v, i]));
+  const encontrados = new Map(); // nv -> data
+  let fallo = false;
+  let atajoOk = false;
+  if (_WORKER_TOKEN) {
+    try {
+      const filas = await _jsonConLimite(`${_WORKER_URL}/store/prefix/${encodeURIComponent(familia + nitClean)}`, { headers: { "X-Siso-Token": _WORKER_TOKEN } }, 20000);
+      if (Array.isArray(filas)) {
+        atajoOk = true;
+        const re = new RegExp("^" + familia + nitClean + "(\\d?)$");
+        const troceadas = new Set();
+        for (const f of filas) {
+          const k = String(f.key || "");
+          if (k.endsWith("__meta")) { const base = k.slice(0, -6); if (re.test(base)) troceadas.add(base); continue; }
+          if (!re.test(k)) continue;
+          let v = f.value;
+          if (typeof v === "string") { try { v = JSON.parse(v); } catch { troceadas.add(k); continue; } } // gz: legacy u otro formato → lectura individual
+          if (v !== null && v !== undefined) encontrados.set(k.slice(familia.length), v);
+        }
+        // Valores guardados TROCEADOS (>600 KB): no hay clave base, solo __meta + piezas → reconstruir
+        for (const base of troceadas) {
+          const nv = base.slice(familia.length);
+          if (encontrados.has(nv)) continue;
+          const r = await fetchKey(base);
+          if (r.ok && r.data) encontrados.set(nv, r.data); else if (!r.ok) fallo = true;
+        }
+      }
+    } catch { atajoOk = false; }
+  }
+  // El prefijo ya cubrió nit y nit+dígito; solo falta "nit sin último dígito". Si el atajo falló: todas.
+  const pendientes = atajoOk ? variantes.filter((v) => v.length < nitClean.length) : variantes;
+  const rs = await Promise.all(pendientes.map(async (nv) => {
+    try { return { nv, r: await fetchKey(familia + nv) }; } catch { return { nv, r: { ok: false } }; }
+  }));
+  for (const { nv, r } of rs) { if (r.ok && r.data) encontrados.set(nv, r.data); else if (!r.ok) fallo = true; }
+  const items = [...encontrados.entries()].map(([nv, data]) => ({ nv, data })).sort((a, b) => (orden.get(a.nv) ?? 99) - (orden.get(b.nv) ?? 99));
+  return { items, fallo };
+};
+
 // ── PORTAL DE EMPRESA: publicación IDEMPOTENTE de cierres (2026-10-08) ─────
 // Caso real (SOLUCIONES TEXTILES, 2026-10-07): 4 de 24 historias cerradas
 // quedaron con el certificado individual publicado pero NO entraron a las
@@ -17289,9 +17361,13 @@ function PortalEmpresaDocsPeriodos({ nitBusq, sbUrl, sbKey, resultadosEmpresa })
       // quedó bajo una variante de NIT distinta o el read devolvió una copia incompleta.
       let base = null;
       const periodMap = new Map(); // periodo -> objeto periodo fusionado
-      for (const n of tryNits) {
-        let val = null;
-        try { val = await _readSmart(`siso_portal_empresa_docs_${n}`); } catch {}
+      // FIX 2026-10-08: las variantes de NIT se leen con UNA consulta por prefijo (antes: 12
+      // lecturas en fila, cada inexistente con 2 peticiones + un intento a Supabase bloqueado
+      // por CORS en el portal). D1 es la fuente autoritativa del portal.
+      const _docsVariantes = (await _leerVariantesPortal("siso_portal_empresa_docs_", nitBusq, async (key) => {
+        try { return { ok: true, data: await _workerGet(key) }; } catch { return { ok: false }; }
+      })).items;
+      for (const { nv: n, data: val } of _docsVariantes) {
         if (!val || !Array.isArray(val.periodos)) continue;
         if (!base) base = { nit: val.nit || n, nombre: val.nombre || "", codigoAcceso: val.codigoAcceso };
         else {
@@ -17511,6 +17587,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
   const [fechaFiltroEmpresa, setFechaFiltroEmpresa] = React.useState(""); // "" = todas las fechas
   const [busquedaCertEmpresa, setBusquedaCertEmpresa] = React.useState(""); // buscador en vivo: cédula o nombre
   const [tabEmpresa, setTabEmpresa] = React.useState("certificados"); // certificados|documentos|estadisticas
+  const [progresoEmpresa, setProgresoEmpresa] = React.useState(null); // {texto, aviso?} avance de la carga del portal empresa
+  const busquedaIdRef = React.useRef(0); // descarta cargas en segundo plano de una búsqueda anterior
   const tabPrincipal = tipoBusqueda === "empresa" ? "empresa" : "trabajador";
 
   // Auto-login desde la lista de empresas: recibe {nit, codigo} y lanza búsqueda directamente
@@ -17559,6 +17637,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
     setError("");
     setResultado(null);
     setHcCompleta(null);
+    const _miBusqueda = ++busquedaIdRef.current;
+    let _avisoFinal = false;
     try {
       // ── Construcción de claves de búsqueda ───────────────────────────────────
       // Formatos históricos coexistentes:
@@ -17639,23 +17719,36 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
         for (let dv = 0; dv <= 9; dv++) nitVariants.push(nitClean + dv);
         if (nitClean.length > 6) nitVariants.push(nitClean.slice(0, -1));
 
-        // Validar código de acceso contra siso_portal_empresa_docs_{nit}
-        // FIX 2026-06-02: probamos TODAS las variantes (no break prematuro).
-        // Con la unificación todas tienen el mismo código, pero esto es defensa
-        // adicional por si una variante quedó desactualizada.
+        // FIX 2026-10-08 (velocidad): UNA consulta por prefijo por familia y las tres EN PARALELO
+        // (antes: 12 variantes × 3 familias en fila, ~66 peticiones). Ver _leerVariantesPortal.
+        setProgresoEmpresa({ texto: "Verificando acceso…" });
+        const [rDocs, rIdx, rAt] = await Promise.all([
+          _leerVariantesPortal("siso_portal_empresa_docs_", nitClean, fetchKey),
+          _leerVariantesPortal("siso_portal_empresa_", nitClean, fetchKey),
+          _leerVariantesPortal("siso_portal_empresa_atenciones_", nitClean, fetchKey),
+        ]);
+        if (busquedaIdRef.current !== _miBusqueda) return;
+        // FIX 2026-06-02: se revisan TODAS las variantes (no se corta en la primera); solo se
+        // da por válido cuando alguna coincide.
         let codigoValido = false;
         let docsKeyFound = false;
         let nitConCodigo = null;
-        for (const nv of nitVariants) {
-          const rd = await fetchKey("siso_portal_empresa_docs_" + nv);
-          if (rd.ok && rd.data?.codigoAcceso) {
+        for (const { nv, data } of rDocs.items) {
+          if (data?.codigoAcceso) {
             docsKeyFound = true;
             nitConCodigo = nv;
-            if (rd.data.codigoAcceso.trim().toUpperCase() === codIngresado) {
+            if (String(data.codigoAcceso).trim().toUpperCase() === codIngresado) {
               codigoValido = true;
               break; // sólo paramos cuando coincide
             }
           }
+        }
+        // Si NADA se pudo leer porque falló la conexión (no porque no exista), decirlo claro en
+        // vez de "no se encontraron certificados".
+        if (!docsKeyFound && !rIdx.items.length && !rAt.items.length && (rDocs.fallo || rIdx.fallo || rAt.fallo)) {
+          setError("⚠️ No se pudo conectar con el servidor.\n\nRevise su conexión a internet e intente de nuevo en unos segundos.");
+          setCargando(false);
+          return;
         }
         // Si existe registro con código y NINGUNA variante coincide → bloquear
         if (docsKeyFound && !codigoValido) {
@@ -17675,18 +17768,15 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           {
             const _docsAll = [];
             const _seenDoc = new Set();
-            for (const nv of nitVariants) {
-              const ri = await fetchKey("siso_portal_empresa_" + nv);
-              if (ri.ok && ri.data) {
-                if (!empresaIdx) empresaIdx = { ...ri.data, documentos: [] };
-                else {
-                  if (!empresaIdx.nombre && ri.data.nombre) empresaIdx.nombre = ri.data.nombre;
-                  if (!empresaIdx.codigoAcceso && ri.data.codigoAcceso) empresaIdx.codigoAcceso = ri.data.codigoAcceso;
-                }
-                for (const d of (ri.data.documentos || [])) {
-                  const dn = String(d).replace(/\s/g, "").trim();
-                  if (dn && !_seenDoc.has(dn)) { _seenDoc.add(dn); _docsAll.push(dn); }
-                }
+            for (const { data } of rIdx.items) {
+              if (!empresaIdx) empresaIdx = { ...data, documentos: [] };
+              else {
+                if (!empresaIdx.nombre && data.nombre) empresaIdx.nombre = data.nombre;
+                if (!empresaIdx.codigoAcceso && data.codigoAcceso) empresaIdx.codigoAcceso = data.codigoAcceso;
+              }
+              for (const d of (data.documentos || [])) {
+                const dn = String(d).replace(/\s/g, "").trim();
+                if (dn && !_seenDoc.has(dn)) { _seenDoc.add(dn); _docsAll.push(dn); }
               }
             }
             if (empresaIdx) empresaIdx.documentos = _docsAll;
@@ -17730,24 +17820,17 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
           {
             const _atMap = new Map();
             let _base = null, _firmaR = "", _drR = null;
-            for (const nv of nitVariants) {
-              const rAt = await fetchKey("siso_portal_empresa_atenciones_" + nv);
-              if (rAt.ok && rAt.data && Array.isArray(rAt.data.atenciones) && rAt.data.atenciones.length > 0) {
-                if (!_base) { _base = rAt.data; nitConAtenciones = nv; }
-                if (!_firmaR && rAt.data._firma) _firmaR = rAt.data._firma;
-                if (!_drR && rAt.data._doctorData) _drR = rAt.data._doctorData;
-                for (const a of rAt.data.atenciones) {
+            for (const { nv, data } of rAt.items) {
+              if (Array.isArray(data.atenciones) && data.atenciones.length > 0) {
+                if (!_base) { _base = data; nitConAtenciones = nv; }
+                if (!_firmaR && data._firma) _firmaR = data._firma;
+                if (!_drR && data._doctorData) _drR = data._doctorData;
+                for (const a of data.atenciones) {
                   const dn = String(a?.docNumero || "").replace(/\s/g, "").trim();
                   if (!dn) continue;
-                  // FIX 2026-08-27: antes se deduplicaba SOLO por cédula (dn), así
-                  // que un trabajador con más de una atención (reevaluación en
-                  // fecha distinta) quedaba reducido a una sola en el portal —
-                  // ninguna atención se perdía en el almacenamiento (el escritor
-                  // ya fusiona por docNumero+fecha), pero esta lectura las
-                  // colapsaba igual. Ahora la clave de dedup es el código de
-                  // verificación (único por atención) o, si falta, cédula+fecha
-                  // — mismo criterio que ya usa la escritura — así que todas las
-                  // atenciones distintas del mismo trabajador se preservan.
+                  // FIX 2026-08-27: la clave de dedup es el código de verificación (único por
+                  // atención) o, si falta, cédula+fecha — así un trabajador con más de una
+                  // atención las conserva todas.
                   const _fechaAt = (a?.fechaCierre || a?.fechaExamen || "").slice(0, 10);
                   const _key = a?.codigoVerificacion || (dn + "|" + _fechaAt);
                   if (!_atMap.has(_key)) _atMap.set(_key, a);
@@ -17781,33 +17864,51 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
             }
           }
           // Complementar con portal_doc del índice que NO estén ya en el agregado.
-          // FIX 2026-06-16 (velocidad): carga en PARALELO (límite 6 concurrentes).
-          // Antes era secuencial: 14 docs × ~1.4s = ~18s. Ahora ~3s.
-          if (empresaIdx && Array.isArray(empresaIdx.documentos)) {
-            const _pend = empresaIdx.documentos
-              .map(doc => String(doc).replace(/\s/g, "").trim())
-              .filter(dn => dn && !_vistos.has(dn));
-            const _CONCP = 6;
-            for (let _b = 0; _b < _pend.length; _b += _CONCP) {
-              const _lote = _pend.slice(_b, _b + _CONCP);
-              const _res = await Promise.all(_lote.map(dn => fetchKey("siso_portal_doc_" + dn).then(r => ({ dn, r })).catch(() => ({ dn, r: { ok: false } }))));
-              for (const { dn, r } of _res) {
-                if (r.ok && r.data && !_vistos.has(dn)) {
-                  _resultados.push({
-                    ...r.data,
-                    _firma: (r.data && r.data._firma) || _firmaRoot,
-                    _doctorData: (r.data && r.data._doctorData) || _drRoot,
-                  });
-                  _vistos.add(dn);
-                }
+          // FIX 2026-10-08: lo que ya viene en el agregado se MUESTRA DE INMEDIATO y el resto se
+          // completa en segundo plano, con contador de avance (antes no se veía nada hasta
+          // terminar de bajar todos los certificados individuales).
+          const _pend = (empresaIdx && Array.isArray(empresaIdx.documentos))
+            ? empresaIdx.documentos.map(doc => String(doc).replace(/\s/g, "").trim()).filter(dn => dn && !_vistos.has(dn))
+            : [];
+          let _mostrado = false;
+          const _mostrar = () => {
+            setEmpresaAtenciones(atencionesGrupo || null);
+            setResultadosEmpresa([..._resultados]);
+            if (!_mostrado) { setFechaFiltroEmpresa(""); setCertSeleccionados({}); setCargando(false); _mostrado = true; }
+          };
+          if (_resultados.length > 0) _mostrar();
+          setProgresoEmpresa(_pend.length > 0 ? { texto: `Cargando certificados… 0 de ${_pend.length}` } : null);
+          const _CONCP = 6;
+          let _docsFallidos = 0;
+          for (let _b = 0; _b < _pend.length; _b += _CONCP) {
+            if (busquedaIdRef.current !== _miBusqueda) return;
+            const _lote = _pend.slice(_b, _b + _CONCP);
+            const _res = await Promise.all(_lote.map(dn => fetchKey("siso_portal_doc_" + dn).then(r => ({ dn, r })).catch(() => ({ dn, r: { ok: false } }))));
+            if (busquedaIdRef.current !== _miBusqueda) return;
+            let _hubo = false;
+            for (const { dn, r } of _res) {
+              if (!r.ok) _docsFallidos++;
+              if (r.ok && r.data && !_vistos.has(dn)) {
+                _resultados.push({
+                  ...r.data,
+                  _firma: (r.data && r.data._firma) || _firmaRoot,
+                  _doctorData: (r.data && r.data._doctorData) || _drRoot,
+                });
+                _vistos.add(dn);
+                _hubo = true;
               }
             }
+            if (_hubo) _mostrar();
+            setProgresoEmpresa({ texto: `Cargando certificados… ${Math.min(_b + _CONCP, _pend.length)} de ${_pend.length}` });
+          }
+          if (_docsFallidos > 0 && _resultados.length > 0) {
+            _avisoFinal = true;
+            setProgresoEmpresa({ aviso: true, texto: `⚠️ ${_docsFallidos} certificado(s) no se pudieron cargar por la conexión. Pulse "Acceder" de nuevo para completarlos.` });
+          } else {
+            setProgresoEmpresa(null);
           }
           if (_resultados.length > 0) {
-            setEmpresaAtenciones(atencionesGrupo || null);
-            setResultadosEmpresa(_resultados);
-            setFechaFiltroEmpresa("");
-            setCertSeleccionados({});
+            _mostrar();
             setCargando(false);
             return;
           }
@@ -17875,6 +17976,8 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
       else setError("Error de conexión: " + (e.message || "desconocido"));
     } finally {
       setCargando(false);
+      // Solo la búsqueda vigente limpia el avance (una búsqueda vieja no pisa la nueva)
+      if (!_avisoFinal && busquedaIdRef.current === _miBusqueda) setProgresoEmpresa(null);
     }
   };
 
@@ -18253,6 +18356,9 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                 >
                   {cargando ? <><span className="animate-spin">⏳</span> Verificando acceso...</> : "🏢 Acceder al portal empresarial"}
                 </button>
+                {cargando && progresoEmpresa && (
+                  <p className="text-[11px] text-blue-700 text-center font-semibold">{progresoEmpresa.texto}</p>
+                )}
                 <p className="text-[9px] text-gray-400 text-center">
                   Acceso seguro y confidencial
                   {intentos > 0 && ` · Intentos: ${intentos}/${MAX_INTENTOS}`}
@@ -18391,6 +18497,11 @@ const PortalPublicoTrabajador = ({ sbUrl, sbKey, onVolver, autoLogin }) => {
                       </button>
                     </div>
                   </div>
+                  {progresoEmpresa && (
+                    <div className={`px-4 py-1.5 text-[11px] font-semibold border-b ${progresoEmpresa.aviso ? "bg-amber-50 text-amber-800 border-amber-200" : "bg-blue-50 text-blue-700 border-blue-100"}`}>
+                      {progresoEmpresa.aviso ? progresoEmpresa.texto : <><span className="inline-block animate-spin mr-1">⏳</span>{progresoEmpresa.texto}</>}
+                    </div>
+                  )}
                   {/* Buscador en vivo: cédula o nombre */}
                   <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-100">
                     <div className="relative">
