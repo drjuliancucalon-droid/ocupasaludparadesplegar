@@ -14668,6 +14668,247 @@ const _generarCertificadoDesdePortal = (portalData) => {
 // Reutilizan generadores existentes. No dependen de scope de componente.
 // ══════════════════════════════════════════════════════════════════════════
 // Abre una ventana imprimible con el HTML dado.
+// ── PORTAL DE EMPRESA: publicación IDEMPOTENTE de cierres (2026-10-08) ─────
+// Caso real (SOLUCIONES TEXTILES, 2026-10-07): 4 de 24 historias cerradas
+// quedaron con el certificado individual publicado pero NO entraron a las
+// listas de la empresa (índice, atenciones y período), y el portal mostraba 21.
+// Causas encontradas:
+//  1) Esa "segunda tanda" del cierre se intentaba UNA sola vez; si la lectura
+//     o escritura fallaba por la intermitencia del Worker se omitía en silencio,
+//     sin reintento ni aviso (el certificado individual sí tenía cola de reintento).
+//  2) Al cambiar la empresa de una historia ya cerrada, la entrada vieja quedaba
+//     en el portal de la empresa anterior (Juan José quedó en SOLUCIONES aunque su
+//     historia final es de BIOESCOL).
+//  3) Latente: `_workerGetChecked` lee solo la clave base. Un agregado >600 KB se
+//     guarda TROCEADO y esa lectura devuelve "vacío": el siguiente cierre lo habría
+//     sobrescrito con una sola atención (ya iba en ~478 KB con 24 atenciones).
+const _PEND_PORTAL_KEY = "siso_pending_portal_empresa";
+const _leerPendPortal = () => { try { const a = JSON.parse(_ls.getItem(_PEND_PORTAL_KEY) || "[]"); return Array.isArray(a) ? a : []; } catch { return []; } };
+const _guardarPendPortal = (a) => { try { _ls.setItem(_PEND_PORTAL_KEY, JSON.stringify(a)); } catch {} };
+// La cola guarda solo {id, cc, ts} (no la historia entera: la cuota de localStorage
+// es limitada); al reintentar, la historia se toma de la lista de pacientes.
+const _encolarPortalEmpresa = (closed) => {
+  const a = _leerPendPortal();
+  if (!a.some((x) => String(x.id) === String(closed.id))) {
+    a.push({ id: closed.id, cc: String(closed.docNumero || "").replace(/\s/g, ""), ts: Date.now(), intentos: 0 });
+    _guardarPendPortal(a);
+  }
+};
+const _esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+const _diaCierre = (c) => String(c?.fechaCierre || c?.fechaExamen || "").slice(0, 10);
+const _ccDe = (c) => String(c?.docNumero || "").replace(/\s/g, "");
+
+// Lee una clave distinguiendo "no existe" de "no se pudo leer" Y entendiendo
+// valores troceados (__meta/__cN).
+const _leerPortalSeguro = async (key) => {
+  const r = await _workerGetChecked(key);
+  if (r.failed) return { failed: true, value: null };
+  if (r.value !== null && r.value !== undefined) return r;
+  const m = await _workerGetChecked(key + _CHUNK_SUF_META);
+  if (m.failed) return { failed: true, value: null };
+  if (!m.value) return { failed: false, value: null }; // confirmado: no existe
+  const v = await _workerGet(key); // existe troceado: reconstruir
+  return v === null || v === undefined ? { failed: true, value: null } : { failed: false, value: v };
+};
+
+// Agrega/repara en las 3 listas del portal de UNA empresa las historias dadas.
+// Idempotente: solo escribe lo que falta o cambió. Si una lectura falla NO
+// escribe nada y devuelve {ok:false} para que el llamador reintente.
+const _publicarCierresPortalEmpresa = async (nitIdx, cerrados, ctx = {}) => {
+  if (!_WORKER_TOKEN) return { ok: false, error: "sin token" };
+  if (!nitIdx || nitIdx.length < 3) return { ok: true, cambios: 0 };
+  // una sola historia por persona+día (si hay dos, gana la última) para no alternar escrituras
+  const porClave = new Map();
+  for (const c of cerrados) { if (c && _ccDe(c) && c.codigoVerificacion) porClave.set(_ccDe(c) + "|" + _diaCierre(c), c); }
+  const lista = [...porClave.values()];
+  if (!lista.length) return { ok: true, cambios: 0 };
+  const nombre = lista[0].empresaNombre || "";
+  const ahora = new Date().toISOString();
+  let cambios = 0;
+  try {
+    // a) índice: siso_portal_empresa_<NIT>.documentos
+    const kIdx = `siso_portal_empresa_${nitIdx}`;
+    const peR = await _leerPortalSeguro(kIdx);
+    if (peR.failed) return { ok: false, error: "índice" };
+    const pe = peR.value || { nit: nitIdx, nombre, documentos: [] };
+    pe.documentos = pe.documentos || [];
+    let cambioPe = !peR.value;
+    for (const c of lista) { if (!pe.documentos.includes(_ccDe(c))) { pe.documentos.push(_ccDe(c)); cambioPe = true; } }
+    if (cambioPe) {
+      pe.updatedAt = ahora; pe.nombre = nombre || pe.nombre;
+      if (!(await _workerSet(kIdx, pe))) return { ok: false, error: "escritura índice" };
+      cambios++;
+    }
+    // b) atenciones: siso_portal_empresa_atenciones_<NIT>.atenciones (una fila por persona+día)
+    const kAt = `siso_portal_empresa_atenciones_${nitIdx}`;
+    const paR = await _leerPortalSeguro(kAt);
+    if (paR.failed) return { ok: false, error: "atenciones" };
+    const pa = paR.value || { nit: nitIdx, nombre, atenciones: [], fechas: [], _firma: ctx.firma, _doctorData: ctx.doctorData };
+    pa.atenciones = pa.atenciones || [];
+    let cambioPa = !paR.value;
+    const movidos = []; // entradas cuya fecha cambió de mes (para sacarlas del período viejo)
+    for (const c of lista) {
+      const dia = _diaCierre(c);
+      const { _firma, _doctorData, ...rest } = c;
+      const entrada = { ...rest, fechaCierre: dia, fechaExamen: c.fechaExamen || dia, estadoHistoria: "Cerrada", codigoVerificacion: c.codigoVerificacion };
+      // Misma atención si coincide el CÓDIGO de verificación, o persona + día. Las entradas
+      // creadas por la lógica anterior se sellaban con la fecha REAL de hoy y no con la fecha
+      // de cierre elegida (cierre retroactivo): sin el código se habrían duplicado.
+      const i = pa.atenciones.findIndex((a) => (a?.codigoVerificacion && a.codigoVerificacion === c.codigoVerificacion) || (_ccDe(a) === _ccDe(c) && String(a?.fechaCierre || a?.fechaExamen || "").slice(0, 10) === dia));
+      if (i < 0) { pa.atenciones.push(entrada); cambioPa = true; }
+      else {
+        const diaViejo = String(pa.atenciones[i]?.fechaCierre || pa.atenciones[i]?.fechaExamen || "").slice(0, 10);
+        if (pa.atenciones[i].codigoVerificacion !== c.codigoVerificacion || diaViejo !== dia) {
+          pa.atenciones[i] = entrada; cambioPa = true;
+          if (diaViejo && diaViejo.slice(0, 7) !== dia.slice(0, 7)) movidos.push({ cc: _ccDe(c), ymViejo: diaViejo.slice(0, 7) });
+        }
+      }
+    }
+    // firma + médico en la RAÍZ del agregado (los certificados del portal los necesitan)
+    const firmaOk = typeof pa._firma === "string" && pa._firma.length > 100;
+    const drOk = pa._doctorData && pa._doctorData.nombre && pa._doctorData.nombre !== "MÉDICO OCUPACIONAL";
+    if (!firmaOk && ctx.firma) { pa._firma = ctx.firma; cambioPa = true; }
+    if (!drOk && ctx.doctorData?.nombre) { pa._doctorData = ctx.doctorData; cambioPa = true; }
+    if (cambioPa) {
+      pa.fechas = [...new Set(pa.atenciones.map((a) => String(a.fechaCierre || a.fechaExamen || "").slice(0, 10)).filter(Boolean))].sort();
+      pa.updatedAt = ahora;
+      if (!(await _workerSet(kAt, pa))) return { ok: false, error: "escritura atenciones" };
+      cambios++;
+    }
+    // c) períodos: siso_portal_empresa_docs_<NIT>.periodos[].certificados
+    const kDocs = `siso_portal_empresa_docs_${nitIdx}`;
+    const pdR = await _leerPortalSeguro(kDocs);
+    if (pdR.failed) return { ok: false, error: "períodos" };
+    const pd = pdR.value || { nit: nitIdx, nombre, codigoAcceso: "", periodos: [], updatedAt: ahora };
+    pd.periodos = pd.periodos || [];
+    let cambioPd = !pdR.value;
+    for (const c of lista) {
+      const ym = _diaCierre(c).slice(0, 7);
+      if (!ym) continue;
+      let per = pd.periodos.find((p) => p.periodo === ym || String(p.fecha || "").startsWith(ym));
+      let cambiaPer = false;
+      if (!per) { per = { periodo: ym, fecha: ym + "-01", certificados: { count: 0, documentos: [], updatedAt: ahora } }; pd.periodos.push(per); cambiaPer = true; }
+      if (!per.certificados) { per.certificados = { count: 0, documentos: [] }; cambiaPer = true; }
+      if (!per.certificados.documentos) { per.certificados.documentos = []; cambiaPer = true; }
+      if (!per.certificados.documentos.includes(_ccDe(c))) { per.certificados.documentos.push(_ccDe(c)); cambiaPer = true; }
+      if (per.certificados.count !== per.certificados.documentos.length) { per.certificados.count = per.certificados.documentos.length; cambiaPer = true; }
+      if (cambiaPer) { per.certificados.updatedAt = ahora; per.updatedAt = ahora; cambioPd = true; }
+    }
+    // Si una atención cambió de mes (p. ej. cierre retroactivo a otro mes), sacarla del período viejo
+    for (const m of movidos) {
+      if (pa.atenciones.some((a) => _ccDe(a) === m.cc && String(a?.fechaCierre || a?.fechaExamen || "").slice(0, 7) === m.ymViejo)) continue;
+      const perV = pd.periodos.find((p) => p.periodo === m.ymViejo || String(p.fecha || "").startsWith(m.ymViejo));
+      if (perV?.certificados?.documentos?.includes(m.cc)) {
+        perV.certificados.documentos = perV.certificados.documentos.filter((x) => x !== m.cc);
+        perV.certificados.count = perV.certificados.documentos.length;
+        perV.certificados.updatedAt = ahora; perV.updatedAt = ahora; cambioPd = true;
+      }
+    }
+    if (cambioPd) {
+      pd.updatedAt = ahora;
+      if (!(await _workerSet(kDocs, pd))) return { ok: false, error: "escritura períodos" };
+      cambios++;
+    }
+    return { ok: true, cambios };
+  } catch (e) {
+    return { ok: false, error: e?.message || "excepción" };
+  }
+};
+
+// Retira de las listas del portal de una empresa la atención de una persona en un
+// día (cuando la historia cambió de empresa). Si ya no le queda ninguna atención
+// a esa persona en esa empresa, también sale del índice y del período.
+const _retirarCierrePortalEmpresa = async (nitIdx, cc, dia) => {
+  if (!_WORKER_TOKEN || !nitIdx || !cc || !dia) return { ok: false };
+  const ahora = new Date().toISOString();
+  try {
+    const kAt = `siso_portal_empresa_atenciones_${nitIdx}`;
+    const paR = await _leerPortalSeguro(kAt);
+    if (paR.failed) return { ok: false };
+    const pa = paR.value;
+    if (pa?.atenciones) {
+      const antes = pa.atenciones.length;
+      pa.atenciones = pa.atenciones.filter((a) => !(_ccDe(a) === cc && String(a?.fechaCierre || a?.fechaExamen || "").slice(0, 10) === dia));
+      if (pa.atenciones.length !== antes) {
+        pa.fechas = [...new Set(pa.atenciones.map((a) => String(a.fechaCierre || a.fechaExamen || "").slice(0, 10)).filter(Boolean))].sort();
+        pa.updatedAt = ahora;
+        if (!(await _workerSet(kAt, pa))) return { ok: false };
+      }
+    }
+    if ((pa?.atenciones || []).some((a) => _ccDe(a) === cc)) return { ok: true }; // aún le quedan otras atenciones
+    const kIdx = `siso_portal_empresa_${nitIdx}`;
+    const peR = await _leerPortalSeguro(kIdx);
+    if (!peR.failed && peR.value?.documentos?.includes(cc)) {
+      peR.value.documentos = peR.value.documentos.filter((x) => x !== cc);
+      peR.value.updatedAt = ahora;
+      await _workerSet(kIdx, peR.value);
+    }
+    const kDocs = `siso_portal_empresa_docs_${nitIdx}`;
+    const pdR = await _leerPortalSeguro(kDocs);
+    if (!pdR.failed && pdR.value?.periodos) {
+      const ym = dia.slice(0, 7);
+      const per = pdR.value.periodos.find((p) => p.periodo === ym || String(p.fecha || "").startsWith(ym));
+      if (per?.certificados?.documentos?.includes(cc)) {
+        per.certificados.documentos = per.certificados.documentos.filter((x) => x !== cc);
+        per.certificados.count = per.certificados.documentos.length;
+        per.certificados.updatedAt = ahora; per.updatedAt = ahora; pdR.value.updatedAt = ahora;
+        await _workerSet(kDocs, pdR.value);
+      }
+    }
+    return { ok: true };
+  } catch { return { ok: false }; }
+};
+
+// Índice ligero de HC cerradas (red de seguridad de la lista maestra).
+// Antes leía con `_workerGet(...).catch(() => null)` y, si fallaba, partía de un
+// arreglo vacío; ahora distingue "no se pudo leer" y reintenta.
+const _asegurarIndiceHC = async (closed, ctx = {}) => {
+  const cc = _ccDe(closed);
+  if (!_WORKER_TOKEN || !cc) return { ok: true };
+  const key = "siso_hc_cerradas_idx_" + (ctx.userKey || "shared");
+  const r = await _leerPortalSeguro(key);
+  if (r.failed) return { ok: false };
+  const idx = Array.isArray(r.value) ? r.value : [];
+  const entrada = {
+    cc, id: closed.id, nombres: closed.nombres || "", fechaExamen: closed.fechaExamen || "",
+    fechaCierre: closed.fechaCierre || "", empresaId: closed.empresaId || "", empresaNombre: closed.empresaNombre || "",
+    tipoExamen: closed.tipoExamen || "", dataType: ctx.dataType || "ocupacional",
+  };
+  const pos = idx.findIndex((e) => e && (String(e.id) === String(closed.id) || (e.cc === cc && e.fechaExamen === entrada.fechaExamen)));
+  if (pos >= 0 && JSON.stringify(idx[pos]) === JSON.stringify(entrada)) return { ok: true };
+  if (pos >= 0) idx[pos] = entrada; else idx.push(entrada);
+  return (await _workerSet(key, idx)) ? { ok: true } : { ok: false };
+};
+
+// Segunda tanda del cierre = índice ligero + portal de la empresa, con REINTENTOS
+// (1.5 s, 6 s). Devuelve {ok}. Si ok es false el llamador la encola.
+const _publicarSegundaTandaCierre = async (closed, ctx = {}, intentos = 3) => {
+  const nitIdx = closed.empresaNit && closed.empresaId && closed.empresaId !== "particular" ? _nitPortal(closed.empresaNit) : "";
+  let ultimo = { ok: false, error: "sin intentos" };
+  for (let i = 0; i < intentos; i++) {
+    const rIdx = await _asegurarIndiceHC(closed, ctx);
+    let rEmp = { ok: true };
+    if (nitIdx.length >= 3) rEmp = await _publicarCierresPortalEmpresa(nitIdx, [closed], ctx);
+    ultimo = { ok: rIdx.ok && rEmp.ok, error: rIdx.ok ? rEmp.error : "índice HC" };
+    if (ultimo.ok) break;
+    if (i < intentos - 1) await _esperar(1500 * (i + 1) * (i + 1));
+  }
+  // Cambio de empresa el MISMO día (misma fecha de examen, otro NIT, otro código):
+  // retirar la entrada vieja del portal de la empresa anterior. Si el examen anterior
+  // fue de otro día (el trabajador cambió de empleador de verdad) NO se toca.
+  if (ultimo.ok && nitIdx.length >= 3 && ctx.prevDoc) {
+    try {
+      const prev = ctx.prevDoc;
+      const prevNit = _nitPortal(prev.empresaNit);
+      const mismoDia = String(prev.fechaExamen || "").slice(0, 10) === String(closed.fechaExamen || "").slice(0, 10);
+      if (prevNit.length >= 3 && prevNit !== nitIdx && mismoDia && prev.codigoVerificacion !== closed.codigoVerificacion) {
+        await _retirarCierrePortalEmpresa(prevNit, _ccDe(closed), _diaCierre(prev) || _diaCierre(closed));
+      }
+    } catch (e) { console.warn("[cierre] retiro por cambio de empresa:", e?.message); }
+  }
+  return ultimo;
+};
+
 // ── REPORTES → "Atenciones por fecha" (2026-10) ───────────────────────────
 // Antes Reportes quedaba vacío hasta elegir una empresa, y el filtro exigía
 // `fechaExamen`, por lo que los pacientes de medicina general (que usan
@@ -19917,6 +20158,81 @@ function AppInner() {
     const iv = setInterval(cargar, 60000);
     return () => { cancelado = true; clearInterval(iv); };
   }, [view, reporteActiveTab, currentUser]);
+  // ── PORTAL DE EMPRESA: cola de pendientes + autocorrección (2026-10-08) ──────
+  // Contexto de firma/médico que necesita la raíz de las atenciones del portal.
+  const _ctxPortalEmpresa = () => ({
+    userKey: currentUser?.user || "shared",
+    dataType: "ocupacional",
+    firma: activeSignature || (() => { try { return _ls.getItem("siso_doctor_signature") || ""; } catch { return ""; } })(),
+    doctorData: {
+      nombre: activeDoctorData?.nombre || currentUser?.name || "MÉDICO OCUPACIONAL",
+      titulo: activeDoctorData?.titulo || "Médico Especialista en Salud Ocupacional",
+      licencia: activeDoctorData?.licencia || "--",
+      ciudad: activeDoctorData?.ciudad || "Popayán",
+      email: activeDoctorData?.email || "",
+      cel: activeDoctorData?.cel || "",
+    },
+  });
+  // (1) Reintenta cada 30 s los cierres cuya publicación a la empresa falló.
+  useEffect(() => {
+    if (!currentUser || !_WORKER_TOKEN) return;
+    let cancelado = false, ocupado = false;
+    const ciclo = async () => {
+      if (ocupado || cancelado) return;
+      ocupado = true;
+      try {
+        const pend = _leerPendPortal();
+        if (pend.length) {
+          const lista = patientsListRef.current || [];
+          const restantes = [];
+          for (const it of pend) {
+            const rec = lista.find((p) => String(p.id) === String(it.id) && p.estadoHistoria === "Cerrada");
+            if (!rec) { if (Date.now() - (it.ts || 0) < 3 * 86400000) restantes.push(it); continue; }
+            const r = await _publicarSegundaTandaCierre(rec, _ctxPortalEmpresa(), 1);
+            if (!r.ok) restantes.push({ ...it, intentos: (it.intentos || 0) + 1 });
+          }
+          _guardarPendPortal(restantes);
+        }
+      } catch (e) { console.warn("[portal empresa] cola:", e?.message); }
+      ocupado = false;
+    };
+    const t0 = setTimeout(ciclo, 8000);
+    const iv = setInterval(ciclo, 30000);
+    return () => { cancelado = true; clearTimeout(t0); clearInterval(iv); };
+  }, [currentUser]);
+  // (2) Autocorrección: al abrir la app (máx. 1 vez cada 2 h) compara los cierres de los
+  // últimos 7 días contra el portal de cada empresa y completa lo que falte. Es la red
+  // de seguridad si la cola se perdió (p. ej. se cerró la pestaña antes de reintentar).
+  useEffect(() => {
+    if (!currentUser || !_WORKER_TOKEN) return;
+    const flag = `siso_reconc_portal_empresa_ts_${currentUser.user}`;
+    const t = setTimeout(async () => {
+      try {
+        const ultima = parseInt(_ls.getItem(flag) || "0", 10);
+        if (Date.now() - ultima < 2 * 60 * 60 * 1000) return;
+        const lista = patientsListRef.current || [];
+        if (!lista.length) return;
+        const desde = _fechaLocalISO(new Date(Date.now() - 7 * 86400000));
+        const porNit = new Map();
+        for (const p of lista) {
+          if (!p || p._archivado || p.estadoHistoria !== "Cerrada") continue;
+          if (!p.empresaNit || !p.empresaId || p.empresaId === "particular") continue;
+          if (_diaCierre(p) < desde) continue;
+          const nit = _nitPortal(p.empresaNit);
+          if (nit.length < 3) continue;
+          if (!porNit.has(nit)) porNit.set(nit, []);
+          porNit.get(nit).push(p);
+        }
+        let todoOk = true;
+        for (const [nit, grupo] of porNit) {
+          const r = await _publicarCierresPortalEmpresa(nit, grupo, _ctxPortalEmpresa());
+          if (!r.ok) todoOk = false;
+        }
+        if (todoOk) _ls.setItem(flag, String(Date.now()));
+      } catch (e) { console.warn("[portal empresa] autocorrección:", e?.message); }
+    }, 25000);
+    return () => clearTimeout(t);
+  }, [currentUser]);
   const [certSelected, setCertSelected] = useState({}); // {[patientId]: bool}
   const [reportStartDate, setReportStartDate] = useState("");
   const [reportEndDate, setReportEndDate] = useState("");
@@ -25795,6 +26111,16 @@ const handleLogin = (u, p) => {
         //  trabajador y portal empresa apenas se cierre, sin tardanza)
         // ═════════════════════════════════════════════════════════════════════
         const _docCC = (closed.docNumero || "").replace(/\s/g, "");
+        // Documento individual PREVIO de esta cédula (antes de que el paso 2 lo sobrescriba):
+        // permite detectar que la historia cambió de empresa el mismo día y retirar la
+        // entrada vieja del portal de la empresa anterior (ver _publicarSegundaTandaCierre).
+        let _prevPortalDoc = null;
+        try {
+          if (_WORKER_TOKEN && _docCC) {
+            const _pr = await _workerGetChecked("siso_portal_doc_" + _docCC);
+            if (!_pr.failed) _prevPortalDoc = _pr.value;
+          }
+        } catch {}
         // FIX 2026-07-29: estas 3 escrituras (portal_<code>, portal_doc,
         // hc_completa) son las copias individuales que usan el paquete ZIP y
         // el verificador de certificados. Antes, si `_workerSet` fallaba, el
@@ -25840,39 +26166,8 @@ const handleLogin = (u, p) => {
             }
             _sbSet("siso_hc_completa_codigo_" + code.toUpperCase(), _hcCompleta).catch(() => {});
           }
-          // 3b° ÍNDICE LIGERO DE HC CERRADAS — red de seguridad
-          // FIX 2026-07-28: la lista maestra (siso_db_patients_*) pesa ~6.6MB y
-          // se reescribe COMPLETA en 14 trozos en cada cierre. Al cerrar una HC
-          // se disparan ~23 escrituras seguidas al worker; bajo esa ráfaga la
-          // más pesada (la lista) es la que falla — mientras las pequeñas
-          // (certificado, hc_completa) sí quedan guardadas. Resultado real:
-          // pacientes con HC y certificado completos en D1 pero AUSENTES de
-          // "Pacientes Vistos" (3 casos confirmados el 2026-07-24/27).
-          // Este índice es diminuto (~9 campos por paciente), se escribe en UNA
-          // sola operación directa sin trocear, y por eso casi nunca falla.
-          // _reconciliarDesdeIndiceHC() lo usa al arrancar para reponer, con
-          // TODOS sus datos originales, a quien falte en la lista maestra.
-          if (_WORKER_TOKEN && _docCC) {
-            try {
-              const _idxKey = "siso_hc_cerradas_idx_" + (currentUser?.user || "shared");
-              let _idx = await _workerGet(_idxKey).catch(() => null);
-              if (!Array.isArray(_idx)) _idx = [];
-              const _entry = {
-                cc: _docCC,
-                id: closed.id,
-                nombres: closed.nombres || "",
-                fechaExamen: closed.fechaExamen || "",
-                fechaCierre: fechaCierreElegida,
-                empresaId: closed.empresaId || "",
-                empresaNombre: closed.empresaNombre || "",
-                tipoExamen: closed.tipoExamen || "",
-                dataType: (typeof dataType !== "undefined") ? dataType : "ocupacional",
-              };
-              const _pos = _idx.findIndex(e => e && (String(e.id) === String(closed.id) || (e.cc === _docCC && e.fechaExamen === _entry.fechaExamen)));
-              if (_pos >= 0) _idx[_pos] = _entry; else _idx.push(_entry);
-              await _workerSet(_idxKey, _idx);
-            } catch (e) { console.warn("[cierre] índice HC cerradas:", e?.message); }
-          }
+          // 3b° (índice ligero de HC cerradas) → se publica en la "segunda tanda" del paso 5,
+          // junto con el portal de la empresa, con reintentos y cola de pendientes.
         }
         // 4° compat códigos viejos
         if (code && !code.startsWith("CV-")) {
@@ -25881,117 +26176,26 @@ const handleLogin = (u, p) => {
           }
           _sbSet("siso_portal_CV-" + code, portalData).catch(() => {});
         }
-        // 5° Portal empresa — TRES claves coordinadas
-        // FIX 2026-07-29 (fuga que vació el portal de FUNERALES LA ERMITA de
-        // ~59 atenciones a 16): las 3 lecturas de abajo usaban `_workerGet`,
-        // que devuelve `null` tanto si la clave no existe como si la lectura
-        // FALLÓ por red — y el código trataba cualquier `null` como "está
-        // vacío, arranco un agregado nuevo desde cero". Con el worker
-        // intermitente (confirmado antes en esta sesión: ~2 de 8 conexiones
-        // fallan), cada cierre de HC era una oportunidad de sobrescribir el
-        // agregado real con uno que solo traía la atención de HOY. Ahora se
-        // usa `_workerGetChecked`, que sí distingue "confirmado vacío" de
-        // "no se pudo leer" — si falla de verdad, se OMITE esa actualización
-        // (no se escribe nada) en vez de arriesgar el agregado completo.
-        // También: NIT canónico (antes podía quedar con el dígito de
-        // verificación pegado, partiendo los datos de la empresa en 2 claves
-        // — ver _nitPortal), y el contador de certificados del periodo ahora
-        // siempre mantiene su lista `documentos` (antes solo se incrementaba
-        // un número sin la lista, y el portal no podía mostrar nada pese a
-        // decir "19 certificados").
-        if (closed.empresaNit && closed.empresaId && closed.empresaId !== "particular") {
-          const _nitIdx = _nitPortal(closed.empresaNit);
-          if (_nitIdx.length >= 3) {
-            const fechaHoy = new Date().toISOString().split("T")[0];
-            try {
-              // 5a) portal_empresa_<NIT>.documentos
-              const _peR = await _workerGetChecked(`siso_portal_empresa_${_nitIdx}`);
-              if (_peR.failed) {
-                console.warn(`[cierre] portal_empresa_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe), reintentará en el próximo cierre de esta empresa.`);
-              } else {
-                let pe = _peR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", documentos: [] };
-                pe.documentos = pe.documentos || [];
-                if (_docCC && !pe.documentos.includes(_docCC)) pe.documentos.push(_docCC);
-                pe.updatedAt = new Date().toISOString();
-                pe.nombre = closed.empresaNombre || pe.nombre;
-                if (_WORKER_TOKEN) {
-                  try { await _workerSet(`siso_portal_empresa_${_nitIdx}`, pe); } catch {}
-                }
-                _sbSet(`siso_portal_empresa_${_nitIdx}`, pe).catch(() => {});
-              }
-
-              // 5b) portal_empresa_atenciones_<NIT> — MERGE por docNumero + fecha
-              const _paR = await _workerGetChecked(`siso_portal_empresa_atenciones_${_nitIdx}`);
-              let _yaExiste = false;
-              if (_paR.failed) {
-                console.warn(`[cierre] portal_empresa_atenciones_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe el agregado), reintentará en el próximo cierre.`);
-              } else {
-                let pa = _paR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", atenciones: [], fechas: [], _firma: portalData._firma, _doctorData: portalData._doctorData };
-                pa.atenciones = pa.atenciones || [];
-                _yaExiste = pa.atenciones.some(a =>
-                  String(a?.docNumero || "").trim() === _docCC &&
-                  (a?.fechaCierre || a?.fechaExamen || "").slice(0,10) === fechaHoy
-                );
-                if (!_yaExiste) {
-                  const { _firma: _f, _doctorData: _d, ...rest } = closed;
-                  pa.atenciones.push({
-                    ...rest,
-                    fechaCierre: fechaHoy,
-                    fechaExamen: closed.fechaExamen || fechaHoy,
-                    estadoHistoria: "Cerrada",
-                    codigoVerificacion: code,
-                  });
-                  pa.fechas = [...new Set(pa.atenciones.map(a => (a.fechaCierre || a.fechaExamen || "").slice(0,10)).filter(Boolean))].sort();
-                  pa.updatedAt = new Date().toISOString();
-                }
-                // FIX 2026-06-15: garantizar firma+médico en el ROOT del agregado
-                // SIEMPRE (no solo cuando se agrega atención nueva). Antes esto vivía
-                // dentro de if(!yaExiste) → agregados creados por scripts/recuperación
-                // (ej. AMEZQUITA) quedaban sin firma y sus certificados salían vacíos.
-                // Ahora cualquier cierre repara/garantiza la firma del root, para todas
-                // las empresas presentes y futuras.
-                const _firmaOk = pa._firma && typeof pa._firma === "string" && pa._firma.length > 100;
-                const _drOk = pa._doctorData && pa._doctorData.nombre && pa._doctorData.nombre !== "MÉDICO OCUPACIONAL";
-                let _needWrite = !_yaExiste;
-                if (!_firmaOk && portalData._firma) { pa._firma = portalData._firma; _needWrite = true; }
-                if (!_drOk && portalData._doctorData?.nombre) { pa._doctorData = portalData._doctorData; _needWrite = true; }
-                if (_needWrite) {
-                  pa.updatedAt = new Date().toISOString();
-                  if (_WORKER_TOKEN) {
-                    try { await _workerSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa); } catch (e) { console.warn("[cierre] D1 portal_empresa_atenciones:", e?.message); }
-                  }
-                  _sbSet(`siso_portal_empresa_atenciones_${_nitIdx}`, pa).catch(() => {});
-                }
-              }
-
-              // 5c) portal_empresa_docs_<NIT> — contador Y lista del periodo actual
-              const _pdR = await _workerGetChecked(`siso_portal_empresa_docs_${_nitIdx}`);
-              if (_pdR.failed) {
-                console.warn(`[cierre] portal_empresa_docs_${_nitIdx}: lectura falló — se omite esta actualización (no se sobrescribe), reintentará en el próximo cierre.`);
-              } else {
-                let pd = _pdR.value || { nit: _nitIdx, nombre: closed.empresaNombre || "", codigoAcceso: "", periodos: [], updatedAt: new Date().toISOString() };
-                pd.periodos = pd.periodos || [];
-                const periodoYM = fechaHoy.slice(0, 7);
-                let periodo = pd.periodos.find(p => p.periodo === periodoYM || (p.fecha || "").startsWith(periodoYM));
-                if (!periodo) {
-                  periodo = { periodo: periodoYM, fecha: periodoYM + "-01", certificados: { count: 0, documentos: [], updatedAt: new Date().toISOString() } };
-                  pd.periodos.push(periodo);
-                }
-                if (!periodo.certificados) periodo.certificados = { count: 0, documentos: [] };
-                if (!periodo.certificados.documentos) periodo.certificados.documentos = [];
-                if (_docCC && !periodo.certificados.documentos.includes(_docCC)) periodo.certificados.documentos.push(_docCC);
-                periodo.certificados.count = periodo.certificados.documentos.length;
-                periodo.certificados.updatedAt = new Date().toISOString();
-                periodo.updatedAt = new Date().toISOString();
-                pd.updatedAt = new Date().toISOString();
-                if (_WORKER_TOKEN) {
-                  try { await _workerSet(`siso_portal_empresa_docs_${_nitIdx}`, pd); } catch (e) { console.warn("[cierre] D1 portal_empresa_docs:", e?.message); }
-                }
-                _sbSet(`siso_portal_empresa_docs_${_nitIdx}`, pd).catch(() => {});
-              }
-            } catch (e) {
-              console.warn("[cierre] portal empresa publish error:", e?.message);
-            }
+        // 5° SEGUNDA TANDA: índice ligero de HC cerradas + portal de la EMPRESA
+        // (documentos[], atenciones[], periodos[].certificados). Con reintentos; si aun así
+        // falla se ENCOLA (se reintenta cada 30 s y al abrir la app) y se avisa al médico.
+        // Historial: FIX 2026-07-29 (fuga que vació FUNERALES LA ERMITA de ~59 a 16) hizo
+        // que una lectura fallida OMITIERA la escritura para no sobrescribir el agregado,
+        // pero no dejaba reintento — ver _publicarCierresPortalEmpresa.
+        {
+          let _r2 = { ok: false };
+          try {
+            _r2 = await _publicarSegundaTandaCierre(closed, {
+              userKey: currentUser?.user || "shared",
+              dataType: (typeof dataType !== "undefined") ? dataType : "ocupacional",
+              firma: portalData._firma,
+              doctorData: portalData._doctorData,
+              prevDoc: _prevPortalDoc,
+            });
+          } catch (e) { console.warn("[cierre] segunda tanda:", e?.message); }
+          if (!_r2.ok) {
+            _encolarPortalEmpresa(closed);
+            setTimeout(() => showAlert("✅ Historia cerrada y certificado publicado.\n\n⚠️ La lista de la empresa en el portal aún no se pudo actualizar (conexión inestable). Se reintentará automáticamente cada 30 segundos mientras la aplicación esté abierta — no tiene que hacer nada."), 1500);
           }
         }
         // ── Auto-marcar paciente agendado como "Visto" (tiempo real) ──────────
