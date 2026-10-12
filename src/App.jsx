@@ -14991,6 +14991,24 @@ const _fechaLocalISO = (d = new Date()) =>
 // (fechaConsulta); como último recurso la de registro/cierre.
 const _fechaAtencionPaciente = (p) =>
   String(p?.fechaExamen || p?.fechaConsulta || p?.fechaCierre || p?.fechaRegistro || "").slice(0, 10);
+// FECHA ÚNICA de la HC de medicina general (2026-10-12): una sola fecha rige la HC y todos
+// sus documentos (fórmula, derivaciones, exámenes, historia). Los documentos impresos leen
+// `fechaExamen || fechaConsulta`, así que se actualizan las dos para que no queden desfasadas.
+// Cada cambio deja rastro (fecha original + quién + cuándo): es una HC (Res. 1995/1999).
+const _aplicarFechaConsultaMG = (data, nueva, usuario) => {
+  const anterior = data?.fechaConsulta || "";
+  if (!nueva || nueva === anterior) return data;
+  return {
+    ...data,
+    fechaConsulta: nueva,
+    fechaExamen: nueva,
+    _fechaConsultaOriginal: data?._fechaConsultaOriginal || anterior,
+    _fechaConsultaCambios: [
+      ...(data?._fechaConsultaCambios || []),
+      { de: anterior, a: nueva, por: usuario || "", cuando: new Date().toISOString() },
+    ],
+  };
+};
 const _tipoAtencionLabel = (p) =>
   p?.type === "general" ? "Medicina general" : (p?.tipoExamen || "Ocupacional");
 const _normBusq = (s) =>
@@ -33162,7 +33180,38 @@ Esta historia clínica debe conservarse mínimo 20 años.
           </div>
           <div className="w-1/3 text-right text-[9px] font-bold text-gray-400">
             <p>FOR-MG-001 v1.0</p>
-            <p>{data.fechaConsulta}</p>
+            <label className="flex items-center justify-end gap-1" title="Fecha única de la consulta: rige la HC, la fórmula, las derivaciones y los exámenes">
+              <span>Fecha:</span>
+              <input
+                type="date"
+                value={data.fechaConsulta || ""}
+                max={_fechaLocalISO()}
+                disabled={data.estadoHistoria === "Cerrada"}
+                className="text-[10px] font-bold text-gray-700 border border-gray-300 rounded px-1 py-0.5 bg-white disabled:bg-transparent disabled:border-0 print:border-0 print:bg-transparent"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // Mientras se teclea el año aparecen fechas intermedias (0002, 0020…): se ignoran
+                  if (!v || v.slice(0, 4) < "2000") return;
+                  if (v > _fechaLocalISO()) {
+                    showAlert("⚠️ La fecha de la consulta no puede ser futura.");
+                    return;
+                  }
+                  const dias = Math.round(
+                    (new Date(_fechaLocalISO() + "T00:00:00") - new Date(v + "T00:00:00")) / 86400000
+                  );
+                  const aplicar = () =>
+                    setData((p) => _aplicarFechaConsultaMG(p, v, currentUser?.user));
+                  if (dias > 7) {
+                    showConfirm(
+                      `La fecha elegida (${v}) es ${dias} días anterior a hoy.\n\n¿Confirma registrar la consulta y todos sus documentos con esa fecha?`,
+                      aplicar
+                    );
+                  } else {
+                    aplicar();
+                  }
+                }}
+              />
+            </label>
           </div>
         </div>
         <fieldset
