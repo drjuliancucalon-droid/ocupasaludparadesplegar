@@ -15009,6 +15009,53 @@ const _aplicarFechaConsultaMG = (data, nueva, usuario) => {
     ],
   };
 };
+// Datos que se copian de un paciente ya visto al abrir/prellenar una HC de MEDICINA GENERAL
+// (2026-10-22): identificación + antecedentes de su HC más reciente. Una sola fuente para el
+// botón "HC Gral." de Pacientes, el autocompletado del nombre y la barra "Buscar paciente".
+// No muta `p` ni `lista`; no incluye id, estado, fechas ni datos de empresa/cargo.
+const _camposPrefillGeneral = (p, lista) => {
+  const previas = (lista || [])
+    .filter((h) => h && h.docNumero === p.docNumero && (h.fechaExamen || h.fechaConsulta))
+    .sort((a, b) => new Date(_fechaAtencionPaciente(b) || 0) - new Date(_fechaAtencionPaciente(a) || 0));
+  // Cada antecedente se toma de la HC más reciente que SÍ lo tenga (la última puede ser una
+  // consulta general sin ese bloque); si ninguna lo tiene, del propio registro `p`.
+  const latestCon = (k) => (previas.find((h) => h && h[k]) || p)[k];
+  const latest = {
+    vacunacionCompleta: latestCon("vacunacionCompleta"),
+    vacunas: latestCon("vacunas"),
+    antecedentes: latestCon("antecedentes"),
+    habitos: latestCon("habitos"),
+    antecedentesAgrupados: latestCon("antecedentesAgrupados"),
+  };
+  const nac = p.fechaNacimiento ? new Date(p.fechaNacimiento) : null;
+  const edadCalc = nac && !isNaN(nac) ? Math.floor((Date.now() - nac.getTime()) / 31557600000) : NaN;
+  const campos = {
+    nombres: p.nombres || "",
+    docTipo: p.docTipo || "CC",
+    docNumero: p.docNumero || "",
+    edad: Number.isFinite(edadCalc) && edadCalc >= 0 ? String(edadCalc) : (p.edad || ""),
+    fechaNacimiento: p.fechaNacimiento || "",
+    genero: p.genero || "",
+    estadoCivil: p.estadoCivil || "",
+    escolaridad: p.escolaridad || "",
+    telefono: p.telefono || p.celular || "",
+    celular: p.celular || "",
+    email: p.email || "",
+    residencia: p.residencia || "",
+    eps: p.eps || "",
+    afp: p.afp || "",
+    arl: p.arl || "",
+    grupoSanguineo: p.grupoSanguineo || "",
+    foto: p.foto || "",
+    vacunacionCompleta: latest.vacunacionCompleta || false,
+    vacunas: Array.isArray(latest.vacunas) ? [...latest.vacunas] : [],
+    alergias: p.alergias || latest.antecedentesAgrupados?.alergicos?.det || "",
+  };
+  if (latest.antecedentes) campos.antecedentes = { ...latest.antecedentes };
+  if (latest.habitos) campos.habitos = { ...latest.habitos };
+  if (latest.antecedentesAgrupados) campos.antecedentesAgrupados = JSON.parse(JSON.stringify(latest.antecedentesAgrupados));
+  return { campos, cantidadHC: previas.length };
+};
 const _tipoAtencionLabel = (p) =>
   p?.type === "general" ? "Medicina general" : (p?.tipoExamen || "Ocupacional");
 const _normBusq = (s) =>
@@ -25560,7 +25607,7 @@ const handleLogin = (u, p) => {
     goTo("historia");
     logAccess("Apertura", newId, "ocupacional"); // AUDIT: Res. 1888/2025 RDA
   };
-  const handleNewGeneralHistory = () => {
+  const _nuevaHCGeneral = (pacienteBase) => {
     if (currentUser?.role === "secretaria") {
       if (!_secretariaPuede("pacientes_crear", currentUser, usersList)) {
         showAlert(
@@ -25596,8 +25643,11 @@ const handleLogin = (u, p) => {
         _empresaAutoTag2.empresaNit = _empAT2.nit || "";
       }
     }
+    // Paciente ya visto (botón "HC Gral." de Pacientes): precarga sus datos y antecedentes
+    const _prefill = pacienteBase ? _camposPrefillGeneral(pacienteBase, patientsList) : null;
     setData({
       ...initialGeneralPatientState,
+      ...(_prefill ? _prefill.campos : {}),
       id: newId,
       _medicoId: medicoDefault2,
       _orgId: myOrgId,
@@ -25608,7 +25658,9 @@ const handleLogin = (u, p) => {
     _setHcDirty(false);
     goTo("historia");
     logAccess("Apertura", newId, "general"); // AUDIT: Res. 1888/2025 RDA
+    setHistoryNotification(_prefill && _prefill.cantidadHC > 0 ? _prefill.cantidadHC : null);
   };
+  const handleNewGeneralHistory = () => _nuevaHCGeneral(null);
   // FIX 2026-06-24: abrirHCDesdeAgenda HOISTEADA a nivel App.
   // Antes estaba definida DENTRO de renderAgenda, pero el modal de elección de
   // tipo de HC (HC Ocupacional / HC General) se renderiza en el render principal,
@@ -27270,13 +27322,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
       const uniq = [];
       matches
         .sort(
-          (a, b) => new Date(b.fechaExamen || 0) - new Date(a.fechaExamen || 0)
+          (a, b) => new Date(_fechaAtencionPaciente(b) || 0) - new Date(_fechaAtencionPaciente(a) || 0)
         )
         .forEach((m) => {
           if (!seen.has(m.docNumero)) {
             seen.add(m.docNumero);
             const hc = patientsList.filter(
-              (h) => h.docNumero === m.docNumero && h.fechaExamen
+              (h) => h.docNumero === m.docNumero && (h.fechaExamen || h.fechaConsulta)
             ).length;
             uniq.push({ ...m, historyCount: hc });
           }
@@ -33082,44 +33134,11 @@ Esta historia clínica debe conservarse mínimo 20 años.
         : [];
     const loadGenPatient = (p) => {
       // Memoria de antecedentes: carga datos clínicos previos del paciente
-      const prevHCs = patientsList
-        .filter((h) => h.docNumero === p.docNumero && h.fechaExamen)
-        .sort(
-          (a, b) => new Date(b.fechaExamen || 0) - new Date(a.fechaExamen || 0)
-        );
-      const latest = prevHCs[0] || p;
-      setData((prev) => ({
-        ...prev,
-        // Datos personales
-        nombres: p.nombres || "",
-        docNumero: p.docNumero || "",
-        edad: p.edad || "",
-        fechaNacimiento: p.fechaNacimiento || "",
-        genero: p.genero || "",
-        estadoCivil: p.estadoCivil || "",
-        escolaridad: p.escolaridad || "",
-        telefono: p.telefono || p.celular || "",
-        email: p.email || "",
-        residencia: p.residencia || "",
-        eps: p.eps || "",
-        afp: p.afp || "",
-        grupoSanguineo: p.grupoSanguineo || "",
-        foto: p.foto || "",
-        // ANTECEDENTES POR MEMORIA (desde HC más reciente)
-        antecedentes: latest.antecedentes
-          ? { ...latest.antecedentes }
-          : prev.antecedentes,
-        habitos: latest.habitos ? { ...latest.habitos } : prev.habitos,
-        antecedentesAgrupados: latest.antecedentesAgrupados
-          ? JSON.parse(JSON.stringify(latest.antecedentesAgrupados))
-          : prev.antecedentesAgrupados,
-        vacunacionCompleta: latest.vacunacionCompleta || false,
-        vacunas: latest.vacunas || [],
-        alergias:
-          p.alergias || latest.antecedentesAgrupados?.alergicos?.det || "",
-      }));
+      const { campos, cantidadHC } = _camposPrefillGeneral(p, patientsList);
+      setData((prev) => ({ ...prev, ...campos }));
       setGenPatSearch("");
-      if (prevHCs.length > 0) setHistoryNotification(prevHCs.length);
+      setPatientSuggestions([]);
+      if (cantidadHC > 0) setHistoryNotification(cantidadHC);
     };
     return (
       <div
@@ -33220,7 +33239,28 @@ Esta historia clínica debe conservarse mínimo 20 años.
         >
           {/* Datos básicos */}
           <SectionTitle title="Datos del Paciente" icon={User} color="blue" />
-          <div className="flex flex-wrap -mx-1.5">
+          <div className="flex flex-wrap -mx-1.5 relative">
+            {patientSuggestions.length > 0 && data.estadoHistoria !== "Cerrada" && (
+              <div className="absolute z-50 top-16 left-0 w-full bg-white border border-blue-200 shadow-xl rounded-lg max-h-52 overflow-y-auto no-print">
+                {patientSuggestions.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => loadGenPatient(p)}
+                    className="p-2 hover:bg-blue-50 cursor-pointer border-b border-gray-100 flex justify-between items-center"
+                  >
+                    <div>
+                      <p className="font-bold text-xs text-gray-800">{p.nombres}</p>
+                      <p className="text-[10px] text-gray-500">
+                        {p.docTipo || "CC"}: {p.docNumero} -- {p.eps || "Sin EPS"}
+                      </p>
+                    </div>
+                    <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-bold">
+                      {p.historyCount} hist.
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             <InputGroup
               label="Nombres Completos"
               name="nombres"
@@ -37808,6 +37848,13 @@ Esta historia clínica debe conservarse mínimo 20 años.
                           className="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded-lg border border-blue-200 font-bold flex items-center gap-1 hover:bg-blue-100"
                         >
                           <PlusCircle className="w-3 h-3" /> HC Ocup.
+                        </button>
+                        <button
+                          onClick={() => _nuevaHCGeneral(p)}
+                          className="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded-lg border border-indigo-200 font-bold flex items-center gap-1 hover:bg-indigo-100"
+                          title="Nueva HC de Medicina General con los datos y antecedentes de este paciente"
+                        >
+                          <PlusCircle className="w-3 h-3" /> HC Gral.
                         </button>
                         {p.estadoHistoria === "Cerrada" && (
                           <>
