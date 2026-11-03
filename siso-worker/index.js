@@ -71,6 +71,12 @@ async function decompressValue(stored) {
 // No bloqueante para el flujo principal: si falla, el blob ya se escribió
 // igual (try/catch propio, nunca lanza). Ver docs/COORDINACION-REFACTOR-
 // ESQUEMA-D1-2026-08-21.md para el plan completo y el acuerdo con el refactor.
+// FIX 2026-11-03 (cuota D1, plan gratis = 100.000 filas escritas/día): todos los upserts
+// llevan `WHERE <tabla>.data IS NOT excluded.data` (y siso_store `WHERE value IS NOT
+// excluded.value`). Antes, cada guardado de una lista reescribía TODAS sus filas aunque
+// fueran idénticas (p. ej. 39 empresas × 2 claves cada 2 min). Con el WHERE, SQLite omite la
+// actualización de las filas sin cambios y D1 no las cuenta como escritas. Nota: en una fila
+// sin cambios updated_at tampoco se mueve (refleja el último cambio REAL).
 async function _dualWriteBills(env, items) {
   if (!Array.isArray(items) || !items.length) return;
   try {
@@ -79,7 +85,8 @@ async function _dualWriteBills(env, items) {
        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          company_id=excluded.company_id, client_nit=excluded.client_nit, date=excluded.date,
-         pagada=excluded.pagada, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+         pagada=excluded.pagada, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at
+       WHERE bills.data IS NOT excluded.data`
     );
     const batch = [];
     for (const it of items) {
@@ -102,7 +109,8 @@ async function _dualWriteCaja(env, suf, items) {
        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          suf=excluded.suf, fecha=excluded.fecha, estado=excluded.estado,
-         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at
+       WHERE caja_movimientos.data IS NOT excluded.data`
     );
     const batch = [];
     for (const it of items) {
@@ -125,7 +133,8 @@ async function _dualWriteInformes(env, items) {
        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          tipo=excluded.tipo, empresa_id=excluded.empresa_id, fecha=excluded.fecha,
-         stats_key=excluded.stats_key, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+         stats_key=excluded.stats_key, deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at
+       WHERE informes.data IS NOT excluded.data`
     );
     const batch = [];
     for (const it of items) {
@@ -154,7 +163,8 @@ async function _dualWriteInformeStats(env, key, value) {
     await env.DB.prepare(
       `INSERT INTO informe_stats (key, empresa_id, data, updated_at)
        VALUES (?, ?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET empresa_id=excluded.empresa_id, data=excluded.data, updated_at=excluded.updated_at`
+       ON CONFLICT(key) DO UPDATE SET empresa_id=excluded.empresa_id, data=excluded.data, updated_at=excluded.updated_at
+       WHERE informe_stats.data IS NOT excluded.data`
     ).bind(key, empresaId, JSON.stringify(value)).run();
   } catch (e) {
     console.warn("[dual-write] informe_stats:", e?.message);
@@ -168,7 +178,8 @@ async function _dualWriteEmpresas(env, items) {
        VALUES (?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          nit=excluded.nit, nombre=excluded.nombre, deleted=excluded.deleted,
-         data=excluded.data, updated_at=excluded.updated_at`
+         data=excluded.data, updated_at=excluded.updated_at
+       WHERE empresas.data IS NOT excluded.data`
     );
     const batch = [];
     for (const it of items) {
@@ -190,7 +201,8 @@ async function _dualWriteEncuestas(env, items) {
        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET
          empresa_id=excluded.empresa_id, token=excluded.token, estado=excluded.estado,
-         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at`
+         deleted=excluded.deleted, data=excluded.data, updated_at=excluded.updated_at
+       WHERE encuestas.data IS NOT excluded.data`
     );
     const batch = [];
     for (const it of items) {
@@ -474,11 +486,15 @@ export default {
       // Elimina la causa raíz del 503 por CPU timeout (10ms free tier).
       if (request.method === "GET" && path.startsWith("/store/prefix/")) {
         const prefix = decodeURIComponent(path.slice(14));
+        // FIX 2026-11-03 (cuota D1): `key LIKE 'pfx%'` NO usa el índice en SQLite (LIKE es
+        // insensible a mayúsculas) → cada consulta leía las ~3.300 filas de la tabla. El rango
+        // [pfx, pfx + U+FFFF) sí usa la clave primaria y lee solo las filas que coinciden.
+        // Además es exacto: en LIKE el "_" de los prefijos (siso_portal_…) era comodín.
         const rows = await env.DB.prepare(
-          "SELECT key, value FROM siso_store WHERE key LIKE ? " +
+          "SELECT key, value FROM siso_store WHERE key >= ? AND key < ? " +
           "AND key NOT GLOB '*__c[0-9]*' AND key NOT LIKE '%\\_\\_new%' ESCAPE '\\' AND key NOT GLOB '*_chunk_[0-9]*_of_[0-9]*' " +
           "LIMIT 2000"
-        ).bind(prefix + "%").all();
+        ).bind(prefix, prefix + "\uffff").all();
         const result = (rows.results || []).map(r => ({ key: r.key, value: r.value, _raw: true }));
         return new Response(JSON.stringify(result), { headers });
       }
@@ -531,7 +547,7 @@ export default {
         }
 
         const stmt = env.DB.prepare(
-          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE siso_store.value IS NOT excluded.value"
         );
         // Batch en chunks de 50 — comprime cada value (gzip) antes de insertar
         const CHUNK = 50;
@@ -598,7 +614,7 @@ export default {
           if (om?.value) { const m = JSON.parse(await decompressValue(om.value)); if (m?.chunked && Number.isFinite(m.count)) oldCount = m.count; }
         } catch {}
         const up = env.DB.prepare(
-          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE siso_store.value IS NOT excluded.value"
         );
         const del = env.DB.prepare("DELETE FROM siso_store WHERE key = ?");
         const meta = { chunked: true, count: pieces.length, totalBytes: payload.length, hash, ts: Date.now() };
@@ -638,7 +654,7 @@ export default {
         if (idx >= 0) arr[idx] = item; else arr.push(item);
         const cv = await compressValue(JSON.stringify(arr));
         await env.DB.prepare(
-          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+          "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE siso_store.value IS NOT excluded.value"
         ).bind(key, cv).run();
         return new Response(JSON.stringify({ ok: true, count: arr.length }), { headers });
       }
@@ -784,9 +800,14 @@ export default {
   // CRON TRIGGER — corre automáticamente según cron expression definido en wrangler.json
   // Genera snapshot diario + rota viejos (>7 días).
   // ─────────────────────────────────────────────────────────────────────
+  // FIX 2026-11-03: el cron ya NO genera el snapshot completo — con ~137 MB de datos
+  // superaba la memoria del Worker (no quedaba ningún siso_snapshot_* guardado) y aun así
+  // leía la tabla entera cada día. El respaldo lo da D1 Time Travel (restauración a
+  // cualquier minuto de los últimos días, incluido en el plan). Se conserva la limpieza.
+  // POST /snapshot sigue disponible para generarlo a mano si algún día se necesita.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runDailySnapshot(env).catch(err => {
-      console.error("[CRON snapshot] error:", err?.message);
+    ctx.waitUntil(runDailyMaintenance(env).catch(err => {
+      console.error("[CRON mantenimiento] error:", err?.message);
     }));
   },
 };
@@ -800,6 +821,34 @@ export default {
 //   4) Guarda como siso_snapshot_YYYY-MM-DD__c0..cN + __meta + __manifest
 //   5) Rota: borra snapshots con fecha > 7 días atrás
 // ─────────────────────────────────────────────────────────────────────────
+async function runDailyMaintenance(env) {
+  const log = [];
+  try {
+    const cutoff = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const delRes = await env.DB.prepare(
+      "DELETE FROM siso_store WHERE key >= 'siso_snapshot_' AND key < 'siso_snapshot_\uffff' AND substr(key, 15, 10) < ?"
+    ).bind(cutoff).run();
+    log.push(`[ROT] borradas ${delRes.meta?.changes ?? 0} claves de snapshots anteriores a ${cutoff}`);
+  } catch (e) { log.push(`[ROT] error: ${e?.message}`); }
+  try {
+    const cutoffMs = Date.now() - 60 * 60 * 1000;
+    const rows = await env.DB.prepare(
+      "SELECT key FROM siso_store WHERE key LIKE '%\\_\\_new%' ESCAPE '\\'"
+    ).all();
+    let borrados = 0;
+    for (const r of (rows.results || [])) {
+      const m = r.key.match(/__new(\d+)__/);
+      if (m && parseInt(m[1], 10) < cutoffMs) {
+        await env.DB.prepare("DELETE FROM siso_store WHERE key = ?").bind(r.key).run();
+        borrados++;
+      }
+    }
+    log.push(`[GC-TEMP] borrados ${borrados} chunks temporales abandonados`);
+  } catch (e) { log.push(`[GC-TEMP] error: ${e?.message}`); }
+  console.log("[CRON mantenimiento]", log.join(" | "));
+  return { ok: true, log };
+}
+
 async function runDailySnapshot(env) {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const snapPrefix = `siso_snapshot_${today}`;
@@ -898,7 +947,7 @@ async function runDailySnapshot(env) {
 
   // 4) Escribir piezas + meta + manifest
   const insertStmt = env.DB.prepare(
-    "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    "INSERT INTO siso_store(key, value, updated_at) VALUES(?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE siso_store.value IS NOT excluded.value"
   );
   // Batch para piezas (max 50 por batch para no exceder D1 binds)
   const writeBatch = [];

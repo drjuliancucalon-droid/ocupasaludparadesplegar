@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS siso_store (
   value      TEXT NOT NULL,
   updated_at TEXT DEFAULT (datetime('now'))
 );
-CREATE INDEX IF NOT EXISTS idx_key ON siso_store(key);
+-- idx_key eliminado (2026-11-03): duplicaba el índice automático de la PRIMARY KEY y hacía
+-- que cada escritura actualizara un índice extra. En producción: DROP INDEX IF EXISTS idx_key;
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- FASE 0 (2026-08-20) — migración piloto de blob-JSON a tablas relacionales.
