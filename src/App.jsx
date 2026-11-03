@@ -372,8 +372,100 @@ const _workerCircuitOpen = () => Date.now() < _wCircuitOpenUntil;
 let _wNetFailCount = 0;
 const _W_NET_CIRCUIT_THRESHOLD = 3;
 const _W_NET_COOLDOWN_MS = 15_000;
+// ── CUOTA DIARIA DE D1 (2026-11-03) ─────────────────────────────────────────
+// Plan gratuito de Cloudflare: 100.000 filas escritas y 5 M leídas por día (se reinicia a
+// las 00:00 UTC = 7:00 p.m. Colombia). Al agotarse, el Worker responde 500 con un error de
+// D1; antes la app reintentaba 3 veces cada escritura (más gasto) sin avisar a nadie.
+// Ahora: pausa las ESCRITURAS 10 min (los datos quedan en el equipo y en la cola de
+// pendientes), luego vuelve a probar; avisa en el encabezado y el aviso se quita solo con
+// la primera escritura que vuelva a funcionar.
+const _CUOTA_D1_PAUSA_MS = 10 * 60 * 1000;
+let _cuotaD1PausaHasta = 0;
+let _cuotaD1Aviso = false;
+const _cuotaD1Agotada = () => Date.now() < _cuotaD1PausaHasta;
+const _reinicioCuotaD1 = () => {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+};
+const _avisarCuotaD1 = (activa) => {
+  _cuotaD1Aviso = activa;
+  try {
+    window.dispatchEvent(new CustomEvent("siso-cuota-d1", { detail: activa ? { reinicio: _reinicioCuotaD1() } : null }));
+  } catch {}
+};
+// true si la respuesta es un error de LÍMITE de D1 (no un corte de red ni un timeout de CPU,
+// que llegan como página HTML de Cloudflare sin la palabra D1/SQLITE).
+const _revisarCuotaD1 = async (r) => {
+  if (!r || r.status < 500) return false;
+  let txt = "";
+  try { txt = await r.clone().text(); } catch { return false; }
+  if (!/D1|SQLITE/i.test(txt) || !/limit|exceed|quota/i.test(txt)) return false;
+  _cuotaD1PausaHasta = Date.now() + _CUOTA_D1_PAUSA_MS;
+  if (!_cuotaD1Aviso) {
+    console.warn("[SISO] D1 alcanzó su límite — escrituras en pausa 10 min; los datos quedan en este equipo y se reintentan solos:", txt.slice(0, 200));
+    _avisarCuotaD1(true);
+  }
+  return true;
+};
+
+// ── ESCRIBIR SOLO SI CAMBIÓ (2026-11-03) ─────────────────────────────────────
+// Causa principal del agotamiento de la cuota: el autoguardado de cada 2 min reescribía
+// TODAS las colecciones aunque nada hubiera cambiado (~450 filas por ciclo; la lista de
+// pacientes sola son 18 piezas × 2 copias). Ahora cada clave guarda la huella (hash) de lo
+// último que llegó a D1 con éxito; si el contenido es el mismo, no se envía nada. La huella
+// caduca a las 6 h para que, si algo se perdió en la nube, se vuelva a subir solo.
+const _HUELLAS_KEY = "siso_huellas_sync";
+const _HUELLA_TTL_MS = 6 * 60 * 60 * 1000;
+const _HUELLAS_MAX = 300;
+let _huellas = null;
+const _huellasMapa = () => {
+  if (_huellas) return _huellas;
+  try {
+    const o = JSON.parse(localStorage.getItem(_HUELLAS_KEY) || "{}");
+    _huellas = o && typeof o === "object" && !Array.isArray(o) ? o : {};
+  } catch { _huellas = {}; }
+  return _huellas;
+};
+const _registrarHuella = (key, h) => {
+  const m = _huellasMapa();
+  m[key] = [h, Date.now()];
+  const ks = Object.keys(m);
+  if (ks.length > _HUELLAS_MAX) {
+    ks.sort((a, b) => m[a][1] - m[b][1]).slice(0, ks.length - _HUELLAS_MAX).forEach((k) => delete m[k]);
+  }
+  try { localStorage.setItem(_HUELLAS_KEY, JSON.stringify(m)); } catch {}
+};
+const _huellaVigente = (key, h) => {
+  const e = _huellasMapa()[key];
+  return !!e && e[0] === h && Date.now() - e[1] < _HUELLA_TTL_MS;
+};
+// Ejecuta `escribir` solo si `value` cambió desde la última escritura confirmada en D1.
+// `escribir` debe devolver true ÚNICAMENTE si D1 quedó escrito.
+const _siCambio = async (key, value, escribir) => {
+  let h = null;
+  try { h = _hash64(JSON.stringify(value)); } catch {}
+  if (h && _huellaVigente(key, h)) return true;
+  const ok = await escribir();
+  if (ok === true && h) _registrarHuella(key, h);
+  return !!ok;
+};
+// Variante para el autoguardado: D1 primero; si D1 falla se deja el respaldo en Supabase
+// (como antes) pero SIN registrar huella, para que se reintente en D1 al siguiente ciclo.
+const _sbSetSiCambio = (key, value) =>
+  _siCambio(key, value, async () => {
+    if (_WORKER_TOKEN && (await _workerSet(key, value))) return true;
+    await _sbSet(key, value).catch(() => false);
+    return false;
+  });
+// La lista de pacientes (~8,5 MB) se sube desde el autoguardado como máximo cada 10 min;
+// Guardar y Cerrar HC la suben al instante por su propio camino (_syncPatients).
+const _AUTO_PACIENTES_MIN_MS = 10 * 60 * 1000;
+let _ultimaAutoPacientes = 0;
+
 const _workerFetch = async (url, opts = {}, retries = 3) => {
   if (_workerCircuitOpen()) return null; // falla rápido, sin red, sin log repetido
+  const _esEscritura = !!(opts.method && opts.method !== "GET");
+  if (_esEscritura && _cuotaD1Agotada()) return null; // cuota D1 agotada: no insistir (queda en cola)
   await _wAcquire();
   try {
     for (let attempt = 0; ; attempt++) {
@@ -397,7 +489,13 @@ const _workerFetch = async (url, opts = {}, retries = 3) => {
         return r;
       }
       // Éxito, o error definitivo (4xx que no sea 429) → devolver tal cual
-      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) { _wAuth401Count = 0; _wNetFailCount = 0; return r; }
+      if (r && (r.ok || (r.status >= 400 && r.status < 500 && r.status !== 429))) {
+        _wAuth401Count = 0; _wNetFailCount = 0;
+        if (r.ok && _esEscritura && _cuotaD1Aviso) _avisarCuotaD1(false); // la nube volvió a aceptar escrituras
+        return r;
+      }
+      // Límite de D1 agotado: reintentar solo gasta más peticiones → devolver ya
+      if (r && r.status >= 500 && (await _revisarCuotaD1(r))) return r;
       // Transitorio (null / 429 / 5xx): reintentar si quedan intentos
       if (attempt >= retries) {
         _wNetFailCount++;
@@ -485,6 +583,7 @@ const _hash64 = (s) => {
 //      versión está verificada íntegra. Cero ventana de "datos rotos".
 const _workerSet = async (key, value) => {
   if (!_WORKER_TOKEN) return false;
+  if (_cuotaD1Agotada()) return false; // cuota D1 agotada: el llamador lo deja en cola local
   let serialized;
   try { serialized = JSON.stringify(value); }
   catch { return false; }
@@ -535,6 +634,7 @@ const _workerSet = async (key, value) => {
       const d = await r.json().catch(() => null);
       if (d && d.ok) return true;
     }
+    if (await _revisarCuotaD1(r)) return false; // límite de D1: no caer al troceo cliente (más escrituras)
     console.warn(`[_workerSet] /store/chunked no disponible (${r.status})`);
   } catch (e) {
     console.warn(`[_workerSet] /store/chunked falló (${e?.message})`);
@@ -19257,6 +19357,13 @@ function AppInner() {
   });
   // Aviso "HCs sin respaldo en nube" — ver _markUnsyncedHC (nivel módulo).
   const [hcSinRespaldo, setHcSinRespaldo] = useState(() => _hasUnsyncedHC());
+  // Aviso "límite diario de la nube alcanzado" — ver _revisarCuotaD1 (nivel módulo).
+  const [avisoCuotaD1, setAvisoCuotaD1] = useState(null);
+  useEffect(() => {
+    const h = (e) => setAvisoCuotaD1(e?.detail || null);
+    window.addEventListener("siso-cuota-d1", h);
+    return () => window.removeEventListener("siso-cuota-d1", h);
+  }, []);
   useEffect(() => {
     _unsyncedHCCallback = setHcSinRespaldo;
     return () => { _unsyncedHCCallback = null; };
@@ -20297,6 +20404,8 @@ function AppInner() {
     let cancelado = false;
     const _limiteMs = Date.now() - 45 * 24 * 60 * 60 * 1000; // ignora borradores abandonados hace >45 días
     const cargar = async () => {
+      // FIX 2026-11-03 (cuota D1): cada consulta por prefijo recorre toda la tabla de D1
+      if (typeof document !== "undefined" && document.hidden) return;
       const porId = new Map();
       const sumar = (v, ts) => {
         if (!v || typeof v !== "object" || !String(v.nombres || "").trim() || !v.id) return;
@@ -20331,7 +20440,7 @@ function AppInner() {
       if (!cancelado) setAtencBorradores([...porId.values()]);
     };
     cargar();
-    const iv = setInterval(cargar, 60000);
+    const iv = setInterval(cargar, 5 * 60 * 1000); // antes 60 s
     return () => { cancelado = true; clearInterval(iv); };
   }, [view, reporteActiveTab, currentUser]);
   // ── PORTAL DE EMPRESA: cola de pendientes + autocorrección (2026-10-08) ──────
@@ -22867,7 +22976,15 @@ function AppInner() {
         if (idx >= 0) list[idx] = toSave;
         else list.push(toSave);
         setPatientsList(list);
-        _syncPatients(list);
+        // FIX 2026-11-03 (cuota D1): antes subía la lista COMPLETA a la nube cada 2 min de
+        // pausa con la HC abierta. Ahora queda en el equipo (localStorage + IndexedDB); la
+        // nube ya tiene el borrador de esta HC (siso_autosave_cloud_*, cada 60 s si hay
+        // cambios) y la lista completa se sube al Guardar/Cerrar o en el autoguardado general.
+        {
+          const _suidA = currentUser?.empresaId ? "empresa_" + currentUser.empresaId : currentUser?.user || "shared";
+          try { _ls.setItem(_patKey(_suidA), JSON.stringify(_stripFirmaLS(list))); } catch {}
+          _idbSet(_patKey(_suidA), list).catch(() => {});
+        }
         setSaveStatus("auto");
         setTimeout(() => setSaveStatus(""), 2000);
       }
@@ -22970,24 +23087,27 @@ function AppInner() {
         })();
         // SEGUNDA DEFENSA: incluso si por algún camino llegara un fantasma,
         // filtrar de nuevo antes de serializar a la nube.
-        const _patToSave = _patFull
+        // FIX 2026-11-03 (cuota D1): la lista completa de pacientes como máximo cada 10 min
+        const _tocaPacientes = Date.now() - _ultimaAutoPacientes >= _AUTO_PACIENTES_MIN_MS;
+        const _patToSave = _patFull && _tocaPacientes
           ? _patFull.filter(p => p && p.id).map(_slimPatient)
           : null;
+        if (_patToSave) _ultimaAutoPacientes = Date.now();
         // Empresas: sin logos base64
         const _compFull   = companies.length > 0 ? companies : null;
         const _compToSave = _compFull ? _stripBase64Deep(_compFull) : null;
         const tasks = [
           // ── DOBLE ESCRITURA: clave primaria + clave de respaldo (sin base64) ──
           ...(_patToSave  ? [
-            _sbSet(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon   (primaria)
-            _sbSet(_patKey(_u),      _patToSave),   // siso_db_patients_drcucalon (respaldo)
+            _sbSetSiCambio(_patKeyCloud(_u), _patToSave),   // siso_patients_drcucalon   (primaria)
+            _sbSetSiCambio(_patKey(_u),      _patToSave),   // siso_db_patients_drcucalon (respaldo)
           ] : []),
           ...(_compToSave ? [
-            _sbSet(_compKeyCloud(_u), _compToSave), // siso_companies_drcucalon  (primaria)
-            _sbSet("siso_companies_shared", _compToSave), // respaldo compartido
+            _sbSetSiCambio(_compKeyCloud(_u), _compToSave), // siso_companies_drcucalon  (primaria)
+            _sbSetSiCambio("siso_companies_shared", _compToSave), // respaldo compartido
           ] : []),
           // ── Datos operativos — usuarios sin base64 de firmas ─────────────────────
-          _sbSetSafe("siso_users",                        usersList),  // strip firma/logo
+          _siCambio("siso_users", usersList, () => _sbSetSafe("siso_users", usersList)),  // strip firma/logo
           // FIX 2026-07-29: esta escritura NO tenía la guardia anti-borrado que
           // sí tienen sus vecinas (la de savedReports justo abajo y la copia
           // duplicada de cuentas ~45 líneas más adelante, que ya usa
@@ -22995,80 +23115,77 @@ function AppInner() {
           // lista de cuentas vacía en memoria, empujaba [] sobre la nube y
           // borraba todas las cuentas de cobro guardadas. Reportado por el
           // médico: crea la cuenta, al día siguiente inicia sesión y ya no está.
-          ((savedBillsList || []).length ? _sbSet(`siso_saved_bills_${_asSuf}`, savedBillsList) : Promise.resolve(true)),
+          ((savedBillsList || []).length ? _sbSetSiCambio(`siso_saved_bills_${_asSuf}`, savedBillsList) : Promise.resolve(true)),
           // Guardia anti-borrado: no empujar lista vacía sobre la nube
-          ((savedReports || []).length ? _sbSet("siso_saved_reports", savedReports) : Promise.resolve(true)),
-          _sbSet("siso_audit_log",                        auditLog),
-          _sbSet("siso_mensajes",                         mensajes),
-          _sbSet(`siso_agendados_${_asSuf}`,              agendados),
+          ((savedReports || []).length ? _sbSetSiCambio("siso_saved_reports", savedReports) : Promise.resolve(true)),
+          _sbSetSiCambio("siso_audit_log",                        auditLog),
+          _sbSetSiCambio("siso_mensajes",                         mensajes),
+          _sbSetSiCambio(`siso_agendados_${_asSuf}`,              agendados),
           // SYNC-FIX: doble escritura atenciones — cerradas (autoritativa) + por usuario
           // ANTI-REGRESIÓN: usar MERGE para preservar atenciones reparadas o de otros dispositivos
-          _writeArrayMergeD1("siso_atenciones_cerradas", atencionesCerradas).then(() =>
-            _sbSet("siso_atenciones_cerradas",          atencionesCerradas)
+          // (antes se escribía DOS veces seguidas: merge + set; el merge solo basta)
+          _siCambio("siso_atenciones_cerradas", atencionesCerradas, () =>
+            _writeArrayMergeD1("siso_atenciones_cerradas", atencionesCerradas)
           ),
-          _sbSet(`siso_atenciones_${_asSuf}`,              atencionesCerradas),
-          _sbSet("siso_ai_config_provider", { activeProvider: aiConfig.activeProvider }),
+          _sbSetSiCambio(`siso_atenciones_${_asSuf}`,              atencionesCerradas),
+          _sbSetSiCambio("siso_ai_config_provider", { activeProvider: aiConfig.activeProvider }),
         ];
         // ── Firma del médico: NO va a Supabase (base64 pesado, vive en localStorage) ──
-        // if (doctorSignature) tasks.push(_sbSet("siso_doctor_signature", doctorSignature));
+        // if (doctorSignature) tasks.push(_sbSetSiCambio("siso_doctor_signature", doctorSignature));
         if (currentUser?.doctorData && currentUser?.user)
-          tasks.push(_sbSet(`siso_doctor_data_${currentUser.user}`, currentUser.doctorData));
+          tasks.push(_sbSetSiCambio(`siso_doctor_data_${currentUser.user}`, currentUser.doctorData));
         // ── Módulos adicionales (guardar siempre aunque estén vacíos para marcar timestamp) ──
         if (cajaMovimientos?.length)
-          tasks.push(_sbSet(`siso_caja_movs_${_u}`, cajaMovimientos));
+          tasks.push(_sbSetSiCambio(`siso_caja_movs_${_u}`, cajaMovimientos));
         if (arlGuardados?.length)
-          tasks.push(_sbSet(`siso_arl_${_u}`, arlGuardados));
+          tasks.push(_sbSetSiCambio(`siso_arl_${_u}`, arlGuardados));
         if (teleconsultas?.length)
-          tasks.push(_sbSet(`siso_teleconsultas_${_u}`, teleconsultas));
+          tasks.push(_sbSetSiCambio(`siso_teleconsultas_${_u}`, teleconsultas));
         if (habeasRequests?.length)
-          tasks.push(_sbSet(`siso_habeas_${_u}`, habeasRequests));
+          tasks.push(_sbSetSiCambio(`siso_habeas_${_u}`, habeasRequests));
         // ── Módulos que faltaban en el sync anterior ─────────────────────────────
-        const _cartasCustodia = sp("siso_cartas_custodia", null);
-        if (_cartasCustodia?.length)
-          tasks.push(_sbSet("siso_cartas_custodia", _cartasCustodia));
+        // (siso_cartas_custodia se sube más abajo junto con su copia por usuario)
         const _cotizaciones = sp("siso_cotizaciones", null);
         if (_cotizaciones?.length)
-          tasks.push(_sbSet("siso_cotizaciones", _cotizaciones));
-        const _informesMedico = sp(`siso_informes_${_u}`, null);
-        if (_informesMedico?.length)
-          tasks.push(_sbSet(`siso_informes_${_u}`, _informesMedico));
+          tasks.push(_sbSetSiCambio("siso_cotizaciones", _cotizaciones));
+        // (siso_informes_<usuario> se sube más abajo; antes se subía dos veces por ciclo)
         // ── Informes (doble escritura por usuario y clave compartida) ─────────────
         const _informesSuf = currentUser?.user || "shared";
         const _informesData = sp(`siso_informes_${_informesSuf}`, null) || sp("siso_informes", null);
         if (_informesData?.length) {
-          tasks.push(_sbSet(`siso_informes_${_informesSuf}`, _informesData));
-          tasks.push(_sbSet("siso_informes", _informesData));
+          tasks.push(_sbSetSiCambio(`siso_informes_${_informesSuf}`, _informesData));
+          tasks.push(_sbSetSiCambio("siso_informes", _informesData));
         }
         // ── Cuentas de cobro (facturas) con número verificador ───────────────────
         if (savedBillsList?.length) {
-          tasks.push(_sbSet(`siso_saved_bills_${_asSuf}`, savedBillsList));
-          tasks.push(_sbSet("siso_saved_bills", savedBillsList));
+          // (siso_saved_bills_<suf> ya se sube arriba con su guardia anti-borrado)
+          tasks.push(_sbSetSiCambio("siso_saved_bills", savedBillsList));
         }
         // ── Cartas de custodia (doble clave) ────────────────────────────────────
         const _custodiasData = sp("siso_cartas_custodia", null);
         if (_custodiasData?.length) {
-          tasks.push(_sbSet("siso_cartas_custodia", _custodiasData));
-          tasks.push(_sbSet(`siso_cartas_custodia_${_informesSuf}`, _custodiasData));
+          tasks.push(_sbSetSiCambio("siso_cartas_custodia", _custodiasData));
+          tasks.push(_sbSetSiCambio(`siso_cartas_custodia_${_informesSuf}`, _custodiasData));
         }
         const _customMeds = sp("siso_custom_meds", null);
         if (_customMeds?.length)
-          tasks.push(_sbSet("siso_custom_meds", _customMeds));
+          tasks.push(_sbSetSiCambio("siso_custom_meds", _customMeds));
         // ── Encuestas sociodemográficas (lista + respuestas individuales) ─────────
         if (encuestas?.length) {
-          tasks.push(_sbSet(`siso_encuestas_${_u}`, encuestas));  // clave por usuario
-          tasks.push(_sbSet("siso_encuestas", encuestas));         // clave compartida (para carga al login)
+          tasks.push(_sbSetSiCambio(`siso_encuestas_${_u}`, encuestas));  // clave por usuario
+          tasks.push(_sbSetSiCambio("siso_encuestas", encuestas));         // clave compartida (para carga al login)
           // También respaldar respuestas de cada encuesta que esté en estado activa
           encuestas.forEach(enc => {
             if (enc?.token) {
               const _resp = sp(`siso_encuesta_resp_${enc.token}`, null);
-              if (_resp?.length) tasks.push(_sbSet(`siso_encuesta_resp_${enc.token}`, _resp));
+              if (_resp?.length) tasks.push(_sbSetSiCambio(`siso_encuesta_resp_${enc.token}`, _resp));
             }
           });
         }
         // ── API keys ─────────────────────────────────────────────────────────────
         const currentKeys = sps("siso_ai_keys", aiConfig.keys || {});
         if (currentUser?.user)
-          tasks.push(_sbSet(`siso_ai_keys_${currentUser.user}`, currentKeys));
+          tasks.push(_sbSetSiCambio(`siso_ai_keys_${currentUser.user}`, currentKeys));
         const results = await Promise.all(tasks);
         const allOk = results.every(Boolean);
         if (_syncStatusCallback) _syncStatusCallback(allOk ? "ok" : "error");
@@ -25831,14 +25948,19 @@ const handleLogin = (u, p) => {
     setTimeout(() => {
       if (_syncStatusCallback) _syncStatusCallback("syncing");
     }, 0);
-    const slimListInicial = list.map(_slimPatient);
-    // Supabase backup (best-effort, no bloquea)
-    _sbSet(cloudKey, slimListInicial).then((ok) => {
-      if (!ok) _sbQueue.pending[cloudKey] = slimListInicial;
-      setTimeout(() => {
-        if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
-      }, 0);
-    });
+    // FIX 2026-11-03 (cuota D1): antes la lista completa (~8,5 MB, 18 piezas) se subía aquí
+    // Y OTRA VEZ abajo tras el merge → 3 escrituras completas por cada guardado. Ahora este
+    // envío inmediato solo se usa sin Worker (respaldo Supabase); con Worker se escribe una
+    // sola vez por clave, abajo, y solo si cambió.
+    if (!_WORKER_TOKEN) {
+      const slimListInicial = list.map(_slimPatient);
+      _sbSet(cloudKey, slimListInicial).then((ok) => {
+        if (!ok) _sbQueue.pending[cloudKey] = slimListInicial;
+        setTimeout(() => {
+          if (_syncStatusCallback) _syncStatusCallback(ok ? "ok" : "error");
+        }, 0);
+      });
+    }
 
     // ── PROTECCIÓN ANTI-REGRESIÓN POR ID/docNumero + escritura D1 ─────────
     // FIX 2026-06-03 (v2): el threshold por CANTIDAD permitía que cuando el
@@ -25878,9 +26000,9 @@ const handleLogin = (u, p) => {
       // Escribir versión final (mergeada o original) a D1
       // FIX 2026-06-13: si una escritura falla, encolar para reintento automático.
       const slimFinal = finalList.map(_slimPatient);
-      const ok1 = await _workerSet(cloudKey, slimFinal).catch(() => false);
+      const ok1 = await _siCambio(cloudKey, slimFinal, () => _workerSet(cloudKey, slimFinal)).catch(() => false);
       const queued1 = ok1 || (() => { const q = _enqueuePendingD1(cloudKey, slimFinal); console.warn(`[_syncPatients] D1 ${cloudKey} → cola pendientes`); return q; })();
-      const ok2 = await _workerSet(key, slimFinal).catch(() => false);
+      const ok2 = await _siCambio(key, slimFinal, () => _workerSet(key, slimFinal)).catch(() => false);
       const queued2 = ok2 || (() => { const q = _enqueuePendingD1(key, slimFinal); console.warn(`[_syncPatients] D1 ${key} → cola pendientes`); return q; })();
       // FIX 2026-08-19: el badge rojo "sin respaldo" antes se disparaba por
       // CUALQUIER fallo de escritura, aunque _enqueuePendingD1 ya lo hubiera
@@ -25890,6 +26012,9 @@ const handleLogin = (u, p) => {
       // automático pudo encolarse (_enqueuePendingD1 devolvió false) — el
       // único caso donde de verdad no hay nada reintentando el dato.
       _markUnsyncedHC(!(queued1 && queued2));
+      setTimeout(() => {
+        if (_syncStatusCallback) _syncStatusCallback(ok1 && ok2 ? "ok" : "error");
+      }, 0);
       return ok1 && ok2;
     } catch (e) {
       console.warn("[_syncPatients] async D1 falló:", e?.message);
@@ -29136,6 +29261,14 @@ Esta historia clínica debe conservarse mínimo 20 años.
             >
               ⚠ Datos sin respaldo en nube
             </button>
+          )}
+          {avisoCuotaD1 && (
+            <span
+              title={`La base de datos en la nube alcanzó su límite diario. Todo lo que haga queda guardado en ESTE equipo (no borre los datos del navegador ni lo cierre) y se sube solo cuando la nube vuelva a aceptar datos — el límite se reinicia a las ${new Date(avisoCuotaD1.reinicio).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}.`}
+              className="flex items-center gap-1 text-[10px] font-black px-2 py-1 rounded-lg border no-print bg-orange-50 text-orange-800 border-orange-400 cursor-default"
+            >
+              ⛔ Nube al límite hoy — guardando en este equipo
+            </span>
           )}
           {["administrador", "medico", "super_admin"].includes(
             currentUser?.role
