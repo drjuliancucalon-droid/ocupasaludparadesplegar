@@ -15156,40 +15156,61 @@ const _camposPrefillGeneral = (p, lista) => {
   if (latest.antecedentesAgrupados) campos.antecedentesAgrupados = JSON.parse(JSON.stringify(latest.antecedentesAgrupados));
   return { campos, cantidadHC: previas.length };
 };
-// ── ENVÍO INTEGRAL: documentos del PERIODO elegido en Reportes (2026-11-11) ─────────────
-// El periodo es el rango de fechas del reporte (inicio–fin). Cada documento se asocia así:
-//  · Certificados: HC cerradas de la empresa con fechaExamen dentro del rango (mismo filtro
-//    que "Total evaluados" del reporte).
-//  · Informe / carta de custodia: por el `periodo` con que se guardaron (inicio del rango);
-//    los antiguos sin periodo, por su fecha de emisión.
-//  · Cuenta de cobro: no guarda periodo → emitidas desde el inicio hasta fin+7 días (o hoy).
-// Regla: NUNCA se rellena con un documento de OTRO periodo; si falta, se informa el motivo.
+// ── ENVÍO INTEGRAL: descarga de documentos por FECHAS elegidas (2026-11-11/12) ───────────
+// El usuario elige Desde/Hasta en el propio modal (por defecto, el rango de Reportes) y,
+// además, puede marcar CUALQUIER informe, cuenta de cobro o carta de custodia guardados.
+//  · Certificados: HC cerradas de la empresa con fechaExamen en [desde, hasta] (mismo filtro
+//    de médico que "Total evaluados" del reporte).
+//  · Informe / carta / cuenta: se listan TODOS los de la empresa; se marcan por defecto los
+//    más recientes cuyo periodo se CRUZA con el rango (la cuenta, por su fecha de emisión).
 const _sumarDiasISO = (iso, n) => {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + n);
   return _fechaLocalISO(d);
 };
-const _docDelPeriodo = (doc, inicio, finVentana) => {
-  const p = String(doc?.periodo || "");
-  if (/^\d{4}-\d{2}-\d{2}/.test(p)) return p.slice(0, 10) === inicio;
-  if (/^\d{4}-\d{2}(\s|$)/.test(p)) return p.slice(0, 7) === inicio.slice(0, 7);
-  if (Number.isInteger(doc?.mes) && Number.isInteger(doc?.anio)) {
-    return `${doc.anio}-${String(doc.mes + 1).padStart(2, "0")}` === inicio.slice(0, 7);
-  }
-  const f = String(doc?.fecha || doc?.date || "").slice(0, 10);
-  return !!f && f >= inicio && f <= finVentana;
+const _finMesISO = (ym) => {
+  const [y, m] = ym.split("-").map(Number);
+  return _fechaLocalISO(new Date(y, m, 0));
 };
-const _resolverPaquetePeriodo = ({ empresaId, empresaNombre, inicio, fin, hoy, pacientes, informes, cuentas, medicoSel, medicosVisibles }) => {
+const _fmtFechaES = (d) => (d ? String(d).slice(0, 10).split("-").reverse().join("/") : "");
+// Rango [inicio, fin] que cubre un documento, según cómo se guardó su `periodo`:
+// "2026-10-31 — 2026-11-11" (días), "2026-11 — …" o "2026-11" (mes), mes/anio, o solo su fecha.
+const _rangoDoc = (doc) => {
+  const p = String(doc?.periodo || "");
+  const fin = p.match(/—\s*(\d{4}-\d{2}-\d{2})/)?.[1];
+  const dia = p.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (dia) {
+    const f = String(doc?.fecha || "").slice(0, 10);
+    return [dia, fin || (f && f > dia ? f : dia)];
+  }
+  const mes = p.match(/^(\d{4}-\d{2})/)?.[1]
+    || (Number.isInteger(doc?.mes) && Number.isInteger(doc?.anio) ? `${doc.anio}-${String(doc.mes + 1).padStart(2, "0")}` : null);
+  if (mes) return [mes + "-01", fin || _finMesISO(mes)];
+  const f = String(doc?.fecha || doc?.date || "").slice(0, 10);
+  return f ? [f, f] : null;
+};
+const _cruzaRango = (r, desde, hasta) => !!r && (!desde || r[1] >= desde) && r[0] <= hasta;
+const _etiquetaPeriodoDoc = (doc) => {
+  const p = String(doc?.periodo || "");
+  const dia = p.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  const fin = p.match(/—\s*(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (dia) return fin ? `${_fmtFechaES(dia)} – ${_fmtFechaES(fin)}` : _fmtFechaES(dia);
+  const m = p.match(/^(\d{4})-(\d{2})/);
+  if (m) return `mes ${m[2]}/${m[1]}`;
+  if (Number.isInteger(doc?.mes) && Number.isInteger(doc?.anio)) return `mes ${String(doc.mes + 1).padStart(2, "0")}/${doc.anio}`;
+  return "sin periodo";
+};
+const _idDocEnvio = (d) => String(d?.id || d?.number || d?.savedAt || "");
+const _resolverPaquetePeriodo = ({ empresaId, empresaNombre, desde, hasta, hoy, pacientes, informes, cuentas, medicoSel, medicosVisibles }) => {
   const iso = (v) => String(v || "").slice(0, 10);
-  const finVentana = fin ? _sumarDiasISO(fin, 7) : hoy;
-  const masReciente = (arr) =>
-    [...arr].sort((a, b) => String(b.savedAt || b.fecha || b.date || "").localeCompare(String(a.savedAt || a.fecha || a.date || "")))[0] || null;
+  const h = hasta || hoy;
   const ccDe = (p) => String(p?.docNumero || "").replace(/\s/g, "");
+  const totalEmpresa = (pacientes || []).filter((p) => p && p.empresaId === empresaId && !p._archivado && p.estadoHistoria === "Cerrada").length;
   const enPeriodo = (pacientes || []).filter((p) => {
     if (!p || p.empresaId !== empresaId || !p.fechaExamen || p._archivado) return false;
     const f = iso(p.fechaExamen);
-    if (inicio && f < inicio) return false;
-    if (fin && f > fin) return false;
+    if (desde && f < desde) return false;
+    if (f > h) return false;
     if (medicoSel && p._medicoId !== medicoSel) return false;
     if (medicosVisibles && !(medicosVisibles.includes(p._medicoId) || !p._medicoId)) return false;
     return true;
@@ -15206,33 +15227,40 @@ const _resolverPaquetePeriodo = ({ empresaId, empresaNombre, inicio, fin, hoy, p
   const ccCerrados = new Set(cerrados.map(ccDe));
   const abiertos = enPeriodo.filter((x) => x.estadoHistoria !== "Cerrada" && !ccCerrados.has(ccDe(x)));
   cerrados.sort((a, b) => String(a.nombres || "").localeCompare(String(b.nombres || "")));
+  const porDia = {};
+  for (const p of cerrados) { const d = iso(p.fechaExamen); porDia[d] = (porDia[d] || 0) + 1; }
+  const orden = (a, b) => String(b.savedAt || b.fecha || b.date || "").localeCompare(String(a.savedAt || a.fecha || a.date || ""));
+  const marcar = (arr, rangoFn) => [...arr].sort(orden).map((doc) => ({ doc, enRango: _cruzaRango(rangoFn(doc), desde, h) }));
   const propios = (informes || []).filter((i) => i && i.empresaId === empresaId);
-  // Con fecha final elegida se prefiere el documento guardado para ESE rango exacto (mismo
-  // inicio y mismo fin); si no hay, el más reciente que comparta el inicio.
-  const delPeriodo = (arr) => {
-    if (!inicio) return arr;
-    const mismos = arr.filter((i) => _docDelPeriodo(i, inicio, finVentana));
-    if (!fin) return mismos;
-    const exactos = mismos.filter((i) => String(i.periodo || "").split(" — ")[1]?.trim().slice(0, 10) === fin);
-    return exactos.length ? exactos : mismos;
+  const lInformes = marcar(propios.filter((i) => !i.tipo), _rangoDoc);
+  const lCustodias = marcar(propios.filter((i) => i.tipo === "custodia"), _rangoDoc);
+  const lCuentas = marcar(
+    (cuentas || []).filter((b) => b && !b._deleted && (b.companyId === empresaId || b.clientName === empresaNombre)),
+    (b) => { const f = iso(b.date); return f ? [f, f] : null; }
+  );
+  // Marca por defecto: de los que se cruzan con las fechas, el que MÁS se solapa (a igualdad,
+  // el más reciente: la lista ya viene ordenada así). Evita que un informe que solo comparte
+  // un día con el rango (p. ej. 31/10–11/11 frente a octubre) gane al que corresponde.
+  const solape = (r) => {
+    if (!r) return 0;
+    const a = desde && desde > r[0] ? desde : r[0];
+    const b = h < r[1] ? h : r[1];
+    return Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000) + 1;
   };
-  const informe = masReciente(delPeriodo(propios.filter((i) => !i.tipo)));
-  const custodia = masReciente(delPeriodo(propios.filter((i) => i.tipo === "custodia")));
-  const cuentasEmp = (cuentas || [])
-    .filter((b) => b && !b._deleted && (b.companyId === empresaId || b.clientName === empresaNombre))
-    .filter((b) => { const f = iso(b.date); return !inicio || (f >= inicio && f <= finVentana); })
-    .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
-  const rango = inicio ? `${inicio} – ${fin || "hoy"}` : "todo el historial";
+  const primero = (l) => {
+    let mejor = null, mejorS = 0;
+    for (const x of l) {
+      if (!x.enRango) continue;
+      const s = solape(_rangoDoc(x.doc) || (x.doc?.date ? [iso(x.doc.date), iso(x.doc.date)] : null));
+      if (!mejor || s > mejorS) { mejor = x.doc; mejorS = s; }
+    }
+    return mejor;
+  };
   return {
-    inicio, fin, hoy, finVentana, sinInicio: !inicio,
-    certificados: { cerrados, abiertos },
-    informe, custodia, cuentas: cuentasEmp,
-    motivos: {
-      informe: `No hay informe guardado para este periodo (${rango}) — guárdelo en Reportes`,
-      custodia: `No hay carta de custodia creada para este periodo (${rango})`,
-      cuentas: `No hay cuenta de cobro emitida entre ${inicio || "—"} y ${finVentana}`,
-      certificados: "No hay HC cerradas en este periodo",
-    },
+    desde, hasta: h, hoy, sinInicio: !desde,
+    certificados: { cerrados, abiertos, porDia, totalEmpresa },
+    informes: lInformes, custodias: lCustodias, cuentas: lCuentas,
+    defecto: { informe: primero(lInformes), custodia: primero(lCustodias), cuenta: primero(lCuentas) },
   };
 };
 const _tipoAtencionLabel = (p) =>
@@ -20461,10 +20489,11 @@ function AppInner() {
     } catch (e) { showAlert("Error generando el ZIP: " + (e?.message || "")); }
   };
 
-  // ── ENVÍO INTEGRAL: descargar los documentos del PERIODO marcados (2026-11-11) ──────────
-  const [selDescEnvio, setSelDescEnvio] = useState(null); // {clave, informe, certificados, custodia, cuentas:{id:bool}}
+  // ── ENVÍO INTEGRAL: descargar documentos por FECHAS elegidas (2026-11-12) ──────────────
+  const [rangoDescEnvio, setRangoDescEnvio] = useState(null); // {clave, desde, hasta} propios del modal
+  const [selDescEnvio, setSelDescEnvio] = useState(null); // {clave, certificados, informes:{id:bool}, cuentas:{}, custodias:{}}
   const [progDescEnvio, setProgDescEnvio] = useState(null); // {texto} mientras se genera el ZIP
-  const _resolverDocsEnvio = (emp) => {
+  const _resolverDocsEnvio = (emp, desde, hasta) => {
     let medicosVisibles = null;
     if (currentUser?.role === "secretaria") {
       const secU = usersList.find((u) => u.user === currentUser.user);
@@ -20473,27 +20502,30 @@ function AppInner() {
     }
     return _resolverPaquetePeriodo({
       empresaId: emp.empresaId, empresaNombre: emp.empresaNombre,
-      inicio: reportStartDate || "", fin: reportEndDate || "", hoy: _fechaLocalISO(),
+      desde: desde || "", hasta: hasta || "", hoy: _fechaLocalISO(),
       pacientes: patientsList, informes: savedInformes, cuentas: savedBillsList,
       medicoSel: selectedMedicoReport, medicosVisibles,
     });
   };
-  // `sel`: { informe, certificados, custodia:boolean, cuentas:[bill,...] } ya resuelto contra `rd`.
+  // `sel`: { certificados:boolean, informes:[doc], cuentas:[doc], custodias:[doc] } ya resuelto.
   const _descargarDocsPeriodoEnvio = async (emp, rd, sel) => {
     if (progDescEnvio) return;
     const comp = companies.find((c) => c.id === emp.empresaId);
     const empName = emp.empresaNombre || comp?.nombre || "empresa";
     const slug = empName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "empresa";
-    const carpeta = `${slug}_${rd.inicio || "historial"}_a_${rd.fin || rd.hoy}`;
+    const carpeta = `${slug}_${rd.desde || "historial"}_a_${rd.hasta}`;
     const _wrapDoc = (inner) => `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><style>*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;}body{margin:0;background:#fff;font-family:Arial,Helvetica,sans-serif;width:816px;color:#111;}</style></head><body>${inner}</body></html>`;
     const zip = new JSZip();
     const raiz = zip.folder(carpeta);
     const avisos = [];
+    const usados = new Set();
+    const nombreUnico = (base) => { let n = base, i = 2; while (usados.has(n)) n = base.replace(/\.pdf$/, `_${i++}.pdf`); usados.add(n); return n; };
+    const sufRango = (doc) => { const r = _rangoDoc(doc); return r ? (r[0] === r[1] ? r[0] : `${r[0]}_a_${r[1]}`) : String(doc?.fecha || "sin_fecha").slice(0, 10); };
     let total = 0;
     setProgDescEnvio({ texto: "Preparando…" });
     try {
-      // 1) Certificados — los del periodo, con el generador real; si UNO no se puede verificar
-      // contra su cédula se aborta TODO (no se entrega un certificado con datos de otra persona).
+      // 1) Certificados del rango, con el generador real; si UNO no se puede verificar contra
+      // su cédula se aborta TODO (no se entrega un certificado con datos de otra persona).
       if (sel.certificados && rd.certificados.cerrados.length) {
         const lista = rd.certificados.cerrados;
         const fallidos = [];
@@ -20514,7 +20546,7 @@ function AppInner() {
             idx++;
             raiz.file(`01_Certificados/${String(idx).padStart(2, "0")}_${nm}_${cc}.pdf`, blob); total++;
           } catch (e) {
-            console.warn("[ZIP periodo] cert", cc, e?.message);
+            console.warn("[ZIP fechas] cert", cc, e?.message);
             fallidos.push(`${nm} (${cc})`);
             if (fallidos.length >= 3) break;
           }
@@ -20530,26 +20562,26 @@ function AppInner() {
         }
       }
       if (sel.certificados && rd.certificados.abiertos.length) {
-        avisos.push(`${rd.certificados.abiertos.length} trabajador(es) del periodo tienen la HC ABIERTA y NO van en la descarga: ` +
+        avisos.push(`${rd.certificados.abiertos.length} trabajador(es) del rango tienen la HC ABIERTA y NO van en la descarga: ` +
           rd.certificados.abiertos.slice(0, 6).map((p) => (p.nombres || p.docNumero || "").trim()).join(", ") +
           (rd.certificados.abiertos.length > 6 ? "…" : ""));
       }
-      // 2) Informe epidemiológico del periodo
-      if (sel.informe && rd.informe) {
+      // 2) Informes epidemiológicos marcados
+      for (const inf of (sel.informes || [])) {
         setProgDescEnvio({ texto: "Informe epidemiológico…" });
         try {
-          const inf = rd.informe;
-          const infMeta = { totalPacientes: inf.totalPacientes || 0, resumen: inf.resumen || "", fecha: inf.fecha || rd.inicio || "", statsKey: inf.statsKey || null };
+          const infMeta = { totalPacientes: inf.totalPacientes || 0, resumen: inf.resumen || "", fecha: inf.fecha || rd.desde || "", statsKey: inf.statsKey || null };
           let fullData = null;
           if (infMeta.statsKey && _WORKER_TOKEN) { try { fullData = await _workerGet(infMeta.statsKey); } catch {} }
-          if (!fullData) avisos.push("El informe se generó SIN estadísticas ni análisis de IA (no se encontraron sus datos guardados): vuelva a guardarlo en Reportes.");
+          if (!fullData) avisos.push(`El informe ${_etiquetaPeriodoDoc(inf)} se generó SIN estadísticas ni análisis de IA (no se encontraron sus datos guardados): vuelva a guardarlo en Reportes.`);
           const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildInformeHTMLMod(infMeta, fullData || {}, empName)));
-          raiz.file("02_Informe_Epidemiologico.pdf", blob); total++;
-          const totalReporte = rd.certificados.cerrados.length + rd.certificados.abiertos.length;
-          if (inf.totalPacientes && totalReporte && inf.totalPacientes !== totalReporte) {
-            avisos.push(`El informe guardado cuenta ${inf.totalPacientes} trabajador(es) y el periodo tiene ahora ${totalReporte}: si cerró más historias después de guardarlo, guárdelo de nuevo.`);
+          raiz.file(nombreUnico(`02_Informe_Epidemiologico_${sufRango(inf)}.pdf`), blob); total++;
+          const totalRango = rd.certificados.cerrados.length + rd.certificados.abiertos.length;
+          const r = _rangoDoc(inf);
+          if (inf.totalPacientes && totalRango && r && r[0] === rd.desde && inf.totalPacientes !== totalRango) {
+            avisos.push(`El informe ${_etiquetaPeriodoDoc(inf)} cuenta ${inf.totalPacientes} trabajador(es) y el rango elegido tiene ahora ${totalRango}: si cerró más historias después de guardarlo, guárdelo de nuevo.`);
           }
-        } catch (e) { console.warn("[ZIP periodo] informe:", e?.message); avisos.push("El informe falló al generarse."); }
+        } catch (e) { console.warn("[ZIP fechas] informe:", e?.message); avisos.push("Un informe falló al generarse."); }
       }
       // 3) Cuentas de cobro marcadas
       for (const src of (sel.cuentas || [])) {
@@ -20566,14 +20598,14 @@ function AppInner() {
             doctorCel: src.doctorCel, doctorEmail: src.doctorEmail, firma: src.firma,
           };
           const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCuentaCobroHTMLMod(c)));
-          raiz.file("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf", blob); total++;
-        } catch (e) { console.warn("[ZIP periodo] cuenta:", e?.message); avisos.push(`La cuenta de cobro No. ${src.number || ""} falló al generarse.`); }
+          raiz.file(nombreUnico("03_Cuenta_de_Cobro_No" + String(c.number || "1").padStart(3, "0") + ".pdf"), blob); total++;
+        } catch (e) { console.warn("[ZIP fechas] cuenta:", e?.message); avisos.push(`La cuenta de cobro No. ${src.number || ""} falló al generarse.`); }
       }
-      // 4) Carta de custodia del periodo
-      if (sel.custodia && rd.custodia) {
+      // 4) Cartas de custodia marcadas
+      for (const base of (sel.custodias || [])) {
         setProgDescEnvio({ texto: "Carta de custodia…" });
         try {
-          let cust = rd.custodia;
+          let cust = base;
           if (!cust.firmaSrc && !cust.firma && (activeSignature || activeDoctorData?.firma)) {
             cust = { ...cust, firma: activeSignature || activeDoctorData.firma, firmaSrc: activeSignature || activeDoctorData.firma };
           }
@@ -20581,15 +20613,15 @@ function AppInner() {
             cust = { ...cust, docNombre: activeDoctorData.nombre, medicoNombre: activeDoctorData.nombre, docTitulo: activeDoctorData.titulo, docLicencia: activeDoctorData.licencia, docCC: activeDoctorData.cedula, docEmail: activeDoctorData.email, docCel: activeDoctorData.celular, docCiudad: activeDoctorData.ciudad };
           }
           if (!Number.isInteger(cust.mes) && !cust.mesTexto) {
-            const _ref = String(cust.fecha || rd.inicio || "").match(/^(\d{4})-(\d{2})/);
+            const _ref = String(cust.fecha || rd.desde || "").match(/^(\d{4})-(\d{2})/);
             if (_ref) cust = { ...cust, mes: Number(_ref[2]) - 1, anioVal: Number(_ref[1]) };
           }
-          if (!cust.firma && !cust.firmaSrc) avisos.push("La carta de custodia va SIN firma: no se encontró firma ni en el registro ni en el perfil del médico.");
+          if (!cust.firma && !cust.firmaSrc) avisos.push("Una carta de custodia va SIN firma: no se encontró firma ni en el registro ni en el perfil del médico.");
           const blob = await _htmlToPdfBlobMod(_wrapDoc(_buildCartaCustodiaHTML(cust)));
-          raiz.file("04_Carta_de_Custodia.pdf", blob); total++;
-        } catch (e) { console.warn("[ZIP periodo] custodia:", e?.message); avisos.push("La carta de custodia falló al generarse."); }
+          raiz.file(nombreUnico(`04_Carta_de_Custodia_${sufRango(base)}.pdf`), blob); total++;
+        } catch (e) { console.warn("[ZIP fechas] custodia:", e?.message); avisos.push("Una carta de custodia falló al generarse."); }
       }
-      if (!total) { showAlert("⚠️ No se pudo generar ningún documento para este periodo. Revise que tenga HC cerradas, informe, cuenta o carta para el rango elegido."); return; }
+      if (!total) { showAlert("⚠️ No se pudo generar ningún documento. Revise las fechas elegidas o marque algún documento."); return; }
       setProgDescEnvio({ texto: "Comprimiendo…" });
       const zipBlob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
       const url = URL.createObjectURL(zipBlob);
@@ -20598,7 +20630,7 @@ function AppInner() {
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 3000);
       showAlert(
-        `✅ Descarga lista: ${carpeta}.zip\n\n• ${total} documento(s) del periodo ${rd.sinInicio ? "(todo el historial)" : rd.inicio + " a " + (rd.fin || "hoy")}\n• Dentro del ZIP: carpeta "${carpeta}"` +
+        `✅ Descarga lista: ${carpeta}.zip\n\n• ${total} documento(s)\n• Fechas: ${rd.sinInicio ? "todo el historial" : _fmtFechaES(rd.desde)} a ${_fmtFechaES(rd.hasta)}\n• Dentro del ZIP: carpeta "${carpeta}"` +
         (avisos.length ? "\n\n⚠️ REVISAR ANTES DE ENTREGAR:\n• " + avisos.join("\n• ") : "")
       );
     } catch (e) {
@@ -62728,7 +62760,12 @@ body{padding-top:52px;}
         const hasCustodia = savedInformes.some(i => i.empresaId === emp.empresaId && i.tipo === "custodia") || !!_emit?.custodia;
         const todoListo = hasInforme && hasCerts && hasCuenta && hasCustodia;
         const comp = companies.find(c => c.id === emp.empresaId);
-        const rd = _resolverDocsEnvio(emp); // documentos del PERIODO elegido en Reportes
+        // Rango propio del modal (Desde/Hasta); por defecto el de Reportes. Cambia si cambia Reportes.
+        const _claveRango = `${emp.empresaId}|${reportStartDate}|${reportEndDate}`;
+        const rangoD = (rangoDescEnvio && rangoDescEnvio.clave === _claveRango)
+          ? rangoDescEnvio
+          : { clave: _claveRango, desde: reportStartDate || "", hasta: reportEndDate || _fechaLocalISO() };
+        const rd = _resolverDocsEnvio(emp, rangoD.desde, rangoD.hasta); // documentos por las FECHAS elegidas
         return (
           <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 overflow-y-auto">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 my-4">
@@ -62754,7 +62791,7 @@ body{padding-top:52px;}
                   <div className="flex items-center gap-2">
                     <span>✅</span>
                     <div><p className="text-xs font-black text-gray-800">Certificados de Aptitud</p>
-                    <p className="text-[10px] text-gray-500">{rd.certificados.cerrados.length} del periodo · {certCount} con HC cerrada en total</p></div>
+                    <p className="text-[10px] text-gray-500">{rd.certificados.cerrados.length} en las fechas elegidas · {certCount} con HC cerrada en total</p></div>
                   </div>
                 </div>
                 {/* Cuentas de cobro — lista completa + crear nueva */}
@@ -62941,67 +62978,110 @@ body{padding-top:52px;}
                 >📦 Ver/Descargar paquete (certificados + carta)</button>
               </div>
 
-              {/* DESCARGAR DOCUMENTOS DEL PERIODO (2026-11-11): marcar y bajar una carpeta ZIP */}
+              {/* DESCARGAR DOCUMENTOS (2026-11-12): fechas propias + elegir entre todos los guardados */}
               {(() => {
-                const fmt = (d) => (d ? d.split("-").reverse().join("/") : "");
-                const clave = `${emp.empresaId}|${reportStartDate}|${reportEndDate}`;
-                const guardada = selDescEnvio && selDescEnvio.clave === clave ? selDescEnvio : null;
-                const idCuenta = (b) => String(b.id || b.number);
+                const hoyD = _fechaLocalISO();
+                const claveSel = `${emp.empresaId}|${rangoD.desde}|${rangoD.hasta}`;
+                const guardada = selDescEnvio && selDescEnvio.clave === claveSel ? selDescEnvio : null;
                 const nCerts = rd.certificados.cerrados.length;
                 const porDefecto = {
-                  informe: !!rd.informe,
                   certificados: nCerts > 0,
-                  custodia: !!rd.custodia,
-                  cuentas: rd.cuentas[0] ? { [idCuenta(rd.cuentas[0])]: true } : {},
+                  informes: rd.defecto.informe ? { [_idDocEnvio(rd.defecto.informe)]: true } : {},
+                  cuentas: rd.defecto.cuenta ? { [_idDocEnvio(rd.defecto.cuenta)]: true } : {},
+                  custodias: rd.defecto.custodia ? { [_idDocEnvio(rd.defecto.custodia)]: true } : {},
                 };
-                const selD = guardada || { clave, ...porDefecto };
-                const cambiar = (parche) => setSelDescEnvio({ ...selD, clave, ...parche });
-                const cuentasSel = rd.cuentas.filter((b) => selD.cuentas?.[idCuenta(b)]);
-                const nSel = (selD.informe && rd.informe ? 1 : 0) + (selD.certificados && nCerts > 0 ? 1 : 0) + (selD.custodia && rd.custodia ? 1 : 0) + cuentasSel.length;
-                const fila = (marcado, alternar, disponible, titulo, detalle) => (
-                  <label className={"flex items-start gap-2 px-3 py-2 rounded-lg border " + (disponible ? "bg-white border-gray-200 cursor-pointer hover:bg-emerald-50" : "bg-gray-50 border-gray-100 opacity-60 cursor-not-allowed")}>
-                    <input type="checkbox" className="mt-0.5" checked={disponible && !!marcado} disabled={!disponible || !!progDescEnvio} onChange={alternar} />
-                    <span className="leading-tight">
-                      <span className="block text-[11px] font-black text-gray-800">{titulo}</span>
-                      <span className={"block text-[10px] " + (disponible ? "text-gray-500" : "text-amber-700")}>{detalle}</span>
-                    </span>
-                  </label>
+                const selD = guardada || { clave: claveSel, ...porDefecto };
+                const cambiar = (parche) => setSelDescEnvio({ ...selD, clave: claveSel, ...parche });
+                const setRango = (p) => setRangoDescEnvio({ ...rangoD, ...p });
+                const alternar = (tipo, doc) => cambiar({ [tipo]: { ...(selD[tipo] || {}), [_idDocEnvio(doc)]: !selD[tipo]?.[_idDocEnvio(doc)] } });
+                const elegidos = (lista, tipo) => lista.filter((x) => selD[tipo]?.[_idDocEnvio(x.doc)]).map((x) => x.doc);
+                const informesSel = elegidos(rd.informes, "informes");
+                const cuentasSel = elegidos(rd.cuentas, "cuentas");
+                const custodiasSel = elegidos(rd.custodias, "custodias");
+                const nSel = (selD.certificados && nCerts > 0 ? 1 : 0) + informesSel.length + cuentasSel.length + custodiasSel.length;
+                const mesIni = hoyD.slice(0, 8) + "01";
+                const mesAntIni = _fechaLocalISO(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+                const mesAntFin = _fechaLocalISO(new Date(new Date().getFullYear(), new Date().getMonth(), 0));
+                const chip = (txt, fn) => (
+                  <button type="button" disabled={!!progDescEnvio} onClick={fn} className="px-2 py-1 text-[10px] font-black rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200">{txt}</button>
+                );
+                const dias = Object.entries(rd.certificados.porDia).sort();
+                const desglose = dias.slice(0, 8).map(([d, n]) => `${_fmtFechaES(d).slice(0, 5)}: ${n}`).join(" · ") + (dias.length > 8 ? " …" : "");
+                const bloque = (titulo, lista, tipo, etiqueta, vacio) => (
+                  <div className="mt-2">
+                    <p className="text-[10px] font-black text-gray-600 mb-1">{titulo} ({lista.length})</p>
+                    {lista.length === 0
+                      ? <p className="text-[10px] text-amber-700 px-1">{vacio}</p>
+                      : <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+                          {lista.map(({ doc, enRango }) => (
+                            <label key={_idDocEnvio(doc)} className="flex items-start gap-2 px-3 py-1.5 rounded-lg border bg-white border-gray-200 cursor-pointer hover:bg-emerald-50">
+                              <input type="checkbox" className="mt-0.5" checked={!!selD[tipo]?.[_idDocEnvio(doc)]} disabled={!!progDescEnvio} onChange={() => alternar(tipo, doc)} />
+                              <span className="leading-tight">
+                                <span className="block text-[11px] font-bold text-gray-800">{etiqueta(doc)}</span>
+                                <span className={"block text-[10px] " + (enRango ? "text-emerald-700" : "text-gray-400")}>{enRango ? "✔ dentro de las fechas elegidas" : "fuera de las fechas elegidas"}</span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>}
+                  </div>
                 );
                 return (
                   <div className="border-t border-gray-200 pt-3 mb-3">
-                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-wide">⬇️ Descargar documentos del periodo</p>
-                    <p className="text-[11px] font-bold text-gray-700 mb-1">
-                      Periodo: {rd.sinInicio ? "todo el historial (sin fecha de inicio)" : `${fmt(rd.inicio)} – ${rd.fin ? fmt(rd.fin) : "hoy"}`}
-                    </p>
-                    {rd.sinInicio && (
-                      <p className="text-[10px] text-amber-700 mb-1">Sin fecha de inicio se incluyen todas las HC cerradas y los documentos más recientes. Elija un periodo en Reportes para una descarga exacta.</p>
-                    )}
-                    <div className="space-y-1.5">
-                      {fila(selD.informe, () => cambiar({ informe: !selD.informe }), !!rd.informe, "Informe Epidemiológico",
-                        rd.informe ? `Guardado ${rd.informe.fecha || ""} · ${rd.informe.totalPacientes || 0} trabajadores` : rd.motivos.informe)}
-                      {fila(selD.certificados, () => cambiar({ certificados: !selD.certificados }), nCerts > 0, "Certificados de Aptitud",
-                        nCerts > 0 ? `${nCerts} trabajador(es) del periodo${rd.certificados.abiertos.length ? ` · ${rd.certificados.abiertos.length} con HC abierta (no se incluyen)` : ""}` : rd.motivos.certificados)}
-                      {rd.cuentas.length > 0
-                        ? rd.cuentas.map((b) => fila(selD.cuentas?.[idCuenta(b)], () => cambiar({ cuentas: { ...(selD.cuentas || {}), [idCuenta(b)]: !selD.cuentas?.[idCuenta(b)] } }), true,
-                            `Cuenta de Cobro No. ${b.number || "—"}`, `${b.date || "—"} · $${Number(b.amount || 0).toLocaleString("es-CO")}`))
-                        : fila(false, () => {}, false, "Cuenta de Cobro", rd.motivos.cuentas)}
-                      {fila(selD.custodia, () => cambiar({ custodia: !selD.custodia }), !!rd.custodia, "Carta de Custodia",
-                        rd.custodia ? `Creada ${rd.custodia.fecha || ""}` : rd.motivos.custodia)}
+                    <p className="text-[10px] font-black text-gray-500 uppercase tracking-wide mb-1">⬇️ Descargar documentos</p>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="text-[10px] font-bold text-gray-600">Desde
+                        <input type="date" className="block border rounded-md px-1.5 py-1 text-[11px]" value={rangoD.desde} max={rangoD.hasta || hoyD} disabled={!!progDescEnvio}
+                          onChange={(e) => setRango({ desde: e.target.value })} />
+                      </label>
+                      <label className="text-[10px] font-bold text-gray-600">Hasta
+                        <input type="date" className="block border rounded-md px-1.5 py-1 text-[11px]" value={rangoD.hasta} min={rangoD.desde || undefined} max={hoyD} disabled={!!progDescEnvio}
+                          onChange={(e) => setRango({ hasta: e.target.value || hoyD })} />
+                      </label>
                     </div>
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {chip("Mes actual", () => setRango({ desde: mesIni, hasta: hoyD }))}
+                      {chip("Mes anterior", () => setRango({ desde: mesAntIni, hasta: mesAntFin }))}
+                      {chip("Todo el historial", () => setRango({ desde: "", hasta: hoyD }))}
+                      {chip("Rango de Reportes", () => setRangoDescEnvio({ clave: _claveRango, desde: reportStartDate || "", hasta: reportEndDate || hoyD }))}
+                    </div>
+                    {rd.desde && rd.desde > rd.hasta && <p className="text-[10px] text-red-600 mt-1">La fecha "Desde" es posterior a "Hasta".</p>}
+                    <label className={"flex items-start gap-2 px-3 py-2 mt-2 rounded-lg border " + (nCerts > 0 ? "bg-white border-gray-200 cursor-pointer hover:bg-emerald-50" : "bg-gray-50 border-gray-100 opacity-60")}>
+                      <input type="checkbox" className="mt-0.5" checked={nCerts > 0 && !!selD.certificados} disabled={nCerts === 0 || !!progDescEnvio} onChange={() => cambiar({ certificados: !selD.certificados })} />
+                      <span className="leading-tight">
+                        <span className="block text-[11px] font-black text-gray-800">Certificados de Aptitud — {nCerts} trabajador(es)</span>
+                        <span className={"block text-[10px] " + (nCerts > 0 ? "text-gray-500" : "text-amber-700")}>
+                          {nCerts > 0 ? `${desglose}${rd.certificados.abiertos.length ? ` · ${rd.certificados.abiertos.length} con HC abierta (no se incluyen)` : ""} · ${rd.certificados.totalEmpresa} HC cerradas en total de la empresa` : "No hay HC cerradas en las fechas elegidas"}
+                        </span>
+                      </span>
+                    </label>
+                    {bloque("Informes epidemiológicos", rd.informes, "informes",
+                      (d) => `Periodo ${_etiquetaPeriodoDoc(d)} · guardado ${_fmtFechaES(d.fecha)} · ${d.totalPacientes || 0} trabajadores`,
+                      "No hay informes guardados — guárdelo en Reportes")}
+                    {bloque("Cuentas de cobro", rd.cuentas, "cuentas",
+                      (d) => `No. ${d.number || "—"} · ${_fmtFechaES(d.date)} · $${Number(d.amount || 0).toLocaleString("es-CO")}`,
+                      "No hay cuentas de cobro para esta empresa")}
+                    {bloque("Cartas de custodia", rd.custodias, "custodias",
+                      (d) => `Periodo ${_etiquetaPeriodoDoc(d)} · creada ${_fmtFechaES(d.fecha)}`,
+                      "No hay cartas de custodia creadas para esta empresa")}
                     <div className="flex gap-2 mt-2">
                       <button type="button" disabled={!!progDescEnvio}
-                        onClick={() => cambiar({ informe: !!rd.informe, certificados: nCerts > 0, custodia: !!rd.custodia, cuentas: Object.fromEntries(rd.cuentas.map((b) => [idCuenta(b), true])) })}
+                        onClick={() => cambiar({
+                          certificados: nCerts > 0,
+                          informes: Object.fromEntries(rd.informes.map((x) => [_idDocEnvio(x.doc), true])),
+                          cuentas: Object.fromEntries(rd.cuentas.map((x) => [_idDocEnvio(x.doc), true])),
+                          custodias: Object.fromEntries(rd.custodias.map((x) => [_idDocEnvio(x.doc), true])),
+                        })}
                         className="flex-1 py-1.5 text-[10px] font-black rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">☑ Marcar todo</button>
                       <button type="button" disabled={!!progDescEnvio}
-                        onClick={() => cambiar({ informe: false, certificados: false, custodia: false, cuentas: {} })}
+                        onClick={() => cambiar({ certificados: false, informes: {}, cuentas: {}, custodias: {} })}
                         className="flex-1 py-1.5 text-[10px] font-black rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">☐ Desmarcar todo</button>
                     </div>
                     <button type="button"
                       disabled={nSel === 0 || !!progDescEnvio}
-                      onClick={() => _descargarDocsPeriodoEnvio(emp, rd, { informe: !!selD.informe, certificados: !!selD.certificados, custodia: !!selD.custodia, cuentas: cuentasSel })}
+                      onClick={() => _descargarDocsPeriodoEnvio(emp, rd, { certificados: !!selD.certificados, informes: informesSel, cuentas: cuentasSel, custodias: custodiasSel })}
                       className={"w-full mt-2 py-2.5 text-xs font-black rounded-xl " + (nSel > 0 && !progDescEnvio ? "bg-indigo-700 text-white hover:bg-indigo-800" : "bg-gray-200 text-gray-400 cursor-not-allowed")}
                     >{progDescEnvio ? "⏳ " + progDescEnvio.texto : `⬇️ DESCARGAR SELECCIONADOS (${nSel})`}</button>
-                    <p className="text-[9px] text-gray-400 mt-1">Se descarga un ZIP con una carpeta con el nombre de la empresa y el periodo.</p>
+                    <p className="text-[9px] text-gray-400 mt-1">Se descarga un ZIP con una carpeta con el nombre de la empresa y las fechas elegidas.</p>
                   </div>
                 );
               })()}
