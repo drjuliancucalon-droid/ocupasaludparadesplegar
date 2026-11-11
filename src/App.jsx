@@ -15263,6 +15263,74 @@ const _resolverPaquetePeriodo = ({ empresaId, empresaNombre, desde, hasta, hoy, 
     defecto: { informe: primero(lInformes), custodia: primero(lCustodias), cuenta: primero(lCuentas) },
   };
 };
+// ── ENVÍO INTEGRAL → PORTAL: publicar lo SELECCIONADO, cada pieza en su mes (2026-11-12) ──
+// El portal de la empresa guarda `periodos[]` por mes (YYYY-MM). Antes "Enviar toda la
+// documentación" publicaba TODAS las HC cerradas de la empresa bajo el mes en curso (en
+// FERROESTACION: 20 certificados en noviembre cuando solo 2 se cerraron ese mes). Ahora se
+// publica exactamente lo marcado en la sección de descarga, cada pieza en el mes de su fecha:
+// certificados → mes de cierre; informe y carta → mes de su `fecha`; cuenta → mes de su `date`.
+const _mesDe = (f) => String(f || "").slice(0, 7);
+const _ccDoc = (p) => String(p?.docNumero || "").replace(/\s/g, "");
+const _armarPublicacionPortal = ({ certs, informes, cuentas, custodias, cerradasEmpresa }) => {
+  const porMes = new Map();
+  const omitidos = [];
+  const mes = (k) => {
+    if (!porMes.has(k)) porMes.set(k, { informe: null, cuenta: null, custodia: null, certs: [] });
+    return porMes.get(k);
+  };
+  for (const p of certs || []) {
+    const k = _mesDe(p.fechaCierre || p.fechaExamen);
+    const c = _ccDoc(p);
+    if (k.length === 7 && c) mes(k).certs.push(c);
+  }
+  const asignar = (lista, campo, fechaDe, nombre) => {
+    const orden = [...(lista || [])].sort((a, b) =>
+      String(fechaDe(b)).localeCompare(String(fechaDe(a))) || String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+    for (const d of orden) {
+      const k = _mesDe(fechaDe(d));
+      if (k.length !== 7) { omitidos.push(`${nombre} sin fecha válida: no se publicó`); continue; }
+      const m = mes(k);
+      if (m[campo]) omitidos.push(`${nombre} del ${_fmtFechaES(fechaDe(d))}: el portal guarda UNO por mes y ya va el más reciente de ${k} (este solo va en la descarga)`);
+      else m[campo] = d;
+    }
+  };
+  asignar(informes, "informe", (d) => d.fecha, "Informe");
+  asignar(cuentas, "cuenta", (d) => d.date, "Cuenta de cobro");
+  asignar(custodias, "custodia", (d) => d.fecha, "Carta de custodia");
+  // cédula → meses en que realmente tiene una HC cerrada (para no arrastrar certificados ajenos al mes)
+  const verdad = new Map();
+  for (const p of cerradasEmpresa || []) {
+    const c = _ccDoc(p);
+    const k = _mesDe(p.fechaCierre || p.fechaExamen);
+    if (!c || !k) continue;
+    if (!verdad.has(c)) verdad.set(c, new Set());
+    verdad.get(c).add(k);
+  }
+  return { porMes, omitidos, verdad };
+};
+// Une lo nuevo con lo ya publicado, SOLO en los meses tocados; los demás meses quedan intactos.
+// Certificados del mes = (los ya publicados que de verdad cerraron ese mes) ∪ (los marcados).
+// Informe/cuenta/carta no marcados se conservan si su propia fecha es de ese mes.
+const _fusionarPortalPeriodos = (existentes, porMes, verdad, hoy, construir) => {
+  const out = new Map((existentes || []).map((p) => [p.periodo, p]));
+  for (const [k, m] of porMes) {
+    const old = out.get(k) || {};
+    const conserva = (obj, campoFecha) => (obj && _mesDe(obj[campoFecha]) === k ? obj : null);
+    const previos = (old.certificados?.documentos || [])
+      .map((c) => String(c).replace(/\s/g, ""))
+      .filter(Boolean)
+      .filter((c) => { const s = verdad.get(c); return !s || s.has(k); });
+    const docs = [...new Set([...previos, ...m.certs])];
+    out.set(k, {
+      ...old, periodo: k, fecha: hoy,
+      informe: m.informe ? construir.informe(m.informe) : conserva(old.informe, "fecha"),
+      cuenta: m.cuenta ? construir.cuenta(m.cuenta) : conserva(old.cuenta, "date"),
+      custodia: m.custodia ? construir.custodia(m.custodia) : conserva(old.custodia, "fecha"),
+      certificados: { count: docs.length, documentos: docs },
+    });
+  }
+  return [...out.values()].sort((a, b) => String(b.periodo || "").localeCompare(String(a.periodo || "")));
+};
 const _tipoAtencionLabel = (p) =>
   p?.type === "general" ? "Medicina general" : (p?.tipoExamen || "Ocupacional");
 const _normBusq = (s) =>
@@ -20638,6 +20706,220 @@ function AppInner() {
     } finally {
       setProgDescEnvio(null);
     }
+  };
+
+  // ── ENVÍO INTEGRAL: enviar al portal + correo lo MARCADO en la sección de descarga ─────
+  const _enviarSeleccionEmpresa = (emp, rd, sel) => {
+    const comp = companies.find((c) => c.id === emp.empresaId);
+    const certs = sel.certificados ? rd.certificados.cerrados : [];
+    const dias = Object.entries(rd.certificados.porDia).sort();
+    const lineas = [
+      certs.length ? `• Certificados: ${certs.length} (${dias.slice(0, 6).map(([d, n]) => `${_fmtFechaES(d).slice(0, 5)}: ${n}`).join(" · ")}${dias.length > 6 ? " …" : ""})` : null,
+      ...(sel.informes || []).map((d) => `• Informe: periodo ${_etiquetaPeriodoDoc(d)} (guardado ${_fmtFechaES(d.fecha)})`),
+      ...(sel.cuentas || []).map((d) => `• Cuenta de cobro No. ${d.number || "—"} (${_fmtFechaES(d.date)}) $${Number(d.amount || 0).toLocaleString("es-CO")}`),
+      ...(sel.custodias || []).map((d) => `• Carta de custodia: periodo ${_etiquetaPeriodoDoc(d)} (creada ${_fmtFechaES(d.fecha)})`),
+    ].filter(Boolean);
+    if (!lineas.length) { showAlert("Marque al menos un documento para enviar."); return; }
+    showConfirm(
+      `📤 Se publicará en el portal de ${emp.empresaNombre} y se enviará por correo:\n\n${lineas.join("\n")}\n\nCada documento queda en el periodo (mes) de su fecha. ¿Confirma el envío?`,
+      async () => {
+        if (progDescEnvio) return;
+        setProgDescEnvio({ texto: "Publicando en el portal…" });
+        try {
+          const portalUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
+          const docD = activeDoctorData || {};
+          const nitEmp = comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit;
+          // NIT canónico (sin dígito de verificación pegado); `nitLegacy` solo para LEER lo viejo.
+          const nitClean = _nitPortal(comp || nitEmp);
+          const nitLegacy = (nitEmp || "").replace(/[^0-9]/g, "");
+          if (!nitClean) { showAlert("⚠️ La empresa no tiene NIT: no se puede publicar en el portal."); return; }
+          const _charsEI = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+          const _randEI = (n) => Array.from({ length: n }, () => _charsEI[Math.floor(Math.random() * _charsEI.length)]).join("");
+          const codigoAcceso = comp?.portalCode || ("EMP-" + (nitClean ? nitClean.slice(-4) : _randEI(4)) + "-" + _randEI(4));
+          const hoy = _fechaLocalISO();
+          const cerradasEmpresa = patientsList.filter((p) => p && p.empresaId === emp.empresaId && !p._archivado && p.estadoHistoria === "Cerrada");
+          const { porMes, omitidos, verdad } = _armarPublicacionPortal({
+            certs, informes: sel.informes, cuentas: sel.cuentas, custodias: sel.custodias, cerradasEmpresa,
+          });
+          const construir = {
+            informe: (d) => ({ totalPacientes: d.totalPacientes || emp.totalPacientes, resumen: d.resumen || "", fecha: d.fecha, statsKey: d.statsKey || null }),
+            cuenta: (d) => ({
+              number: d.number, amount: d.amount, date: d.date, concept: d.concept,
+              amountWords: d.amountWords || "", pagado: false, comprobante: null,
+              clientName: d.clientName || emp.empresaNombre,
+              clientNit: d.clientNit || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit || ""),
+              bankName: d.bankName || (activeDoctorData?.banco || "BANCOLOMBIA"),
+              accountType: d.accountType || (activeDoctorData?.tipoCuenta || "Ahorros"),
+              // el perfil del médico guarda el número de cuenta en "numeroCuenta"
+              accountNumber: d.accountNumber || (activeDoctorData?.numeroCuenta || ""),
+              rut: activeDoctorData?.cedula || "1061750704",
+              doctorNombre: (activeDoctorData?.nombre || "JULIAN CUCALON").toUpperCase(),
+              doctorCC: activeDoctorData?.cedula || "1061750704",
+              doctorLicencia: activeDoctorData?.licencia || "14497-12-2019",
+              doctorTitulo: (activeDoctorData?.titulo || "MEDICO ESPECIALISTA EN SST").toUpperCase(),
+              doctorCel: activeDoctorData?.celular || "3182213979",
+              doctorEmail: activeDoctorData?.email || "dr.juliancucalon@gmail.com",
+              doctorCiudad: activeDoctorData?.ciudad || "Popayán",
+              firma: activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || null,
+            }),
+            custodia: (d) => ({
+              fecha: d.fecha,
+              medicoNombre: d.medicoNombre,
+              medicoLicencia: d.medicoLicencia || "14497-12-2019",
+              medicoCC: d.medicoCC || "1061750704",
+              medicoTitulo: d.medicoTitulo || "MEDICO ESPECIALISTA EN SST",
+              medicoEmail: d.medicoEmail || "dr.juliancucalon@gmail.com",
+              medicoTel: d.medicoTel || "3182213979",
+              medicoCiudad: d.medicoCiudad || "Popayán",
+              firma: d.firma || activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || null,
+              mes: Number.isInteger(d.mes) ? d.mes : undefined,
+              anio: d.anio,
+            }),
+          };
+          // Lo ya publicado: se lee ANTES de escribir; si la lectura falla de verdad se ABORTA todo
+          // (no arriesgar el código de acceso ya emitido a la empresa).
+          let _existVal = null;
+          try {
+            _existVal = await _readSmart(`siso_portal_empresa_docs_${nitClean}`);
+          } catch (e) {
+            if (e instanceof ReadSmartUnavailableError) {
+              showAlert("⚠️ No se pudo verificar el estado actual del portal de " + (emp.empresaNombre || "la empresa") + " (conexión inestable). Para proteger el código de acceso ya emitido, NO se envió nada esta vez — vuelva a intentar en un momento.");
+              return;
+            }
+          }
+          // Fusionar también lo guardado bajo la clave VIEJA (NIT + dígito de verificación)
+          if (nitLegacy && nitLegacy !== nitClean) {
+            let _legacy = null;
+            try { _legacy = await _readSmart(`siso_portal_empresa_docs_${nitLegacy}`); } catch {}
+            if (_legacy) {
+              if (!_existVal) _existVal = _legacy;
+              else {
+                const mapa = new Map();
+                for (const p of [...(_legacy.periodos || []), ...(_existVal.periodos || [])]) {
+                  const k = p.periodo || "";
+                  const prev = mapa.get(k) || {};
+                  mapa.set(k, { ...prev, ...p,
+                    informe: p.informe || prev.informe || null,
+                    cuenta: p.cuenta || prev.cuenta || null,
+                    custodia: p.custodia || prev.custodia || null,
+                    certificados: ((p.certificados?.documentos || []).length >= (prev.certificados?.documentos || []).length)
+                      ? (p.certificados || prev.certificados || null)
+                      : (prev.certificados || null),
+                  });
+                }
+                _existVal = { ..._legacy, ..._existVal, periodos: [...mapa.values()],
+                  codigoAcceso: _existVal.codigoAcceso || _legacy.codigoAcceso };
+              }
+            }
+          }
+          const portalDocsData = {
+            nit: nitClean,
+            nombre: emp.empresaNombre,
+            codigoAcceso: _existVal?.codigoAcceso || comp?.portalCode || codigoAcceso,
+            updatedAt: new Date().toISOString(),
+            periodos: _fusionarPortalPeriodos(_existVal?.periodos || [], porMes, verdad, hoy, construir),
+          };
+          await _sbSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData);
+          if (_WORKER_TOKEN) {
+            let okW = false;
+            try { okW = await _workerSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData); } catch {}
+            if (!okW) {
+              showAlert("⚠️ No se pudo publicar en el portal (la nube no respondió). NO se envió el correo. Vuelva a intentar en un momento.");
+              return;
+            }
+          }
+          // Código de acceso en el registro local de la empresa
+          const codAccFinal = portalDocsData.codigoAcceso;
+          try {
+            const updComp = companies.map((cx) => {
+              const cxNit = (cx.nit || "").replace(/[^0-9]/g, "");
+              return cxNit === nitClean ? { ...cx, portalCode: codAccFinal } : cx;
+            });
+            setCompanies(updComp);
+            _syncCompanies(updComp);
+            setEmpresaPortalCodes((prev) => ({ ...prev, [nitClean]: codAccFinal }));
+          } catch {}
+          // Correo: lista EXACTAMENTE lo enviado
+          const subject = `Documentación Médica Ocupacional — ${emp.empresaNombre}`;
+          const _sep = "─".repeat(52);
+          const _noIncl = "no incluido en este envío";
+          const nInf = (sel.informes || []).length, nCta = (sel.cuentas || []).length, nCus = (sel.custodias || []).length;
+          const rInf = nInf ? (sel.informes.map((d) => `periodo ${_etiquetaPeriodoDoc(d)}`).join("; ")) : _noIncl;
+          const rCert = certs.length ? `${certs.length} certificado(s)` : _noIncl;
+          const rCta = nCta ? sel.cuentas.map((d) => "No. " + String(d.number || "0").padStart(3, "0") + " — $" + Number(d.amount || 0).toLocaleString("es-CO")).join("; ") : _noIncl;
+          const rCus = nCus ? sel.custodias.map((d) => `periodo ${_etiquetaPeriodoDoc(d)}`).join("; ") : _noIncl;
+          const body = [
+            `Estimado/a encargado/a de Seguridad y Salud en el Trabajo`,
+            `${emp.empresaNombre}`,
+            ``,
+            _sep,
+            `ENTREGA DE DOCUMENTACIÓN MÉDICA OCUPACIONAL`,
+            _sep,
+            ``,
+            `Le informamos que hemos completado la evaluación médica`,
+            `ocupacional correspondiente a su empresa y ponemos a su`,
+            `disposición la siguiente documentación:`,
+            ``,
+            `  • Informe Epidemiológico ............. ${rInf}`,
+            `  • Certificados de Aptitud Laboral .... ${rCert}`,
+            `  • Cuenta de Cobro ................... ${rCta}`,
+            `  • Carta de Custodia de Historias ..... ${rCus}`,
+            ``,
+            _sep,
+            `ACCESO AL PORTAL DE DOCUMENTOS`,
+            _sep,
+            ``,
+            `  Link:   ${portalUrl}`,
+            `  NIT:    ${nitEmp}`,
+            `  Código: ${codAccFinal}`,
+            ``,
+            `Pasos para descargar:`,
+            `  1. Abra el link del portal`,
+            `  2. Haga clic en el botón verde "Empresa"`,
+            `  3. Ingrese el NIT: ${nitEmp}`,
+            `  4. Ingrese el código de acceso: ${codAccFinal}`,
+            `  5. Descargue todos los documentos en PDF`,
+            ``,
+            `Cada trabajador también puede consultar su certificado`,
+            `individualmente ingresando su número de cédula.`,
+            ``,
+            _sep,
+            ``,
+            `Cordialmente,`,
+            ``,
+            `${docD.nombre || ""}`,
+            `${docD.titulo || "Médico Especialista en Salud Ocupacional"}`,
+            docD.licencia ? `Licencia S.O.: ${docD.licencia}` : "",
+            `Resolución de Médico Especialista en SST`,
+            docD.ciudad ? `${docD.ciudad}` : "",
+            `Cel: ${docD.celular || ""}`,
+            `${docD.email || emailConfig?.email || ""}`,
+            ``,
+            _sep,
+            `Res. 1843/2025 · Ley 1581/2012`,
+            `La información es confidencial y de uso exclusivo del destinatario.`,
+          ].filter((l) => l !== undefined).join("\n");
+          const _fila = (ico, nombre, valor, ok) => `<tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">${ico} ${nombre}</td><td style="padding:8px;font-size:11px;${ok ? "color:#065f46;font-weight:700;" : "color:#6b7280;"}">${valor}</td></tr>`;
+          const extraHTML = `<p style="font-size:12px;color:#065f46;font-weight:900;margin:0 0 10px;">📦 Documentación — ${emp.empresaNombre}</p><table style="width:100%;border-collapse:collapse;"><tbody>${_fila("📋", "Informe Epidemiológico", rInf, nInf > 0)}${_fila("📄", "Certificados", rCert, certs.length > 0)}${_fila("💰", "Cuenta de Cobro", rCta, nCta > 0)}${_fila("📁", "Carta de Custodia", rCus, nCus > 0)}</tbody></table><div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;margin-top:12px;text-align:center;"><p style="font-size:10px;color:#065f46;font-weight:700;margin:0;">🔑 Código de acceso empresarial</p><p style="font-size:18px;font-family:monospace;font-weight:900;color:#065f46;margin:4px 0 0;letter-spacing:2px;">${codAccFinal}</p></div>`;
+          const htmlBody = _generarEmailHTML("encargado de SST", nitEmp, portalUrl, extraHTML, true);
+          const emailEmp = comp?.emailContacto || comp?.email || "";
+          const _avisos = omitidos.length ? `\n\n⚠️ Tenga en cuenta:\n• ${omitidos.join("\n• ")}` : "";
+          if (emailEmp) {
+            _enviarEmail(emailEmp, subject, body, htmlBody);
+            showAlert(`✅ Publicado en el portal y enviado a ${emailEmp}\n\n🔑 Código de acceso: ${codAccFinal}\n\nLa empresa puede ingresar al portal con su NIT; cada documento está en el periodo de su fecha.${_avisos}`);
+          } else {
+            showPrompt("Email de la empresa:", (em) => {
+              if (em) { _enviarEmail(em, subject, body, htmlBody); showAlert(`✅ Publicado en el portal y enviado a ${em}\n🔑 Código: ${codAccFinal}${_avisos}`); }
+            });
+          }
+          setShowEnvioIntegral(false);
+        } catch (e) {
+          showAlert("Error al enviar: " + (e?.message || ""));
+        } finally {
+          setProgDescEnvio(null);
+        }
+      }
+    );
   };
 
   const [reporteActiveTab, setReporteActiveTab] = useState("atenciones"); // 'atenciones' | 'estadisticas' | 'certificados'
@@ -63076,308 +63358,23 @@ body{padding-top:52px;}
                         onClick={() => cambiar({ certificados: false, informes: {}, cuentas: {}, custodias: {} })}
                         className="flex-1 py-1.5 text-[10px] font-black rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200">☐ Desmarcar todo</button>
                     </div>
-                    <button type="button"
-                      disabled={nSel === 0 || !!progDescEnvio}
-                      onClick={() => _descargarDocsPeriodoEnvio(emp, rd, { certificados: !!selD.certificados, informes: informesSel, cuentas: cuentasSel, custodias: custodiasSel })}
-                      className={"w-full mt-2 py-2.5 text-xs font-black rounded-xl " + (nSel > 0 && !progDescEnvio ? "bg-indigo-700 text-white hover:bg-indigo-800" : "bg-gray-200 text-gray-400 cursor-not-allowed")}
-                    >{progDescEnvio ? "⏳ " + progDescEnvio.texto : `⬇️ DESCARGAR SELECCIONADOS (${nSel})`}</button>
-                    <p className="text-[9px] text-gray-400 mt-1">Se descarga un ZIP con una carpeta con el nombre de la empresa y las fechas elegidas.</p>
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                      <button type="button"
+                        disabled={nSel === 0 || !!progDescEnvio}
+                        onClick={() => _descargarDocsPeriodoEnvio(emp, rd, { certificados: !!selD.certificados, informes: informesSel, cuentas: cuentasSel, custodias: custodiasSel })}
+                        className={"py-2.5 text-xs font-black rounded-xl " + (nSel > 0 && !progDescEnvio ? "bg-indigo-700 text-white hover:bg-indigo-800" : "bg-gray-200 text-gray-400 cursor-not-allowed")}
+                      >{progDescEnvio ? "⏳ " + progDescEnvio.texto : `⬇️ DESCARGAR (${nSel})`}</button>
+                      <button type="button"
+                        disabled={nSel === 0 || !!progDescEnvio}
+                        onClick={() => _enviarSeleccionEmpresa(emp, rd, { certificados: !!selD.certificados, informes: informesSel, cuentas: cuentasSel, custodias: custodiasSel })}
+                        className={"py-2.5 text-xs font-black rounded-xl " + (nSel > 0 && !progDescEnvio ? "bg-emerald-700 text-white hover:bg-emerald-800" : "bg-gray-200 text-gray-400 cursor-not-allowed")}
+                      >{`📤 ENVIAR A LA EMPRESA (${nSel})`}</button>
+                    </div>
+                    <p className="text-[9px] text-gray-400 mt-1">Descargar: un ZIP con carpeta por empresa y fechas. Enviar: publica lo marcado en el portal (cada documento en el mes de su fecha) y lo manda por correo.</p>
                   </div>
                 );
               })()}
 
-              {/* Botón enviar */}
-              {todoListo ? (
-                <button onClick={async () => {
-                  const portalUrl = _sisoStableOrigin() + window.location.pathname + "#portaltrabajador";
-                  const docD = activeDoctorData || {};
-                  const nitEmp = comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit;
-                  // FIX 2026-07-29: ANTES era (nitEmp||"").replace(/[^0-9]/g,""),
-                  // que sobre "901584797-5" da "9015847975" — el NIT con el
-                  // dígito de verificación pegado. Esa era la clave que partía
-                  // los datos del portal en dos. Ahora se usa la canónica.
-                  // `nitLegacy` se conserva solo para LEER lo ya escrito bajo la
-                  // clave vieja y fusionarlo, no para escribir.
-                  const nitClean = _nitPortal(comp || nitEmp);
-                  const nitLegacy = (nitEmp || "").replace(/[^0-9]/g, "");
-                  // Código de acceso: usar el existente en la empresa local, o generar uno nuevo solo si no hay ninguno
-                  const _charsEI = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-                  const _randEI = (n) => Array.from({length:n}, () => _charsEI[Math.floor(Math.random()*_charsEI.length)]).join("");
-                  const codigoAcceso = comp?.portalCode || ("EMP-" + (nitClean ? nitClean.slice(-4) : _randEI(4)) + "-" + _randEI(4));
-                  // Guardar documentación completa en Supabase para el portal
-                  const mesActual = new Date().toISOString().slice(0, 7);
-                  // FIX 2026-09-02: antes se tomaba el PRIMER informe/custodia/cuenta
-                  // guardado para la empresa (.find sin filtrar por mes) y se publicaba
-                  // bajo la etiqueta de mesActual — así, un mes nuevo que ya tenía
-                  // certificados frescos terminaba con el informe/cuenta/custodia de
-                  // OTRO mes pegados debajo de su propia etiqueta, sin ningún aviso
-                  // (reportado: "pido lo de HOY y me descarga lo anterior"). Ahora se
-                  // exige que la fecha del documento sea del MISMO mes que se está
-                  // publicando (el más reciente si hay varios); si ninguno coincide,
-                  // se deja sin ese documento (nunca se rellena con uno de otro mes) y
-                  // se avisa antes de enviar.
-                  const _delMes = (fecha) => (fecha || "").slice(0, 7) === mesActual;
-                  const _masReciente = (arr) => [...arr].sort((a, b) => (b.fecha || b.savedAt || b.date || "").localeCompare(a.fecha || a.savedAt || a.date || ""))[0] || null;
-                  const informeData = _masReciente(savedInformes.filter(i => i.empresaId === emp.empresaId && !i.tipo && _delMes(i.fecha)));
-                  const custodiaData = _masReciente(savedInformes.filter(i => i.empresaId === emp.empresaId && i.tipo === "custodia" && _delMes(i.fecha)));
-                  const cuentaDataMes = _masReciente(savedBillsList.filter(b => b && !b._deleted && (b.companyId === emp.empresaId || b.clientName === emp.empresaNombre) && _delMes(b.date)));
-                  const _faltanEsteMes = [
-                    !informeData && "Informe epidemiológico",
-                    !cuentaDataMes && "Cuenta de cobro",
-                    !custodiaData && "Carta de custodia",
-                  ].filter(Boolean);
-                  const certsEmpresa = patientsList.filter(p => p.empresaId === emp.empresaId && p.estadoHistoria === "Cerrada");
-                  const portalDocsData = {
-                    nit: nitClean,
-                    nombre: emp.empresaNombre,
-                    codigoAcceso,
-                    updatedAt: new Date().toISOString(),
-                    periodos: [{
-                      periodo: mesActual,
-                      fecha: new Date().toISOString().split("T")[0],
-                      informe: informeData ? { totalPacientes: informeData.totalPacientes || emp.totalPacientes, resumen: informeData.resumen || "", fecha: informeData.fecha, statsKey: informeData.statsKey || null } : null,
-                      // FIX 2026-07-29: `count` se DERIVA de la lista, no se guarda
-                      // aparte. Antes se guardaba certCount por separado y la lista
-                      // podía quedar vacía: el portal decía "19 certificados" y no
-                      // podía mostrar ninguno (pasaba en 8 empresas). Además se
-                      // deduplica: un trabajador con dos atenciones aparecía repetido.
-                      certificados: (() => {
-                        const docsCert = [...new Set(certsEmpresa.map(p => (p.docNumero || "").replace(/\s/g, "")).filter(Boolean))];
-                        return { count: docsCert.length, documentos: docsCert };
-                      })(),
-                      cuenta: cuentaDataMes ? {
-                        // Datos base
-                        number: cuentaDataMes.number,
-                        amount: cuentaDataMes.amount,
-                        date: cuentaDataMes.date,
-                        concept: cuentaDataMes.concept,
-                        amountWords: cuentaDataMes.amountWords || "",
-                        pagado: false,
-                        comprobante: null,
-                        // Cliente
-                        clientName: cuentaDataMes.clientName || emp.empresaNombre,
-                        clientNit: cuentaDataMes.clientNit || (comp ? `${comp.nit}${comp.dv ? "-" + comp.dv : ""}` : emp.empresaNit || ""),
-                        // Banco / pago
-                        bankName: cuentaDataMes.bankName || (activeDoctorData?.banco || "BANCOLOMBIA"),
-                        accountType: cuentaDataMes.accountType || (activeDoctorData?.tipoCuenta || "Ahorros"),
-                        // FIX 2026-07-22: el perfil del médico guarda el número de
-                        // cuenta en "numeroCuenta" (verificado en D1) — "cuentaBancaria"
-                        // no existe en ese objeto, por eso la cuenta de cobro publicada
-                        // al portal llegaba sin número de cuenta bancaria.
-                        accountNumber: cuentaDataMes.accountNumber || (activeDoctorData?.numeroCuenta || ""),
-                        rut: activeDoctorData?.cedula || "1061750704",
-                        // Médico acreedor
-                        doctorNombre: (activeDoctorData?.nombre || "JULIAN CUCALON").toUpperCase(),
-                        doctorCC: activeDoctorData?.cedula || "1061750704",
-                        doctorLicencia: activeDoctorData?.licencia || "14497-12-2019",
-                        doctorTitulo: (activeDoctorData?.titulo || "MEDICO ESPECIALISTA EN SST").toUpperCase(),
-                        doctorCel: activeDoctorData?.celular || "3182213979",
-                        doctorEmail: activeDoctorData?.email || "dr.juliancucalon@gmail.com",
-                        doctorCiudad: activeDoctorData?.ciudad || "Popayán",
-                        firma: activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || null,
-                      } : null,
-                      custodia: custodiaData ? {
-                        fecha: custodiaData.fecha,
-                        medicoNombre: custodiaData.medicoNombre,
-                        medicoLicencia: custodiaData.medicoLicencia || "14497-12-2019",
-                        medicoCC: custodiaData.medicoCC || "1061750704",
-                        medicoTitulo: custodiaData.medicoTitulo || "MEDICO ESPECIALISTA EN SST",
-                        medicoEmail: custodiaData.medicoEmail || "dr.juliancucalon@gmail.com",
-                        medicoTel: custodiaData.medicoTel || "3182213979",
-                        medicoCiudad: custodiaData.medicoCiudad || "Popayán",
-                        // FIX 2026-07-29: la cuenta de cobro de arriba ya cae al
-                        // perfil del médico para la firma; la custodia no lo hacía
-                        // y se publicaba con firma null → carta sin firma.
-                        firma: custodiaData.firma || activeSignature || activeDoctorData?.firma || activeDoctorData?.signature || null,
-                        // el mes/año del período los necesita la carta para su texto
-                        mes: Number.isInteger(custodiaData.mes) ? custodiaData.mes : undefined,
-                        anio: custodiaData.anio,
-                      } : null,
-                    }],
-                  };
-                  // Merge with existing data — NUNCA sobreescribir el codigoAcceso si ya existe
-                  // FIX 2026-07-21: _readSmart reconcilia D1+Supabase por fecha — antes se
-                  // leía D1 primero (que nunca tenía informe/cuenta/custodia, solo
-                  // certificados) y esa base incompleta podía borrar flags que solo
-                  // existían en Supabase al volver a guardar.
-                  try {
-                    let _existVal = null;
-                    // FIX 2026-07-28 (incidente BIOESCOL): esta es la ruta de "Enviar
-                    // TODO a Empresa" — la más usada, y la más probable causa del
-                    // código de portal corrompiéndose. Antes, si _readSmart fallaba
-                    // por red (no por confirmar ausencia), _existVal quedaba null y
-                    // el bloque "else" de abajo escribía comp?.portalCode (que puede
-                    // estar desactualizado en memoria) o un código ALEATORIO NUEVO,
-                    // sobrescribiendo el código real ya emitido — en D1 Y en el
-                    // registro de la empresa. Ahora, si la lectura falla de verdad,
-                    // se ABORTA todo este envío (no se escribe nada) en vez de
-                    // arriesgar el código de acceso de la empresa.
-                    try {
-                      _existVal = await _readSmart(`siso_portal_empresa_docs_${nitClean}`);
-                    } catch (e) {
-                      if (e instanceof ReadSmartUnavailableError) {
-                        showAlert("⚠️ No se pudo verificar el estado actual del portal de " + (emp.empresaNombre || "la empresa") + " (conexión inestable). Para proteger el código de acceso ya emitido, NO se envió nada esta vez — vuelve a intentar en un momento.");
-                        return;
-                      }
-                    }
-                    // FIX 2026-07-29: fusionar también lo que quedó guardado bajo
-                    // la clave VIEJA (NIT + dígito de verificación). Sin esto, al
-                    // pasar a la clave canónica se dejarían atrás los períodos que
-                    // solo viven en la otra mitad — en LA ERMITA eran 56
-                    // certificados y la cuenta de cobro. Unión por período,
-                    // conservando el dato que exista en cualquiera de las dos.
-                    if (nitLegacy && nitLegacy !== nitClean) {
-                      let _legacy = null;
-                      try { _legacy = await _readSmart(`siso_portal_empresa_docs_${nitLegacy}`); } catch {}
-                      if (_legacy) {
-                        if (!_existVal) _existVal = _legacy;
-                        else {
-                          const mapa = new Map();
-                          for (const p of [...(_legacy.periodos || []), ...(_existVal.periodos || [])]) {
-                            const k = p.periodo || "";
-                            const prev = mapa.get(k) || {};
-                            mapa.set(k, { ...prev, ...p,
-                              informe: p.informe || prev.informe || null,
-                              cuenta: p.cuenta || prev.cuenta || null,
-                              custodia: p.custodia || prev.custodia || null,
-                              certificados: ((p.certificados?.documentos || []).length >= (prev.certificados?.documentos || []).length)
-                                ? (p.certificados || prev.certificados || null)
-                                : (prev.certificados || null),
-                            });
-                          }
-                          _existVal = { ..._legacy, ..._existVal, periodos: [...mapa.values()],
-                            codigoAcceso: _existVal.codigoAcceso || _legacy.codigoAcceso };
-                        }
-                      }
-                    }
-                    if (_existVal) {
-                      // Prioridad: 1) código en D1/Supabase, 2) código en registro local empresa, 3) código nuevo
-                      portalDocsData.codigoAcceso = _existVal.codigoAcceso || comp?.portalCode || codigoAcceso;
-                      // ANTI-PÉRDIDA (FIX 2026-06-22): para el periodo actual, preservar lo
-                      // que YA estaba emitido si el dato local viene nulo. Evita que un
-                      // re-envío con estado local incompleto borre informe/cuenta/custodia.
-                      // FIX 2026-09-02: antes rescataba _oldSame.informe/cuenta/custodia
-                      // SIN verificar su propia fecha — si ese registro ya estaba
-                      // contaminado por el bug de selección sin filtro de mes (ver arriba),
-                      // este "rescate" habría perpetuado esos datos de OTRO mes para
-                      // siempre, republicación tras republicación. Ahora solo rescata si
-                      // el documento guardado ahí es realmente de este mes; si no, se dejan
-                      // null a propósito (y _faltanEsteMes ya avisa de esto arriba) — con
-                      // esto la próxima vez que se publique, un registro contaminado por
-                      // el bug anterior se autocorrige en vez de perpetuarse.
-                      const _oldSame = (_existVal.periodos || []).find(p => p.periodo === mesActual);
-                      if (_oldSame) {
-                        const np = portalDocsData.periodos[0];
-                        if (!np.informe && _delMes(_oldSame.informe?.fecha)) np.informe = _oldSame.informe;
-                        if (!np.cuenta && _delMes(_oldSame.cuenta?.date)) np.cuenta = _oldSame.cuenta;
-                        if (!np.custodia && _delMes(_oldSame.custodia?.fecha)) np.custodia = _oldSame.custodia;
-                        if (!(np.certificados && np.certificados.count) && _oldSame.certificados) np.certificados = _oldSame.certificados;
-                      }
-                      if (_existVal.periodos) {
-                        const oldPeriodos = _existVal.periodos.filter(p => p.periodo !== mesActual);
-                        portalDocsData.periodos = [...portalDocsData.periodos, ...oldPeriodos];
-                      }
-                    } else {
-                      // Sin registro previo: usar código del registro local si existe
-                      portalDocsData.codigoAcceso = comp?.portalCode || codigoAcceso;
-                    }
-                  } catch {}
-                  await _sbSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData);
-                  if (_WORKER_TOKEN) { try { await _workerSet(`siso_portal_empresa_docs_${nitClean}`, portalDocsData); } catch {} }
-                  // Guardar código en el registro local de la empresa para que aparezca en la lista
-                  const codAccFinal = portalDocsData.codigoAcceso;
-                  try {
-                    const updComp = companies.map(cx => {
-                      const cxNit = (cx.nit || "").replace(/[^0-9]/g, "");
-                      return cxNit === nitClean ? { ...cx, portalCode: codAccFinal } : cx;
-                    });
-                    setCompanies(updComp);
-                    _syncCompanies(updComp);
-                    setEmpresaPortalCodes(prev => ({ ...prev, [nitClean]: codAccFinal }));
-                  } catch {}
-                  // Enviar email
-                  const subject = `Documentación Médica Ocupacional — ${emp.empresaNombre}`;
-                  const _sep = "─".repeat(52);
-                  const body = [
-                    `Estimado/a encargado/a de Seguridad y Salud en el Trabajo`,
-                    `${emp.empresaNombre}`,
-                    ``,
-                    _sep,
-                    `ENTREGA DE DOCUMENTACIÓN MÉDICA OCUPACIONAL`,
-                    _sep,
-                    ``,
-                    `Le informamos que hemos completado la evaluación médica`,
-                    `ocupacional correspondiente a su empresa y ponemos a su`,
-                    `disposición la documentación completa:`,
-                    ``,
-                    `  • Informe Epidemiológico ............. ${informeData ? emp.totalPacientes + " trabajador(es)" : "⚠️ no generado este mes"}`,
-                    `  • Certificados de Aptitud Laboral .... ${certCount} certificado(s)`,
-                    `  • Cuenta de Cobro ................... ${cuentaDataMes ? "No. " + String(cuentaDataMes.number||"0").padStart(3,"0") + " — $" + Number(cuentaDataMes.amount||0).toLocaleString("es-CO") : "⚠️ no generada este mes"}`,
-                    `  • Carta de Custodia de Historias ..... ${custodiaData ? "Incluida" : "⚠️ no generada este mes"}`,
-                    ``,
-                    _sep,
-                    `ACCESO AL PORTAL DE DOCUMENTOS`,
-                    _sep,
-                    ``,
-                    `  Link:   ${portalUrl}`,
-                    `  NIT:    ${nitEmp}`,
-                    `  Código: ${codAccFinal}`,
-                    ``,
-                    `Pasos para descargar:`,
-                    `  1. Abra el link del portal`,
-                    `  2. Haga clic en el botón verde "Empresa"`,
-                    `  3. Ingrese el NIT: ${nitEmp}`,
-                    `  4. Ingrese el código de acceso: ${codAccFinal}`,
-                    `  5. Descargue todos los documentos en PDF`,
-                    ``,
-                    `Cada trabajador también puede consultar su certificado`,
-                    `individualmente ingresando su número de cédula.`,
-                    ``,
-                    _sep,
-                    ``,
-                    `Cordialmente,`,
-                    ``,
-                    `${docD.nombre || ""}`,
-                    `${docD.titulo || "Médico Especialista en Salud Ocupacional"}`,
-                    docD.licencia ? `Licencia S.O.: ${docD.licencia}` : "",
-                    `Resolución de Médico Especialista en SST`,
-                    docD.ciudad ? `${docD.ciudad}` : "",
-                    `Cel: ${docD.celular || ""}`,
-                    `${docD.email || emailConfig?.email || ""}`,
-                    ``,
-                    _sep,
-                    `Res. 1843/2025 · Ley 1581/2012`,
-                    `La información es confidencial y de uso exclusivo del destinatario.`,
-                  ].filter(l => l !== undefined).join("\n");
-                  const _okBadge = `<span style="color:#065f46;font-weight:700;">✅</span>`;
-                  const _faltaBadge = `<span style="color:#b45309;font-weight:700;">⚠️ no generado este mes</span>`;
-                  const extraHTML = `<p style="font-size:12px;color:#065f46;font-weight:900;margin:0 0 10px;">📦 Documentación completa — ${emp.empresaNombre}</p><table style="width:100%;border-collapse:collapse;"><tbody><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📋 Informe Epidemiológico</td><td style="padding:8px;font-size:11px;">${informeData ? emp.totalPacientes + " trabajadores" : _faltaBadge}</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">📄 Certificados</td><td style="padding:8px;font-size:11px;color:#065f46;font-weight:700;">${certCount} certificados</td></tr><tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;font-size:12px;">💰 Cuenta de Cobro</td><td style="padding:8px;font-size:11px;">${cuentaDataMes ? `<span style="color:#065f46;font-weight:700;">No. ${cuentaDataMes.number || "—"} · $${Number(cuentaDataMes.amount || 0).toLocaleString("es-CO")}</span>` : _faltaBadge}</td></tr><tr><td style="padding:8px;font-size:12px;">📁 Carta de Custodia</td><td style="padding:8px;font-size:11px;">${custodiaData ? _okBadge : _faltaBadge}</td></tr></tbody></table><div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;margin-top:12px;text-align:center;"><p style="font-size:10px;color:#065f46;font-weight:700;margin:0;">🔑 Código de acceso empresarial</p><p style="font-size:18px;font-family:monospace;font-weight:900;color:#065f46;margin:4px 0 0;letter-spacing:2px;">${codAccFinal}</p></div>`;
-                  const htmlBody = _generarEmailHTML("encargado de SST", nitEmp, portalUrl, extraHTML, true);
-                  const emailEmp = comp?.emailContacto || comp?.email || "";
-                  // FIX 2026-09-02: avisar explícitamente si algún documento se quedó
-                  // FUERA de este envío por no tener nada generado para el mes que se
-                  // está publicando (mesActual) — antes esto pasaba en silencio y el
-                  // médico creía haber enviado todo.
-                  const _avisoFaltantes = _faltanEsteMes.length
-                    ? `\n\n⚠️ Se publicó SIN estos documentos porque no hay ninguno generado para ${mesActual} (se dejaron vacíos, no se usó uno de otro mes):\n• ${_faltanEsteMes.join("\n• ")}`
-                    : "";
-                  if (emailEmp) {
-                    _enviarEmail(emailEmp, subject, body, htmlBody);
-                    showAlert(`✅ Documentación enviada a ${emailEmp}\n\n🔑 Código de acceso: ${codAccFinal}\n\nLa empresa puede acceder al portal con su NIT para ver y descargar todos los documentos.${_avisoFaltantes}`);
-                  } else {
-                    showPrompt("Email de la empresa:", (em) => {
-                      if (em) { _enviarEmail(em, subject, body, htmlBody); showAlert(`✅ Enviado a ${em}\n🔑 Código: ${codAccFinal}${_avisoFaltantes}`); }
-                    });
-                  }
-                  setShowEnvioIntegral(false);
-                }} className="w-full py-3 bg-emerald-700 text-white font-black text-sm rounded-xl hover:bg-emerald-800 flex items-center justify-center gap-2">
-                  📤 ENVIAR TODA LA DOCUMENTACIÓN
-                </button>
-              ) : (
-                <div className="bg-gray-50 rounded-xl p-3 text-center">
-                  <p className="text-xs text-gray-500">⚠️ Complete los documentos faltantes para enviar.</p>
-                </div>
-              )}
             </div>
           </div>
         );
