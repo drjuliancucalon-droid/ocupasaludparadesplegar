@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import JSZip from "jszip";
+import { PRINT_FLOW_CSS, etiquetaValor } from "./printKit.js";
 import CartaCustodia from "./pages/CartaCustodia";
 import AnalisisDocsEmpresas from "./pages/AnalisisDocsEmpresas";
 import ContabilidadV2 from "./pages/ContabilidadV2";
@@ -28325,7 +28326,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
       }
       return '<p style="font-size:9pt;white-space:pre-wrap;line-height:1.5;">' + _nl(s) + '</p>';
     };
-    const sec = (icon, text) => '<div style="background:#ecfdf5;border-left:4px solid #065f46;padding:6px 12px;margin:14px 0 6px 0;font-weight:900;font-size:9.5pt;text-transform:uppercase;color:#065f46;">' + icon + " " + _e(text) + '</div>';
+    const sec = (icon, text) => '<div class="hc-sec" style="background:#ecfdf5;border-left:4px solid #065f46;padding:6px 12px;margin:14px 0 6px 0;font-weight:900;font-size:9.5pt;text-transform:uppercase;color:#065f46;">' + icon + " " + _e(text) + '</div>';
     const r2 = (l1,v1,l2,v2) => '<tr><th style="background:#d1fae5;font-weight:700;width:20%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(l1) + '</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:30%;">' + _e(v1) + '</td><th style="background:#d1fae5;font-weight:700;width:20%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(l2) + '</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:30%;">' + _e(v2) + '</td></tr>';
     const r1 = (l,v) => '<tr><th style="background:#d1fae5;font-weight:700;width:28%;font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(l) + '</th><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;" colspan="3">' + (typeof v === "string" && v.includes("<") ? v : _e(v)) + '</td></tr>';
     const tb = (rows) => '<table style="width:100%;border-collapse:collapse;break-inside:avoid;page-break-inside:avoid;">' + rows + '</table>';
@@ -28386,14 +28387,14 @@ Esta historia clínica debe conservarse mínimo 20 años.
         } else if (typeof val === "object") {
           Object.entries(val).forEach(function(entry) { if (entry[1]) riesgoPills += pill(riesgoLabels[cat] + ": " + entry[0], "#0d9488"); });
         } else {
-          riesgoPills += pill(riesgoLabels[cat] + ": " + val, "#0d9488");
+          riesgoPills += pill(etiquetaValor(riesgoLabels[cat], val) || riesgoLabels[cat], "#0d9488");
         }
       }
     });
     // Also handle any extra keys not in the standard list
     Object.keys(riesgos).forEach(function(k) {
       if (riesgoCategories.indexOf(k) === -1 && riesgos[k]) {
-        riesgoPills += pill(k + ": " + (typeof riesgos[k] === "object" ? JSON.stringify(riesgos[k]) : riesgos[k]), "#6b7280");
+        riesgoPills += pill(typeof riesgos[k] === "object" ? k + ": " + JSON.stringify(riesgos[k]) : (etiquetaValor(k, riesgos[k]) || k), "#6b7280");
       }
     });
     if (riesgoPills) sections.push(sec("⚠️", "Factores de Riesgo Ocupacional") + '<div style="padding:6px 10px;">' + riesgoPills + '</div>');
@@ -28495,7 +28496,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
       sections.push(sec("👁️", "Agudeza Visual") + tb(
         r2("Lejana OD", av.lejanaOD||"--", "Lejana OI", av.lejanaOI||"--") +
         r2("Próxima OD", av.proximaOD||"--", "Próxima OI", av.proximaOI||"--") +
-        r1("Corrección", av.correccion||"Sin corrección")
+        r1("Corrección", av.correccion === true ? "Con corrección" : (av.correccion || "Sin corrección"))
       ));
     }
 
@@ -28535,7 +28536,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
         sysRows += '<tr><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:25%;font-weight:700;">' + _e(k) + '</td><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;width:15%;color:' + color + ';font-weight:700;">' + _e(estado) + '</td><td style="font-size:8.5pt;padding:4px 8px;border:1px solid #ccc;">' + _e(hallazgo) + '</td></tr>';
       }
     });
-    sections.push(sec("🏥", "Examen Físico por Sistemas") + '<table style="width:100%;border-collapse:collapse;margin-top:4px;"><thead><tr><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Sistema</th><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;">Estado</th><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Hallazgo</th></tr></thead><tbody>' + sysRows + '</tbody></table>');
+    sections.push(sec("🏥", "Examen Físico por Sistemas") + '<table style="width:100%;border-collapse:collapse;margin-top:4px;"><thead><tr><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;text-align:left;">Sistema</th><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;">Estado</th><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;text-align:left;">Hallazgo</th></tr></thead><tbody>' + sysRows + '</tbody></table>');
 
     // ═══ 11. MANIOBRAS ORTOPÉDICAS — Solo si énfasis OSTEOMUSCULAR ═══
     var _enfasis = (data.enfasisExamen || "").toUpperCase();
@@ -28566,7 +28567,7 @@ Esta historia clínica debe conservarse mínimo 20 años.
       }
     });
     if (_mostrarManiobras) {
-      sections.push(sec("🦴", "Maniobras Ortopédicas — Énfasis Osteomuscular") + '<table style="width:100%;border-collapse:collapse;margin-top:4px;"><thead><tr><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Maniobra</th><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;">Resultado</th><th style="background:#065f46;color:white;padding:4px 8px;font-size:8pt;text-align:left;">Hallazgo</th></tr></thead><tbody>' + manioRows + '</tbody></table>');
+      sections.push(sec("🦴", "Maniobras Ortopédicas — Énfasis Osteomuscular") + '<table style="width:100%;border-collapse:collapse;margin-top:4px;"><thead><tr><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;text-align:left;">Maniobra</th><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;">Resultado</th><th style="background-color:#065f46!important;color:#fff!important;padding:4px 8px;font-size:8pt;text-align:left;">Hallazgo</th></tr></thead><tbody>' + manioRows + '</tbody></table>');
     }
 
     // ═══ 12. ÉNFASIS ESPECIALES — Solo se imprime el énfasis que tiene la HC ═══
@@ -28843,17 +28844,17 @@ Esta historia clínica debe conservarse mínimo 20 años.
     }
 
     // ═══ 26. FIRMA ═══
-    sections.push('<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:30px;padding-top:10px;border-top:2px solid #d1d5db;">' +
+    sections.push('<div class="hc-keep hc-end" style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:30px;padding-top:10px;border-top:2px solid #d1d5db;">' +
       '<div style="text-align:center;width:40%;"><div style="height:50px;"></div><div style="border-top:1.5px solid #333;padding-top:4px;font-size:8pt;font-weight:700;">Firma del Trabajador<br/>' + _e(data.docTipo||"CC") + ': ' + _e(data.docNumero||"") + '</div></div>' +
       '<div style="text-align:center;width:40%;">' + sigHtml + '<div style="border-top:1.5px solid #333;padding-top:4px;font-size:8pt;font-weight:700;">' + _e(doc.nombre||"") + '<br/>' + _e(doc.titulo||"") + '<br/>C.C. ' + _e(doc.cedula||"") + '<br/>RM: ' + _e(doc.licencia||"") + '<br/>' + _e(doc.ciudad||"") + '</div></div></div>');
 
     // ═══ CÓDIGO VERIFICACIÓN ═══
     if (data.codigoVerificacion) {
-      sections.push('<div style="text-align:center;margin-top:12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:6px;padding:8px;"><p style="font-size:7.5pt;font-weight:900;color:#6b7280;text-transform:uppercase;">Historia Clínica Firmada y Cerrada</p><p style="font-size:11pt;font-family:monospace;font-weight:900;color:#065f46;letter-spacing:2px;">' + _e(data.codigoVerificacion) + '</p></div>');
+      sections.push('<div class="hc-keep" style="text-align:center;margin-top:12px;background:#f0fdf4;border:1.5px solid #86efac;border-radius:6px;padding:8px;"><p style="font-size:7.5pt;font-weight:900;color:#6b7280;text-transform:uppercase;">Historia Clínica Firmada y Cerrada</p><p style="font-size:11pt;font-family:monospace;font-weight:900;color:#065f46;letter-spacing:2px;">' + _e(data.codigoVerificacion) + '</p></div>');
     }
 
     // ═══ ENSAMBLAR DOCUMENTO ═══
-    const _hcStyles = '@page{size:letter portrait;margin:1.1cm 1.4cm 1.3cm 1.4cm;}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;}body{font-family:"Segoe UI",Arial,Helvetica,sans-serif;font-size:9.5pt;color:#111;margin:0;padding:14mm 16mm;line-height:1.45;}table{width:100%;border-collapse:collapse;}th,td{border:1px solid #b7e3c9;padding:5px 8px;font-size:8.5pt;}th{font-weight:700;text-align:left;background-color:#d1fae5!important;color:#065f46;}p{margin:3px 0;}ul{margin:4px 0;padding-left:16px;}li{margin-bottom:2px;font-size:9pt;}.sec-hdr{background-color:#065f46!important;color:#fff!important;padding:6px 12px;margin:14px 0 6px;font-weight:900;font-size:9.5pt;text-transform:uppercase;border-radius:4px;}.np-bar{position:fixed;top:0;left:0;right:0;background:#065f46;color:#fff;padding:8px 14px;display:flex;align-items:center;gap:10px;z-index:9999;}.np-bar button{border:none;padding:6px 16px;border-radius:6px;font-weight:900;cursor:pointer;font-size:9pt;background:#10b981;color:#fff;}tr:nth-child(even){background-color:#f0fdf4!important;}@media print{.np-bar{display:none!important;}body{padding:0;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;}table{page-break-inside:auto;}tr{page-break-inside:avoid;}th{background-color:#d1fae5!important;}}';
+    const _hcStyles = '@page{size:letter portrait;margin:1.1cm 1.4cm 1.3cm 1.4cm;}*{box-sizing:border-box;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;}body{font-family:"Segoe UI",Arial,Helvetica,sans-serif;font-size:9.5pt;color:#111;margin:0;padding:14mm 16mm;line-height:1.45;}table{width:100%;border-collapse:collapse;}th,td{border:1px solid #b7e3c9;padding:5px 8px;font-size:8.5pt;}th{font-weight:700;text-align:left;background-color:#d1fae5!important;color:#065f46;}p{margin:3px 0;}ul{margin:4px 0;padding-left:16px;}li{margin-bottom:2px;font-size:9pt;}.sec-hdr{background-color:#065f46!important;color:#fff!important;padding:6px 12px;margin:14px 0 6px;font-weight:900;font-size:9.5pt;text-transform:uppercase;border-radius:4px;}.np-bar{position:fixed;top:0;left:0;right:0;background:#065f46;color:#fff;padding:8px 14px;display:flex;align-items:center;gap:10px;z-index:9999;}.np-bar button{border:none;padding:6px 16px;border-radius:6px;font-weight:900;cursor:pointer;font-size:9pt;background:#10b981;color:#fff;}tr:nth-child(even){background-color:#f0fdf4!important;}' + PRINT_FLOW_CSS + '@media print{.np-bar{display:none!important;}body{padding:0;}*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important;}table{page-break-inside:auto;}tr{page-break-inside:avoid;}th{background-color:#d1fae5!important;}}';
     const _hcBody = sections.join("");
     // Store for reuse by checklist
     window._lastHCCleanStyles = _hcStyles;
